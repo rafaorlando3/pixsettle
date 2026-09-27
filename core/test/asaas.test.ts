@@ -126,4 +126,64 @@ describe('Asaas (sandbox)', () => {
     expect(fake.payments.get(ch.provider_payment_id)!.status).toBe('RECEIVED')
     await app.close()
   })
+
+  it('R8: só 4xx com corpo de erro prova recusa; 5xx, 429, corpo ilegível e falha de leitura são ambíguos', async () => {
+    const mk = (status: number, body: string | null, bodyError = false) => async () => {
+      if (bodyError) return new Response(new ReadableStream({ start(c) { c.error(new Error('conexão caiu no meio do corpo')) } }), { status: 200 })
+      return new Response(body, { status, headers: { 'content-type': 'application/json' } })
+    }
+    const cases: Array<[string, ReturnType<typeof mk>, boolean]> = [
+      ['400 com erros', mk(400, JSON.stringify({ errors: [{ code: 'invalid_value', description: 'valor inválido' }] })), true],
+      ['400 sem corpo de erro', mk(400, '{}'), false],
+      ['429', mk(429, JSON.stringify({ errors: [{ code: 'too_many_requests', description: 'limite' }] })), false],
+      ['500', mk(500, JSON.stringify({ errors: [{ code: 'internal', description: 'erro' }] })), false],
+      ['502 HTML', mk(502, '<html>bad gateway</html>'), false],
+      ['200 truncado', mk(200, '{"id":'), false],
+      ['200 com falha de leitura', mk(200, null, true), false],
+    ]
+    for (const [name, f, proven] of cases) {
+      const p = new AsaasPixProvider({ ...opts(), fetchImpl: f as any })
+      const e = await p.refund('pay_x', 100n, 't').then(() => null, x => x)
+      expect(e, name).toBeInstanceOf(ProviderError)
+      expect([name, e.provenRejection, e.outcomeUnknown]).toEqual([name, proven, !proven])
+    }
+  })
+
+  it('R8: estorno executado com resposta 5xx vira desconhecido, concilia e nunca devolve duas vezes', async () => {
+    await start()
+    const orderId = await createOrder(env!.ctx, env!.merchantId, { externalRef: 'as-r8', amountMinor: 10090n, description: 't' })
+    const ch = await chargeOf(orderId)
+    await new AsaasSandboxPayer(opts()).pay(ch.provider_payment_id, ch.qr_payload, 10090n)
+    await deliver(env!.ctx, asaasEvent('evt_asr8', 'PAYMENT_RECEIVED', ch.provider_payment_id, 'RECEIVED'))
+    await settleAll(env!.ctx, env!.chain)
+    let broke = false
+    env!.ctx.provider = new AsaasPixProvider({ ...opts(), fetchImpl: (async (u: any, i: any) => {
+      const r = await fetch(u, i)
+      if (!broke && i?.method === 'POST' && String(u).endsWith('/refund')) { broke = true; return new Response('{"errors":[{"code":"internal","description":"erro"}]}', { status: 503 }) }
+      return r
+    }) as any })
+    const r = await requestRefund(env!.ctx, env!.merchantId, orderId, { type: 'merchant_refund', amountMinor: 1000n, source: 'test' })
+    if (!r.ok) throw new Error(r.code)
+    await drain(env!.ctx, 5, ['request_refund'])
+    expect((await env!.db.query(`SELECT state FROM refund_cases WHERE id=$1`, [r.refundCaseId])).rows[0].state).toBe('unknown')
+    expect(await requestRefund(env!.ctx, env!.merchantId, orderId, { type: 'merchant_refund', amountMinor: 1000n, source: 'test' })).toMatchObject({ ok: false, code: 'refund_in_progress' })
+    await settleAll(env!.ctx, env!.chain)
+    expect((await env!.db.query(`SELECT state FROM refund_cases WHERE id=$1`, [r.refundCaseId])).rows[0].state).toBe('confirmed')
+    expect(fake.payments.get(ch.provider_payment_id)!.refunds.map(x => x.value)).toEqual([10])
+  })
+
+  it('criação com 5xx concilia pelo externalReference em vez de falhar', async () => {
+    await start()
+    let broke = false
+    env!.ctx.provider = new AsaasPixProvider({ ...opts(), fetchImpl: (async (u: any, i: any) => {
+      const r = await fetch(u, i)
+      if (!broke && i?.method === 'POST' && String(u).endsWith('/payments')) { broke = true; return new Response('upstream error', { status: 504 }) }
+      return r
+    }) as any })
+    const orderId = await createOrder(env!.ctx, env!.merchantId, { externalRef: 'as-504', amountMinor: 700n, description: 't' })
+    expect((await chargeOf(orderId)).creation_state).toBe('creation_unknown')
+    await drain(env!.ctx, 5, ['reconcile_charge_creation'])
+    expect((await chargeOf(orderId)).creation_state).toBe('created')
+    expect(fake.payments.size).toBe(1)
+  })
 })

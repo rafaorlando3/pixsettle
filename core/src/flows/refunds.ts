@@ -87,9 +87,9 @@ export async function executeRefund(ctx: Ctx, refundCaseId: string): Promise<voi
     const out = await ctx.provider.refund(claim.provider_payment_id, BigInt(claim.amount_minor), `PixSettle ${claim.refund_type} ${refundCaseId}`)
     await ctx.db.query(`UPDATE refund_cases SET provider_ref=$2, updated_at=now() WHERE id=$1`, [refundCaseId, out.refundRef])
   } catch (e) {
-    if (e instanceof ProviderError && e.outcomeUnknown) return settle('unknown', `resposta perdida: ${e.message}`, { message: e.message })
-    const pe = e as ProviderError
-    return settle('failed', `provedor recusou: ${pe.message}`, { message: pe.message, status: pe.status ?? null, body: pe.body ?? null })
+    // Revisão R8: `failed` só com recusa comprovada (4xx com corpo de erro). Qualquer outra coisa pode ter executado.
+    if (e instanceof ProviderError && e.provenRejection) return settle('failed', `provedor recusou: ${e.message}`, { message: e.message, status: e.status, body: e.body ?? null })
+    return settle('unknown', `resultado ambíguo: ${(e as Error).message}`, { message: (e as Error).message, status: (e as any).status ?? null })
   }
   ctx.crashAt?.('refund_after_provider_accept')
   try { await observeRefund(ctx, claim.provider_payment_id, `refund:${refundCaseId}`) } catch (e) {
@@ -123,11 +123,11 @@ async function observeRefund(ctx: Ctx, paymentId: string, source: string) {
  * contabilizado ou encerrado (revisão R6): o fato fica registrado, os casos abertos cobrem o valor observado
  * e o pedido fica retido. Sem exposição pendente, confirma nossos casos na ordem; o excedente vira provider_refund.
  */
-export async function onRefundObserved(tx: Tx, ctx: Ctx, order: any, p: ProviderPayment, source: string, hold: (reason: string, detail: string) => Promise<void>) {
+export async function onRefundObserved(tx: Tx, ctx: Ctx, order: any, p: ProviderPayment, source: string, hold: (reason: string, detail: string) => Promise<void>): Promise<'applied' | 'stale'> {
   const total = p.status === 'REFUNDED' && p.refundedMinor === 0n ? BigInt(order.amount_minor) : p.refundedMinor
   const done = BigInt((await tx.query(`SELECT coalesce(sum(amount_minor),0)::text AS v FROM refund_cases WHERE order_id=$1 AND state IN ('confirmed','partial')`, [order.id])).rows[0].v)
   let remaining = total - done
-  if (remaining <= 0n) return
+  if (remaining <= 0n) return 'stale'
   const s = (await tx.query(`SELECT s.*, EXISTS (SELECT 1 FROM settlement_attempts a WHERE a.settlement_id=s.id AND a.status = ANY($2)) AS active FROM settlements s WHERE s.order_id=$1 FOR UPDATE`, [order.id, ACTIVE_ATTEMPT])).rows[0]
   const pending = (await tx.query(`SELECT * FROM refund_cases WHERE order_id=$1 AND state = ANY($2) ORDER BY created_at, id FOR UPDATE`, [order.id, OPEN])).rows
 
@@ -145,7 +145,7 @@ export async function onRefundObserved(tx: Tx, ctx: Ctx, order: any, p: Provider
     if (s.hold_reason !== 'exposure_reconciliation') await tx.query(`UPDATE settlements SET hold_reason='exposure_reconciliation', updated_at=now() WHERE id=$1`, [s.id])
     const o = (await tx.query(`SELECT hold_reason FROM orders WHERE id=$1`, [order.id])).rows[0]
     if (o.hold_reason !== 'exposure_reconciliation') await hold('exposure_reconciliation', `liquidação ${s.id} em andamento com estorno externo`)
-    return
+    return 'applied'
   }
 
   for (const c of pending) {
@@ -159,6 +159,7 @@ export async function onRefundObserved(tx: Tx, ctx: Ctx, order: any, p: Provider
     await tx.query(`INSERT INTO refund_cases (id, order_id, refund_type, state, amount_minor) VALUES ($1,$2,'provider_refund','requested',$3)`, [id, order.id, remaining.toString()])
     await confirmCase(tx, ctx, order, s, id, null, source, 'estorno observado no provedor sem pedido nosso')
   }
+  return 'applied'
 }
 
 async function confirmCase(tx: Tx, ctx: Ctx, order: any, s: any, caseId: string, from: string | null, source: string, reason?: string) {

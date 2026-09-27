@@ -38,10 +38,12 @@ export async function createOrder(ctx: Ctx, merchantId: string, input: CreateOrd
       await markCreated(tx, chargeId, orderId, created.paymentId, created.qrPayload, created.qrExpiresAt, 'provider_response')
     })
   } catch (e) {
-    if (e instanceof ProviderError && e.outcomeUnknown) {
+    if (!(e instanceof ProviderError && e.provenRejection)) {
+      // Sem recusa comprovada o provedor pode ter criado: concilia pelo externalReference (nunca cria de novo).
+      const msg = (e as Error).message, code = e instanceof ProviderError ? e.code : 'error'
       await withTx(ctx.db, async tx => {
-        await tx.query(`UPDATE pix_charges SET creation_state='creation_unknown', last_provider_error=$2, updated_at=now() WHERE id=$1`, [chargeId, JSON.stringify({ code: e.code, message: e.message })])
-        await recordTransition(tx, 'charge_creation', chargeId, 'creating', 'creation_unknown', 'provider_timeout', e.message)
+        await tx.query(`UPDATE pix_charges SET creation_state='creation_unknown', last_provider_error=$2, updated_at=now() WHERE id=$1`, [chargeId, JSON.stringify({ code, message: msg })])
+        await recordTransition(tx, 'charge_creation', chargeId, 'creating', 'creation_unknown', 'provider_ambiguous', msg)
         await enqueue(tx, 'reconcile_charge_creation', chargeId)
       })
     } else {

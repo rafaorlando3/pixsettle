@@ -20,11 +20,16 @@ export type ProviderPayment = {
 export type CreatedCharge = { paymentId: string; qrPayload: string; qrExpiresAt: Date }
 
 export class ProviderError extends Error {
-  constructor(readonly code: 'timeout' | 'http' | 'invalid_response', readonly status: number | null, readonly body: unknown, message: string) {
+  constructor(
+    readonly code: 'timeout' | 'http' | 'invalid_response', readonly status: number | null, readonly body: unknown, message: string,
+    /** Resultado desconhecido: o provedor pode ter executado. Padrão: só timeout/rede. */
+    readonly ambiguous: boolean = code === 'timeout',
+  ) {
     super(message)
   }
-  /** Timeout ou falha de rede: o resultado da operação é desconhecido. */
-  get outcomeUnknown() { return this.code === 'timeout' }
+  get outcomeUnknown() { return this.ambiguous }
+  /** Recusa COMPROVADA (revisão R8): 4xx com corpo de erro do provedor. Só isso autoriza declarar falha. */
+  get provenRejection() { return this.code === 'http' && !this.ambiguous && this.status !== null && this.status >= 400 && this.status < 500 }
 }
 
 export interface PixProvider {

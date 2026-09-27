@@ -64,15 +64,20 @@ export class AsaasPixProvider implements PixProvider {
       // Timeout ou rede: não sabemos se o Asaas executou. Quem chama concilia.
       throw new ProviderError('timeout', null, null, `asaas ${method} ${path}: ${(e as Error).name} ${(e as Error).message}`)
     }
-    const text = await res.text()
+    // Revisão R8: só 4xx com corpo de erro do Asaas prova que NADA foi feito. Todo o resto é ambíguo.
+    let text: string
+    try { text = await res.text() } catch (e) {
+      throw new ProviderError('invalid_response', res.status, null, `asaas ${method} ${path} -> ${res.status}: falha ao ler a resposta (${(e as Error).message})`, true)
+    }
     let json: any = null
     try { json = text ? JSON.parse(text) : null } catch {
-      throw new ProviderError('invalid_response', res.status, null, `asaas ${method} ${path} -> ${res.status}: resposta não é JSON`)
+      throw new ProviderError('invalid_response', res.status, null, `asaas ${method} ${path} -> ${res.status}: resposta não é JSON`, true)
     }
     if (!res.ok) {
       const clean = sanitizeError(json)
       const desc = clean?.errors?.map((e: any) => `${e.code}: ${e.description}`).join('; ') ?? ''
-      throw new ProviderError('http', res.status, clean, `asaas ${method} ${path} -> ${res.status} ${desc}`.trim())
+      const proven = res.status >= 400 && res.status < 500 && res.status !== 429 && !!clean?.errors?.length
+      throw new ProviderError('http', res.status, clean, `asaas ${method} ${path} -> ${res.status} ${desc}`.trim(), !proven)
     }
     return json as T
   }

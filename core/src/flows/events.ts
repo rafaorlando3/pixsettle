@@ -84,14 +84,15 @@ export async function applyObservation(tx: Tx, ctx: Ctx, p: ProviderPayment, sou
   if (next !== cur) {
     await tx.query(`UPDATE pix_charges SET observed_state=$2, last_observed_at=now(), updated_at=now() WHERE id=$1`, [charge.id, next])
     await recordTransition(tx, 'charge_observed', charge.id, cur, next, source)
-  } else if (next !== 'received' && next !== 'partially_refunded') {
-    return 'stale' // parcial repetida segue: o valor devolvido pode ter mudado
+  } else if (!['received', 'partially_refunded', 'refunded'].includes(next)) {
+    // Estorno repetido segue (revisão R7): o valor devolvido pode ter mudado, ou um caso ficou pendente
+    // esperando a liquidação concluir. onRefundObserved é idempotente pelo total já confirmado.
+    return 'stale'
   }
 
   if (next === 'received') return onReceived(tx, ctx, order, p, source)
   if (next === 'refunded' || next === 'partially_refunded') {
-    await onRefundObserved(tx, ctx, order, p, source, (reason, detail) => hold(tx, order.id, reason, source, detail))
-    return 'applied'
+    return onRefundObserved(tx, ctx, order, p, source, (reason, detail) => hold(tx, order.id, reason, source, detail))
   }
   return 'applied'
 }
