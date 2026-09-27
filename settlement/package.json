@@ -1,0 +1,28 @@
+{
+  "name": "@pixsettle/settlement",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "private": "true",
+  "dependencies": {
+    "canonicalize": "^2.1.0",
+    "viem": "^2.56.9"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}

@@ -1,0 +1,549 @@
+{
+  "note": "Vetores do recibo PixSettle v1. Chaves de TESTE públicas (Hardhat #0 e #1): nunca usar com fundos.",
+  "trusted_issuers": [
+    "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+  ],
+  "test_private_key": "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80",
+  "valid": [
+    {
+      "name": "settlement_basic",
+      "jcs": "{\"amounts\":{\"currency\":\"pathUSD\",\"fees_simulated\":\"0\",\"gross\":\"18262900\",\"net\":\"16436610\",\"reserve_simulated\":\"1826290\",\"scale\":6},\"chain_env\":\"testnet\",\"chain_id\":42431,\"issued_at\":\"2026-09-27T05:00:00Z\",\"issuer\":{\"address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"id\":\"pixsettle-test\"},\"order\":{\"amount\":{\"amount\":\"10090\",\"currency\":\"BRL\",\"scale\":2},\"id\":\"ord_01K6VECTOR00000000000000A\"},\"pix\":{\"observed_at\":\"2026-09-27T04:59:00Z\",\"provider\":\"asaas\",\"state\":\"received\"},\"provider_env\":\"sandbox\",\"quote\":{\"id\":\"quo_01K6VECTOR00000000000000A\",\"rate_den\":\"1000\",\"rate_num\":\"181\",\"rounding\":\"floor\",\"valid_until\":\"2026-09-27T05:10:00Z\"},\"receipt_id\":\"rct_01K6VECTOR00000000000000A\",\"receipt_type\":\"settlement\",\"schema_version\":1,\"settlement\":{\"amount\":\"16436610\",\"block_hash\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"block_number\":\"37086795\",\"confirmation_observed_at\":\"2026-09-27T05:00:00Z\",\"log_index\":1,\"memo\":\"0x73746c5f30314b365350494b4554455354303030303030303030303030000000\",\"to\":\"0x8ee643c15C603856A76d05020b5ccB0FceA425BF\",\"tx_hash\":\"0x55a434d33c9fa17da76ae4f4b0ea23d3030dada1639a1de584fcb5485d8290cb\"},\"token\":\"0x20c0000000000000000000000000000000000000\",\"treasury\":\"0x0f99c00f2712E562B4e762aD11b6b6841557ed14\"}",
+      "digest_hex": "42c132b6050e5995d9950cdc2fcc84f5f302b491a632d1ca51541576bdfd614d",
+      "message": "PixSettle receipt v1\nprovider_env=sandbox\nchain_env=testnet\nchain_id=42431\ndigest=42c132b6050e5995d9950cdc2fcc84f5f302b491a632d1ca51541576bdfd614d",
+      "envelope": {
+        "payload": {
+          "schema_version": 1,
+          "receipt_id": "rct_01K6VECTOR00000000000000A",
+          "receipt_type": "settlement",
+          "issuer": {
+            "id": "pixsettle-test",
+            "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+          },
+          "provider_env": "sandbox",
+          "chain_env": "testnet",
+          "chain_id": 42431,
+          "order": {
+            "id": "ord_01K6VECTOR00000000000000A",
+            "amount": {
+              "amount": "10090",
+              "currency": "BRL",
+              "scale": 2
+            }
+          },
+          "issued_at": "2026-09-27T05:00:00Z",
+          "token": "0x20c0000000000000000000000000000000000000",
+          "treasury": "0x0f99c00f2712E562B4e762aD11b6b6841557ed14",
+          "pix": {
+            "provider": "asaas",
+            "state": "received",
+            "observed_at": "2026-09-27T04:59:00Z"
+          },
+          "quote": {
+            "id": "quo_01K6VECTOR00000000000000A",
+            "rate_num": "181",
+            "rate_den": "1000",
+            "valid_until": "2026-09-27T05:10:00Z",
+            "rounding": "floor"
+          },
+          "amounts": {
+            "gross": "18262900",
+            "fees_simulated": "0",
+            "reserve_simulated": "1826290",
+            "net": "16436610",
+            "currency": "pathUSD",
+            "scale": 6
+          },
+          "settlement": {
+            "to": "0x8ee643c15C603856A76d05020b5ccB0FceA425BF",
+            "amount": "16436610",
+            "memo": "0x73746c5f30314b365350494b4554455354303030303030303030303030000000",
+            "tx_hash": "0x55a434d33c9fa17da76ae4f4b0ea23d3030dada1639a1de584fcb5485d8290cb",
+            "block_number": "37086795",
+            "block_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "log_index": 1,
+            "confirmation_observed_at": "2026-09-27T05:00:00Z"
+          }
+        },
+        "digest": {
+          "alg": "sha256",
+          "hex": "42c132b6050e5995d9950cdc2fcc84f5f302b491a632d1ca51541576bdfd614d"
+        },
+        "signature": {
+          "scheme": "eip191-0x45",
+          "signer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+          "value": "0x10fc4c1a95b475c1d195d3fe874a226a3debac5d9ca28e31d27b7190eca1d85b08d4d7ac576656b0a257f76830397aa14409facfdebe02319eaad21865fa8ea31c"
+        }
+      }
+    },
+    {
+      "name": "unicode_and_key_order",
+      "jcs": "{\"alpha\":{\"b\":\"\\\"aspas\\\" \\\\ barra /\",\"ñ\":\" linha\"},\"amounts\":{\"currency\":\"pathUSD\",\"fees_simulated\":\"0\",\"gross\":\"18262900\",\"net\":\"16436610\",\"reserve_simulated\":\"1826290\",\"scale\":6},\"chain_env\":\"testnet\",\"chain_id\":42431,\"issued_at\":\"2026-09-27T05:00:00Z\",\"issuer\":{\"address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"id\":\"pixsettle-test\"},\"order\":{\"amount\":{\"amount\":\"10090\",\"currency\":\"BRL\",\"scale\":2},\"id\":\"ord_01K6VECTOR00000000000000A\"},\"pix\":{\"observed_at\":\"2026-09-27T04:59:00Z\",\"provider\":\"asaas\",\"state\":\"received\"},\"provider_env\":\"sandbox\",\"quote\":{\"id\":\"quo_01K6VECTOR00000000000000A\",\"rate_den\":\"1000\",\"rate_num\":\"181\",\"rounding\":\"floor\",\"valid_until\":\"2026-09-27T05:10:00Z\"},\"receipt_id\":\"rct_01K6VECTOR00000000000000A\",\"receipt_type\":\"settlement\",\"schema_version\":1,\"settlement\":{\"amount\":\"16436610\",\"block_hash\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"block_number\":\"37086795\",\"confirmation_observed_at\":\"2026-09-27T05:00:00Z\",\"log_index\":1,\"memo\":\"0x73746c5f30314b365350494b4554455354303030303030303030303030000000\",\"to\":\"0x8ee643c15C603856A76d05020b5ccB0FceA425BF\",\"tx_hash\":\"0x55a434d33c9fa17da76ae4f4b0ea23d3030dada1639a1de584fcb5485d8290cb\"},\"token\":\"0x20c0000000000000000000000000000000000000\",\"treasury\":\"0x0f99c00f2712E562B4e762aD11b6b6841557ed14\",\"zeta\":\"último\",\"é\":\"ação ✓ 𝄞 😀\"}",
+      "digest_hex": "db782d6c235ca0d17e2979c38c86c8afdec55b16efbd8420d21c41022ddbd105",
+      "message": "PixSettle receipt v1\nprovider_env=sandbox\nchain_env=testnet\nchain_id=42431\ndigest=db782d6c235ca0d17e2979c38c86c8afdec55b16efbd8420d21c41022ddbd105",
+      "envelope": {
+        "payload": {
+          "schema_version": 1,
+          "receipt_id": "rct_01K6VECTOR00000000000000A",
+          "receipt_type": "settlement",
+          "issuer": {
+            "id": "pixsettle-test",
+            "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+          },
+          "provider_env": "sandbox",
+          "chain_env": "testnet",
+          "chain_id": 42431,
+          "order": {
+            "id": "ord_01K6VECTOR00000000000000A",
+            "amount": {
+              "amount": "10090",
+              "currency": "BRL",
+              "scale": 2
+            }
+          },
+          "issued_at": "2026-09-27T05:00:00Z",
+          "token": "0x20c0000000000000000000000000000000000000",
+          "treasury": "0x0f99c00f2712E562B4e762aD11b6b6841557ed14",
+          "pix": {
+            "provider": "asaas",
+            "state": "received",
+            "observed_at": "2026-09-27T04:59:00Z"
+          },
+          "quote": {
+            "id": "quo_01K6VECTOR00000000000000A",
+            "rate_num": "181",
+            "rate_den": "1000",
+            "valid_until": "2026-09-27T05:10:00Z",
+            "rounding": "floor"
+          },
+          "amounts": {
+            "gross": "18262900",
+            "fees_simulated": "0",
+            "reserve_simulated": "1826290",
+            "net": "16436610",
+            "currency": "pathUSD",
+            "scale": 6
+          },
+          "settlement": {
+            "to": "0x8ee643c15C603856A76d05020b5ccB0FceA425BF",
+            "amount": "16436610",
+            "memo": "0x73746c5f30314b365350494b4554455354303030303030303030303030000000",
+            "tx_hash": "0x55a434d33c9fa17da76ae4f4b0ea23d3030dada1639a1de584fcb5485d8290cb",
+            "block_number": "37086795",
+            "block_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "log_index": 1,
+            "confirmation_observed_at": "2026-09-27T05:00:00Z"
+          },
+          "zeta": "último",
+          "é": "ação ✓ 𝄞 😀",
+          "alpha": {
+            "ñ": " linha",
+            "b": "\"aspas\" \\ barra /"
+          }
+        },
+        "digest": {
+          "alg": "sha256",
+          "hex": "db782d6c235ca0d17e2979c38c86c8afdec55b16efbd8420d21c41022ddbd105"
+        },
+        "signature": {
+          "scheme": "eip191-0x45",
+          "signer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+          "value": "0x84571c9057b5394bd61f46b6f630b21d6ed73dc8df75ce24832555ebe72825ab5b945c0c028ca78ac3d3ea34358ae7b8162b8d7178f2b5faea0924f5bddf935f1c"
+        }
+      }
+    },
+    {
+      "name": "big_number_as_string",
+      "jcs": "{\"amounts\":{\"currency\":\"pathUSD\",\"fees_simulated\":\"0\",\"gross\":\"123456789012345678901234567890\",\"net\":\"123456789012345678901234567890\",\"reserve_simulated\":\"0\",\"scale\":6},\"chain_env\":\"testnet\",\"chain_id\":42431,\"issued_at\":\"2026-09-27T05:00:00Z\",\"issuer\":{\"address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"id\":\"pixsettle-test\"},\"order\":{\"amount\":{\"amount\":\"10090\",\"currency\":\"BRL\",\"scale\":2},\"id\":\"ord_01K6VECTOR00000000000000A\"},\"pix\":{\"observed_at\":\"2026-09-27T04:59:00Z\",\"provider\":\"asaas\",\"state\":\"received\"},\"provider_env\":\"sandbox\",\"quote\":{\"id\":\"quo_01K6VECTOR00000000000000A\",\"rate_den\":\"1000\",\"rate_num\":\"181\",\"rounding\":\"floor\",\"valid_until\":\"2026-09-27T05:10:00Z\"},\"receipt_id\":\"rct_01K6VECTOR00000000000000A\",\"receipt_type\":\"settlement\",\"schema_version\":1,\"settlement\":{\"amount\":\"16436610\",\"block_hash\":\"0x1111111111111111111111111111111111111111111111111111111111111111\",\"block_number\":\"37086795\",\"confirmation_observed_at\":\"2026-09-27T05:00:00Z\",\"log_index\":1,\"memo\":\"0x73746c5f30314b365350494b4554455354303030303030303030303030000000\",\"to\":\"0x8ee643c15C603856A76d05020b5ccB0FceA425BF\",\"tx_hash\":\"0x55a434d33c9fa17da76ae4f4b0ea23d3030dada1639a1de584fcb5485d8290cb\"},\"token\":\"0x20c0000000000000000000000000000000000000\",\"treasury\":\"0x0f99c00f2712E562B4e762aD11b6b6841557ed14\"}",
+      "digest_hex": "7d3c4cf696f840440cb8d59fd4ee880a8899201ef33d3f859d6b02a2180545fc",
+      "message": "PixSettle receipt v1\nprovider_env=sandbox\nchain_env=testnet\nchain_id=42431\ndigest=7d3c4cf696f840440cb8d59fd4ee880a8899201ef33d3f859d6b02a2180545fc",
+      "envelope": {
+        "payload": {
+          "schema_version": 1,
+          "receipt_id": "rct_01K6VECTOR00000000000000A",
+          "receipt_type": "settlement",
+          "issuer": {
+            "id": "pixsettle-test",
+            "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+          },
+          "provider_env": "sandbox",
+          "chain_env": "testnet",
+          "chain_id": 42431,
+          "order": {
+            "id": "ord_01K6VECTOR00000000000000A",
+            "amount": {
+              "amount": "10090",
+              "currency": "BRL",
+              "scale": 2
+            }
+          },
+          "issued_at": "2026-09-27T05:00:00Z",
+          "token": "0x20c0000000000000000000000000000000000000",
+          "treasury": "0x0f99c00f2712E562B4e762aD11b6b6841557ed14",
+          "pix": {
+            "provider": "asaas",
+            "state": "received",
+            "observed_at": "2026-09-27T04:59:00Z"
+          },
+          "quote": {
+            "id": "quo_01K6VECTOR00000000000000A",
+            "rate_num": "181",
+            "rate_den": "1000",
+            "valid_until": "2026-09-27T05:10:00Z",
+            "rounding": "floor"
+          },
+          "amounts": {
+            "gross": "123456789012345678901234567890",
+            "fees_simulated": "0",
+            "reserve_simulated": "0",
+            "net": "123456789012345678901234567890",
+            "currency": "pathUSD",
+            "scale": 6
+          },
+          "settlement": {
+            "to": "0x8ee643c15C603856A76d05020b5ccB0FceA425BF",
+            "amount": "16436610",
+            "memo": "0x73746c5f30314b365350494b4554455354303030303030303030303030000000",
+            "tx_hash": "0x55a434d33c9fa17da76ae4f4b0ea23d3030dada1639a1de584fcb5485d8290cb",
+            "block_number": "37086795",
+            "block_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "log_index": 1,
+            "confirmation_observed_at": "2026-09-27T05:00:00Z"
+          }
+        },
+        "digest": {
+          "alg": "sha256",
+          "hex": "7d3c4cf696f840440cb8d59fd4ee880a8899201ef33d3f859d6b02a2180545fc"
+        },
+        "signature": {
+          "scheme": "eip191-0x45",
+          "signer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+          "value": "0x3a7700c10573098360d00b7407e2f13725bd3d58091e6ae4aae79b1498ef74090a13145f59b1adfbfd63dc128558bba786b048aeaa0270c4362fc1cce3e000221c"
+        }
+      }
+    },
+    {
+      "name": "refund_notice_without_onchain",
+      "jcs": "{\"chain_env\":\"testnet\",\"chain_id\":42431,\"issued_at\":\"2026-09-27T05:00:00Z\",\"issuer\":{\"address\":\"0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266\",\"id\":\"pixsettle-test\"},\"order\":{\"amount\":{\"amount\":\"10090\",\"currency\":\"BRL\",\"scale\":2},\"id\":\"ord_01K6VECTOR00000000000000A\"},\"provider_env\":\"sandbox\",\"receipt_id\":\"rct_01K6VECTOR00000000000000B\",\"receipt_type\":\"refund_notice\",\"refund\":{\"amount\":\"10090\",\"currency\":\"BRL\",\"observed_at\":\"2026-09-27T05:30:00Z\",\"refund_type\":\"late_payment_refund\",\"source\":\"provider_attested\",\"state\":\"confirmed\"},\"schema_version\":1}",
+      "digest_hex": "0ef8034b48ad16c2f2951fdd3625c43603efdbce1c3f75b5ea953002c0970ab3",
+      "message": "PixSettle receipt v1\nprovider_env=sandbox\nchain_env=testnet\nchain_id=42431\ndigest=0ef8034b48ad16c2f2951fdd3625c43603efdbce1c3f75b5ea953002c0970ab3",
+      "envelope": {
+        "payload": {
+          "schema_version": 1,
+          "receipt_id": "rct_01K6VECTOR00000000000000B",
+          "receipt_type": "refund_notice",
+          "issuer": {
+            "id": "pixsettle-test",
+            "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+          },
+          "provider_env": "sandbox",
+          "chain_env": "testnet",
+          "chain_id": 42431,
+          "order": {
+            "id": "ord_01K6VECTOR00000000000000A",
+            "amount": {
+              "amount": "10090",
+              "currency": "BRL",
+              "scale": 2
+            }
+          },
+          "issued_at": "2026-09-27T05:00:00Z",
+          "refund": {
+            "amount": "10090",
+            "currency": "BRL",
+            "refund_type": "late_payment_refund",
+            "state": "confirmed",
+            "observed_at": "2026-09-27T05:30:00Z",
+            "source": "provider_attested"
+          }
+        },
+        "digest": {
+          "alg": "sha256",
+          "hex": "0ef8034b48ad16c2f2951fdd3625c43603efdbce1c3f75b5ea953002c0970ab3"
+        },
+        "signature": {
+          "scheme": "eip191-0x45",
+          "signer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+          "value": "0x5c949b8ff705d53ad8c7b7fb13adbe12da1e47a8313cf38952a3c48c55ffd8055e19dfe81a2d0365e62aea32e3ddbcb8abec9d5ac94109ef5a91066eb76c903c1c"
+        }
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "tampered_payload",
+      "expect": "digest_mismatch",
+      "envelope": {
+        "payload": {
+          "schema_version": 1,
+          "receipt_id": "rct_01K6VECTOR00000000000000A",
+          "receipt_type": "settlement",
+          "issuer": {
+            "id": "pixsettle-test",
+            "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+          },
+          "provider_env": "sandbox",
+          "chain_env": "testnet",
+          "chain_id": 42431,
+          "order": {
+            "id": "ord_01K6VECTOR00000000000000A",
+            "amount": {
+              "amount": "10090",
+              "currency": "BRL",
+              "scale": 2
+            }
+          },
+          "issued_at": "2026-09-27T05:00:00Z",
+          "token": "0x20c0000000000000000000000000000000000000",
+          "treasury": "0x0f99c00f2712E562B4e762aD11b6b6841557ed14",
+          "pix": {
+            "provider": "asaas",
+            "state": "received",
+            "observed_at": "2026-09-27T04:59:00Z"
+          },
+          "quote": {
+            "id": "quo_01K6VECTOR00000000000000A",
+            "rate_num": "181",
+            "rate_den": "1000",
+            "valid_until": "2026-09-27T05:10:00Z",
+            "rounding": "floor"
+          },
+          "amounts": {
+            "gross": "18262900",
+            "fees_simulated": "0",
+            "reserve_simulated": "1826290",
+            "net": "16436610",
+            "currency": "pathUSD",
+            "scale": 6
+          },
+          "settlement": {
+            "to": "0x8ee643c15C603856A76d05020b5ccB0FceA425BF",
+            "amount": "99999999",
+            "memo": "0x73746c5f30314b365350494b4554455354303030303030303030303030000000",
+            "tx_hash": "0x55a434d33c9fa17da76ae4f4b0ea23d3030dada1639a1de584fcb5485d8290cb",
+            "block_number": "37086795",
+            "block_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "log_index": 1,
+            "confirmation_observed_at": "2026-09-27T05:00:00Z"
+          }
+        },
+        "digest": {
+          "alg": "sha256",
+          "hex": "42c132b6050e5995d9950cdc2fcc84f5f302b491a632d1ca51541576bdfd614d"
+        },
+        "signature": {
+          "scheme": "eip191-0x45",
+          "signer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+          "value": "0x10fc4c1a95b475c1d195d3fe874a226a3debac5d9ca28e31d27b7190eca1d85b08d4d7ac576656b0a257f76830397aa14409facfdebe02319eaad21865fa8ea31c"
+        }
+      }
+    },
+    {
+      "name": "tampered_payload_and_digest",
+      "expect": "bad_signature",
+      "envelope": {
+        "payload": {
+          "schema_version": 1,
+          "receipt_id": "rct_01K6VECTOR00000000000000A",
+          "receipt_type": "settlement",
+          "issuer": {
+            "id": "pixsettle-test",
+            "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+          },
+          "provider_env": "sandbox",
+          "chain_env": "testnet",
+          "chain_id": 42431,
+          "order": {
+            "id": "ord_01K6VECTOR00000000000000A",
+            "amount": {
+              "amount": "10090",
+              "currency": "BRL",
+              "scale": 2
+            }
+          },
+          "issued_at": "2026-09-27T05:00:00Z",
+          "token": "0x20c0000000000000000000000000000000000000",
+          "treasury": "0x0f99c00f2712E562B4e762aD11b6b6841557ed14",
+          "pix": {
+            "provider": "asaas",
+            "state": "received",
+            "observed_at": "2026-09-27T04:59:00Z"
+          },
+          "quote": {
+            "id": "quo_01K6VECTOR00000000000000A",
+            "rate_num": "181",
+            "rate_den": "1000",
+            "valid_until": "2026-09-27T05:10:00Z",
+            "rounding": "floor"
+          },
+          "amounts": {
+            "gross": "18262900",
+            "fees_simulated": "0",
+            "reserve_simulated": "1826290",
+            "net": "16436610",
+            "currency": "pathUSD",
+            "scale": 6
+          },
+          "settlement": {
+            "to": "0x8ee643c15C603856A76d05020b5ccB0FceA425BF",
+            "amount": "99999999",
+            "memo": "0x73746c5f30314b365350494b4554455354303030303030303030303030000000",
+            "tx_hash": "0x55a434d33c9fa17da76ae4f4b0ea23d3030dada1639a1de584fcb5485d8290cb",
+            "block_number": "37086795",
+            "block_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "log_index": 1,
+            "confirmation_observed_at": "2026-09-27T05:00:00Z"
+          }
+        },
+        "digest": {
+          "alg": "sha256",
+          "hex": "007f983f766c6a60b47cd1ce0ebffbc8895326ae5a9fb4f8476d86d2a1a4c832"
+        },
+        "signature": {
+          "scheme": "eip191-0x45",
+          "signer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
+          "value": "0x10fc4c1a95b475c1d195d3fe874a226a3debac5d9ca28e31d27b7190eca1d85b08d4d7ac576656b0a257f76830397aa14409facfdebe02319eaad21865fa8ea31c"
+        }
+      }
+    },
+    {
+      "name": "unknown_issuer",
+      "expect": "untrusted_issuer",
+      "envelope": {
+        "payload": {
+          "schema_version": 1,
+          "receipt_id": "rct_01K6VECTOR00000000000000A",
+          "receipt_type": "settlement",
+          "issuer": {
+            "id": "intruso",
+            "address": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8"
+          },
+          "provider_env": "sandbox",
+          "chain_env": "testnet",
+          "chain_id": 42431,
+          "order": {
+            "id": "ord_01K6VECTOR00000000000000A",
+            "amount": {
+              "amount": "10090",
+              "currency": "BRL",
+              "scale": 2
+            }
+          },
+          "issued_at": "2026-09-27T05:00:00Z",
+          "token": "0x20c0000000000000000000000000000000000000",
+          "treasury": "0x0f99c00f2712E562B4e762aD11b6b6841557ed14",
+          "pix": {
+            "provider": "asaas",
+            "state": "received",
+            "observed_at": "2026-09-27T04:59:00Z"
+          },
+          "quote": {
+            "id": "quo_01K6VECTOR00000000000000A",
+            "rate_num": "181",
+            "rate_den": "1000",
+            "valid_until": "2026-09-27T05:10:00Z",
+            "rounding": "floor"
+          },
+          "amounts": {
+            "gross": "18262900",
+            "fees_simulated": "0",
+            "reserve_simulated": "1826290",
+            "net": "16436610",
+            "currency": "pathUSD",
+            "scale": 6
+          },
+          "settlement": {
+            "to": "0x8ee643c15C603856A76d05020b5ccB0FceA425BF",
+            "amount": "16436610",
+            "memo": "0x73746c5f30314b365350494b4554455354303030303030303030303030000000",
+            "tx_hash": "0x55a434d33c9fa17da76ae4f4b0ea23d3030dada1639a1de584fcb5485d8290cb",
+            "block_number": "37086795",
+            "block_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "log_index": 1,
+            "confirmation_observed_at": "2026-09-27T05:00:00Z"
+          }
+        },
+        "digest": {
+          "alg": "sha256",
+          "hex": "5a44f28c6cf737edf8ce549215c79ecad2d4a81e88b0c634d682c76f968d5237"
+        },
+        "signature": {
+          "scheme": "eip191-0x45",
+          "signer": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+          "value": "0x6235e0e465fb54883aaca2e134959c7fcbe5fc26c6f947940e557a13eceb7e5a21df883ee20456fc5ab797ae792d1549eeecdaecbbef0ef0fe87dc8142a6d9521b"
+        }
+      }
+    },
+    {
+      "name": "signer_field_mismatch",
+      "expect": "bad_signature",
+      "envelope": {
+        "payload": {
+          "schema_version": 1,
+          "receipt_id": "rct_01K6VECTOR00000000000000A",
+          "receipt_type": "settlement",
+          "issuer": {
+            "id": "pixsettle-test",
+            "address": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266"
+          },
+          "provider_env": "sandbox",
+          "chain_env": "testnet",
+          "chain_id": 42431,
+          "order": {
+            "id": "ord_01K6VECTOR00000000000000A",
+            "amount": {
+              "amount": "10090",
+              "currency": "BRL",
+              "scale": 2
+            }
+          },
+          "issued_at": "2026-09-27T05:00:00Z",
+          "token": "0x20c0000000000000000000000000000000000000",
+          "treasury": "0x0f99c00f2712E562B4e762aD11b6b6841557ed14",
+          "pix": {
+            "provider": "asaas",
+            "state": "received",
+            "observed_at": "2026-09-27T04:59:00Z"
+          },
+          "quote": {
+            "id": "quo_01K6VECTOR00000000000000A",
+            "rate_num": "181",
+            "rate_den": "1000",
+            "valid_until": "2026-09-27T05:10:00Z",
+            "rounding": "floor"
+          },
+          "amounts": {
+            "gross": "18262900",
+            "fees_simulated": "0",
+            "reserve_simulated": "1826290",
+            "net": "16436610",
+            "currency": "pathUSD",
+            "scale": 6
+          },
+          "settlement": {
+            "to": "0x8ee643c15C603856A76d05020b5ccB0FceA425BF",
+            "amount": "16436610",
+            "memo": "0x73746c5f30314b365350494b4554455354303030303030303030303030000000",
+            "tx_hash": "0x55a434d33c9fa17da76ae4f4b0ea23d3030dada1639a1de584fcb5485d8290cb",
+            "block_number": "37086795",
+            "block_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "log_index": 1,
+            "confirmation_observed_at": "2026-09-27T05:00:00Z"
+          }
+        },
+        "digest": {
+          "alg": "sha256",
+          "hex": "42c132b6050e5995d9950cdc2fcc84f5f302b491a632d1ca51541576bdfd614d"
+        },
+        "signature": {
+          "scheme": "eip191-0x45",
+          "signer": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8",
+          "value": "0x10fc4c1a95b475c1d195d3fe874a226a3debac5d9ca28e31d27b7190eca1d85b08d4d7ac576656b0a257f76830397aa14409facfdebe02319eaad21865fa8ea31c"
+        }
+      }
+    }
+  ],
+  "duplicate_key_json": {
+    "text": "{\"a\":1,\"b\":{\"x\":\"1\",\"x\":\"2\"}}",
+    "expect": "duplicate_key"
+  }
+}
