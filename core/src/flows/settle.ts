@@ -1,6 +1,7 @@
 // Diário durável de envio (contrato v0.3, seções 3.5, 3.6 e 4).
 import { withTx, txLock, recordTransition, enqueue, type Tx } from '../db.js'
 import { newId } from '../ids.js'
+import { reserveOfIntent } from './amounts.js'
 import type { Ctx } from '../context.js'
 import type { Intent, Broadcast } from '../chain/gateway.js'
 
@@ -239,10 +240,10 @@ export async function reconcileAttempt(ctx: Ctx, attemptId: string, tryNo: numbe
         await tx.query(`UPDATE orders SET status='settled', updated_at=now() WHERE id=$1`, [o.id])
         await recordTransition(tx, 'order', o.id, 'settling', 'settled', 'reconcile')
       }
-      const m = (await tx.query(`SELECT reserve_bps FROM merchants WHERE id=$1`, [o.merchant_id])).rows[0]
       const q = (await tx.query(`SELECT * FROM quotes WHERE order_id=$1`, [o.id])).rows[0]
-      const gross = (BigInt(o.amount_minor) * BigInt(q.rate_num)) / BigInt(q.rate_den)
-      const reserve = (gross * BigInt(m.reserve_bps)) / 10000n
+      // A reserva sai da intenção (bruto - líquido), não do reserve_bps atual do lojista: se a taxa de
+      // reserva mudar entre a intenção e a confirmação, bruto = líquido + reserva continua valendo.
+      const reserve = reserveOfIntent(BigInt(o.amount_minor), BigInt(q.rate_num), BigInt(q.rate_den), BigInt(x.s.amount_units))
       // op_key único: mesmo com defeito futuro de transição, o banco recusa o lançamento em dobro (R1).
       await tx.query(`INSERT INTO ledger_entries (merchant_id, order_id, kind, amount_units, currency, simulated, op_key) VALUES ($1,$2,'settlement_net',$3,'pathUSD',false,$5),($1,$2,'reserve_simulated',$4,'pathUSD',true,$6)`,
         [o.merchant_id, o.id, x.s.amount_units, reserve.toString(), `settlement:${x.s.id}:net`, `settlement:${x.s.id}:reserve`])

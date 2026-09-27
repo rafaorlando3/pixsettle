@@ -6,7 +6,7 @@ PixSettle lets merchants who sell to Brazilians accept Pix (the instant payment 
 
 1. **The merchant is never paid twice**, even when the Pix provider sends the same webhook five times, a worker crashes mid-send, or the RPC times out after accepting the transaction.
 2. **Refunds and fraud claims are controlled.** In Brazil a payer can ask their bank to claw back a Pix through MED (the special return mechanism) for up to 80 days. PixSettle keeps a rolling reserve per merchant, blocks refunds while a settlement is in flight, and never signs a settlement while a refund is open.
-3. **Every settlement has a receipt anyone can verify** in their own browser: the issuer's signature over the canonical JSON, and the Tempo transaction read straight from the public RPC, without trusting our server.
+3. **Every settlement has a receipt anyone can verify** in their own browser. The on-chain part (network, token, sender, recipient, amount and memo) is read straight from the public Tempo RPC. The Pix part is the issuer's signed statement, and the page labels it that way: a valid signature does not prove on its own that the Pix was received. If the RPC cannot be reached, the page says the check is unavailable instead of calling the receipt valid or invalid.
 
 Built for the Colosseum Crypto World's Fair, Tempo track.
 
@@ -69,10 +69,11 @@ In production the signer and the core run as two processes: `settlement/src/serv
 ```bash
 cd settlement && npx vitest run   # signer, receipts, broadcast error classification
 cd core && npx vitest run         # needs PostgreSQL (TEST_DATABASE_ADMIN); one fresh database per test
+cd web && npx vitest run          # in-browser receipt verifier against a local fake RPC
 python3 contract/tools/verify_receipt_vectors.py
 ```
 
-The core suite covers duplicate webhooks, two workers racing for the same settlement, a crash at every step of the send journal, lost RPC responses, reverted transactions, amount mismatch, stale provider events, late payments, refunds racing settlements, external refunds, and expired checkout links. Several cases were written by an independent reviewer and are kept unchanged.
+The core suite covers duplicate webhooks, two workers racing for the same settlement, a crash at every step of the send journal, lost RPC responses, reverted transactions, amount mismatch and rounding, stale provider events, late payments, refunds racing settlements, external refunds, and expired checkout links. The web suite checks that the receipt page reports a receipt that does not match the chain as failed, and reports "unavailable" only when the RPC cannot be reached. Several cases were written by an independent reviewer and are kept unchanged. The full failure matrix, with the test that covers each scenario and what is still open, is in [`docs/coverage.md`](docs/coverage.md). Every push runs the suites in GitHub Actions (`.github/workflows/tests.yml`).
 
 ## Roadmap
 

@@ -1,0 +1,81 @@
+# Testes a cada push e pull request. Sem segredos: só PostgreSQL de serviço, cadeia falsa e
+# chaves de TESTE públicas que já estão no repositório (contract/vectors). Não fala com a Tempo
+# (o teste integrado com a Moderato só roda com TEMPO_IT=1, que aqui não é definido).
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      TEST_DATABASE_ADMIN: postgres://postgres:postgres@localhost:5432/postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Instalar dependências (lockfiles, sem scripts de instalação)
+        run: |
+          for p in settlement core web; do
+            (cd "$p" && npm ci --ignore-scripts --no-audit --no-fund)
+          done
+
+      - name: Verificação de tipos
+        run: |
+          for p in settlement core web; do
+            (cd "$p" && npx tsc --noEmit)
+          done
+
+      - name: Verificador do navegador compilado bate com o fonte
+        working-directory: web
+        run: |
+          npm run build
+          git diff --exit-code -- public/verify.js
+
+      - name: Testes do settlement (recibo, memo, identidade do evento)
+        working-directory: settlement
+        run: npm test
+
+      - name: Testes do núcleo (PostgreSQL real, Pix simulado, cadeia falsa)
+        working-directory: core
+        run: npm test
+
+      - name: Testes do verificador do navegador (RPC falsa)
+        working-directory: web
+        run: npm test
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Vetores do recibo conferidos por uma implementação independente em Python
+        run: |
+          python -m pip install --disable-pip-version-check pycryptodome==3.23.0 eth-keys==0.8.0
+          python contract/tools/verify_receipt_vectors.py

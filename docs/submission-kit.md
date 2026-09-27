@@ -56,7 +56,7 @@ PixSettle lets merchants who sell to Brazilians accept Pix and get paid in dolla
 ## Team
 
 - Rafael Orlando Mendes, Pedro Juan Caballero, Paraguay: payments and e-commerce operations with Pix and crypto, PHP/Laravel. Works in Portuguese and Spanish, written English.
-- Built with an independent review loop: every change is reproduced by a second reviewer, who writes failing cases that must pass before the next step. **[Rafael decides whether to mention the AI tooling here; if a judge asks, answer truthfully.]**
+- Built with an independent review loop: every change to the settlement core that the reviewer reproduced came with failing cases that had to pass before the next step. **[Rafael decides whether to mention the AI tooling here; if a judge asks, answer truthfully.]**
 
 ## Pitch video script (target 2:30, captions on screen)
 
@@ -72,7 +72,7 @@ Written for on-screen captions plus an optional synthetic voice-over, pending th
 | 0:45 | Click "Payer pays, webhook delivered 3 times" | The provider sends the same webhook three times. We settle once. |
 | 0:55 | Timeline animates to "Order settled", 3 s | About 3 seconds later, dollars arrive on Tempo, tagged with a memo. |
 | 1:05 | Explorer tab with the transaction | Real transaction on Tempo testnet. |
-| 1:12 | Receipt page: green "Receipt verified" | Anyone can verify the receipt in their browser. No trust in our server. |
+| 1:12 | Receipt page: green "Receipt verified" | Anyone can check the on-chain part of the receipt in their browser, against the public Tempo RPC. |
 | 1:25 | Refund and MED buttons; reserve panel | Refunds and fraud claims hit a reserve first, never a surprise. |
 | 1:40 | Diagram of the send journal | Never paid twice: durable journal, same bytes on retry, reconcile by hash. |
 | 1:55 | Tests running (60 passing) | Crashes, lost responses, races: tested, and reviewed independently. |

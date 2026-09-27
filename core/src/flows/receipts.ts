@@ -1,6 +1,7 @@
 // Emissão do recibo de liquidação (contrato 7). Assinado no processo de assinatura, conferido aqui.
 import { withTx } from '../db.js'
 import { newId } from '../ids.js'
+import { reserveOfIntent } from './amounts.js'
 import type { Ctx } from '../context.js'
 import { verifyEnvelope, type ReceiptEnvelope } from '../../../settlement/src/receipt.js'
 
@@ -17,7 +18,7 @@ export async function issueSettlementReceipt(ctx: Ctx, settlementId: string) {
   const exists = (await ctx.db.query(`SELECT 1 FROM receipts WHERE order_id=$1 AND receipt_type='settlement'`, [d.o_id])).rowCount
   if (exists) return
   const gross = (BigInt(d.amount_minor) * BigInt(d.rate_num)) / BigInt(d.rate_den)
-  const reserve = (gross * BigInt(d.reserve_bps)) / 10000n
+  const reserve = reserveOfIntent(BigInt(d.amount_minor), BigInt(d.rate_num), BigInt(d.rate_den), BigInt(d.amount_units)) // da intenção, não do reserve_bps atual
   const obs = d.observed
   const iso = (x: any) => new Date(x).toISOString()
   const payload = {

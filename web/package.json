@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "build": "esbuild src/verify.ts --bundle --format=esm --minify --outfile=public/verify.js"
   },
   "keywords": [],
@@ -17,7 +18,9 @@
     "viem": "^2.56.9"
   },
   "devDependencies": {
+    "@types/node": "^26.6.3",
     "esbuild": "^0.28.2",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
   }
 }
