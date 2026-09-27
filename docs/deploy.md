@@ -22,7 +22,7 @@ Se o Terminal pedir login, use o do GitHub (ou o GitHub Desktop, se preferir: "A
 ## 2. Banco de dados na Neon (5 min)
 
 1. Entre em neon.com e clique em **Sign up** com a conta do GitHub.
-2. Crie um projeto: nome `pixsettle`, região **AWS São Paulo** (ou a mais próxima que aparecer), Postgres 16.
+2. Crie um projeto: nome `pixsettle`, região **AWS US East 1 (N. Virginia)**, Postgres 16. Tem que ser a mesma região do servidor na Render (Virginia), senão cada consulta ao banco atravessa o continente e a demo fica lenta.
 3. Na tela do projeto, clique em **Connect** e copie a **connection string** (começa com `postgresql://` e termina com `?sslmode=require`). Guarde para o passo 3.
 
 Por que Neon e não o banco da Render: o banco gratuito da Render apaga em 30 dias, e o resultado do Colosseum só sai em 05/12.

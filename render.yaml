@@ -4,6 +4,7 @@ services:
     name: pixsettle-demo
     runtime: docker
     plan: free
+    region: virginia          # mesma região do banco na Neon (AWS us-east-1): cada consulta ao banco fica rápida
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
     envVars:
