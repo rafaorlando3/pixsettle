@@ -2,7 +2,7 @@
 
 **Pix in, stablecoin out, with a receipt anyone can verify.**
 
-PixSettle lets a Brazilian merchant accept Pix (the instant payment system used by about 148 million people in Brazil at the end of 2025, per the Central Bank) and receive the money as a dollar stablecoin on [Tempo](https://tempo.xyz), with three guarantees that payment rails usually leave to trust:
+PixSettle lets merchants who sell to Brazilians accept Pix (the instant payment system used by about 148 million people in Brazil at the end of 2025, per the Central Bank) and receive the money as a dollar stablecoin on [Tempo](https://tempo.xyz). We start with Paraguay's border shops, where Brazilian shoppers already pay with Pix and merchants want dollars. Three guarantees that payment rails usually leave to trust:
 
 1. **The merchant is never paid twice**, even when the Pix provider sends the same webhook five times, a worker crashes mid-send, or the RPC times out after accepting the transaction.
 2. **Refunds and fraud claims are controlled.** In Brazil a payer can ask their bank to claw back a Pix through MED (the special return mechanism) for up to 80 days. PixSettle keeps a rolling reserve per merchant, blocks refunds while a settlement is in flight, and never signs a settlement while a refund is open.
