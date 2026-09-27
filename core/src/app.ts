@@ -11,6 +11,13 @@ const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 const err = (reply: FastifyReply, status: number, code: string, message: string, details: Record<string, unknown> = {}) =>
   reply.code(status).send({ error: { code, message, details } })
 
+/** Sessão de checkout pelo token (só o hash fica no banco). Validade conferida em todas as leituras (R3). */
+export async function checkoutSession(ctx: Ctx, token: string): Promise<{ orderId: string; expired: boolean } | null> {
+  const t = (await ctx.db.query(`SELECT order_id, expires_at FROM checkout_sessions WHERE token_hash=$1`, [sha256(String(token))])).rows[0]
+  if (!t) return null
+  return { orderId: t.order_id, expired: new Date(t.expires_at).getTime() <= ctx.now().getTime() }
+}
+
 export type AppOptions = { asaasWebhookToken: string; diagnosticsToken: string; tempoRpc?: string; trustProxy?: boolean }
 
 export function buildApp(ctx: Ctx, opts: AppOptions) {
@@ -125,13 +132,15 @@ export function buildApp(ctx: Ctx, opts: AppOptions) {
     return { entries: rows }
   })
 
-  // Tela do pagador: só o necessário, por token de sessão (leitura, com validade).
+  // Tela do pagador: só o necessário, por token de sessão (leitura, com validade: revisão R3).
   app.get('/api/v1/checkout/:token', async (req, reply) => {
-    const t = (await ctx.db.query(`SELECT order_id, expires_at FROM checkout_sessions WHERE token_hash=$1`, [sha256((req.params as any).token)])).rows[0]
-    if (!t) return err(reply, 404, 'not_found', 'sessão de checkout inválida')
-    const o = (await ctx.db.query(`SELECT o.status, o.hold_reason, o.amount_minor, o.expires_at, c.qr_payload FROM orders o JOIN pix_charges c ON c.order_id=o.id WHERE o.id=$1`, [t.order_id])).rows[0]
+    const s = await checkoutSession(ctx, (req.params as any).token)
+    if (!s) return err(reply, 404, 'not_found', 'sessão de checkout inválida')
+    const o = (await ctx.db.query(`SELECT o.status, o.hold_reason, o.amount_minor, o.expires_at, c.qr_payload FROM orders o JOIN pix_charges c ON c.order_id=o.id WHERE o.id=$1`, [s.orderId])).rows[0]
     // O pagador vê só o essencial: nunca o motivo interno da retenção.
-    const payer = o.hold_reason ? 'under_review' : ['paid', 'settling', 'settled'].includes(o.status) ? 'paid' : o.status
+    const payer = o.hold_reason ? 'under_review' : ['paid', 'settling', 'settled', 'refunded'].includes(o.status) ? 'paid' : o.status
+    // Sessão vencida: nada de valor, código Pix ou QR. Só o estado, projetado para a tela dizer se o pagamento entrou.
+    if (s.expired) return err(reply, 410, 'checkout_expired', 'link de pagamento expirado', { status: payer })
     return { amount: { amount: String(o.amount_minor), currency: 'BRL', scale: 2 }, status: payer, pix_payload: o.qr_payload, expires_at: o.expires_at }
   })
 
@@ -163,6 +172,8 @@ export function buildApp(ctx: Ctx, opts: AppOptions) {
       outbox_errors: await q(`SELECT id, topic, entity_id, attempts, last_error FROM outbox WHERE done_at IS NULL AND last_error IS NOT NULL ORDER BY id DESC LIMIT 20`),
       attempts_stuck: await q(`SELECT id, status, nonce, updated_at FROM settlement_attempts WHERE status IN ('suspended','unknown','manual_review','broadcast_pending') OR (status='broadcast_sent' AND updated_at < now() - interval '10 minutes')`),
       holds: await q(`SELECT id, status, hold_reason FROM orders WHERE hold_reason IS NOT NULL ORDER BY updated_at DESC LIMIT 50`),
+      treasury_paused_by: await q(`SELECT chain_id, sender, id AS attempt_id, nonce::text, updated_at FROM settlement_attempts WHERE status='suspended' ORDER BY nonce`),
+      waiting_on_treasury: await q(`SELECT entity, entity_id, reason, created_at FROM state_transitions WHERE entity IN ('settlement_waiting','attempt_waiting') ORDER BY id DESC LIMIT 50`),
     }
   })
 

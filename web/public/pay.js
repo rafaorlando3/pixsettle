@@ -41,6 +41,15 @@ async function tick() {
   try {
     const r = await fetch(`/api/v1/checkout/${encodeURIComponent(token)}`)
     if (r.status === 404) { $('#state').replaceChildren(h('span', { class: 'badge bad' }, 'Invalid checkout link')); return }
+    if (r.status === 410) { // link vencido: sem valor, código ou QR; só o estado
+      const st = (await r.json()).error?.details?.status
+      $('#amount').textContent = ''
+      $('#state').replaceChildren(h('span', { class: `badge ${st === 'paid' ? 'ok' : 'bad'}` }, st === 'paid' ? 'Paid' : 'Link expired'))
+      $('#body').replaceChildren(st === 'paid'
+        ? h('div', {}, h('div', { class: 'check' }, '✓'), h('div', { class: 'done' }, 'Payment received'), h('p', { class: 'muted' }, 'This link has expired, but your payment was received.'))
+        : h('p', { class: 'muted' }, 'This payment link has expired. Ask the store for a new one. Do not pay an old Pix code.'))
+      return
+    }
     const c = await r.json()
     render(c)
     if (['paid', 'under_review', 'expired', 'late_paid'].includes(c.status)) return

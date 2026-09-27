@@ -15,7 +15,10 @@ export async function freshDb(): Promise<{ db: Db; drop: () => Promise<void> }> 
   const name = 'pst_' + randomUUID().replace(/-/g, '').slice(0, 16)
   const admin = new pg.Client({ connectionString: ADMIN }); await admin.connect()
   await admin.query(`CREATE DATABASE ${name}`); await admin.end()
-  const db = createPool(ADMIN.replace('/postgres?', `/${name}?`))
+  const u = new URL(ADMIN); u.pathname = `/${name}` // funciona com ou sem query string (revisão do Codex)
+  const db = createPool(u.toString())
+  const cur = (await db.query('SELECT current_database() AS d')).rows[0].d
+  if (cur !== name) throw new Error(`banco de teste errado: ${cur} (esperado ${name})`)
   await migrate(db)
   return { db, drop: async () => { await db.end(); const a = new pg.Client({ connectionString: ADMIN }); await a.connect(); await a.query(`DROP DATABASE ${name} WITH (FORCE)`); await a.end() } }
 }

@@ -7,6 +7,37 @@ import type { Intent, Broadcast } from '../chain/gateway.js'
 export const ACTIVE = ['nonce_reserved', 'signed', 'suspended', 'broadcast_pending', 'broadcast_sent', 'unknown', 'manual_review'] as const
 const BLOCKING_REFUND = ['requested', 'unknown', 'confirmed', 'partial']
 
+/** Estados em que a tentativa ainda aguarda prova on-chain (R1: só eles podem ser reconciliados). */
+const RECONCILABLE = ['broadcast_pending', 'broadcast_sent', 'unknown', 'manual_review']
+/** Destes, os que ainda permitem reenviar os MESMOS bytes. */
+const REBROADCASTABLE = ['broadcast_pending', 'broadcast_sent', 'unknown']
+/** Espera enquanto a tesouraria estiver pausada (R2); reconsulta periódica com diagnóstico. */
+export const TREASURY_WAIT_MS = 15_000
+export type StepResult = void | 'wait'
+
+const treasuryKey = (chainId: number, sender: string) => `treasury:${chainId}:${sender.toLowerCase()}`
+
+/**
+ * Pausa da fila da tesouraria (contrato 3.5 e 4.4, revisão R2). Toma a trava consultiva da tesouraria
+ * (sempre DEPOIS de pedido -> liquidação -> tentativa) e procura tentativa `suspended` não resolvida.
+ * Nonce menor que o suspenso não depende dele e segue; nonce novo ou maior espera.
+ */
+async function treasuryPause(tx: Tx, chainId: number, sender: string, self: { id: string; nonce: bigint } | null): Promise<string | null> {
+  await txLock(tx, treasuryKey(chainId, sender))
+  const r = (await tx.query(
+    `SELECT id, nonce FROM settlement_attempts WHERE chain_id=$1 AND lower(sender)=lower($2) AND status='suspended' AND ($3::text IS NULL OR id <> $3) ORDER BY nonce LIMIT 1`,
+    [chainId, sender, self?.id ?? null])).rows[0]
+  if (!r) return null
+  if (self && self.nonce < BigInt(r.nonce)) return null
+  return `treasury_paused:${r.id}:nonce_${r.nonce}`
+}
+
+/** Grava o diagnóstico de espera só quando o motivo muda (sem inundar o histórico a cada reconsulta). */
+async function noteWaiting(tx: Tx, entity: string, id: string, reason: string, source: string) {
+  const last = (await tx.query(`SELECT reason FROM state_transitions WHERE entity=$1 AND entity_id=$2 ORDER BY id DESC LIMIT 1`, [entity, id])).rows[0]
+  if (last?.reason !== reason) await recordTransition(tx, entity, id, null, 'waiting', source, reason)
+}
+
 function intentOf(s: any): Intent {
   return { chainId: s.chain_id, token: s.token, from: s.sender, to: s.recipient, amount: BigInt(s.amount_units), memo: s.memo }
 }
@@ -31,8 +62,8 @@ async function blockers(tx: Tx, orderId: string, settlement: any): Promise<strin
 }
 
 /** Despachante: decide o próximo passo da liquidação. Idempotente e seguro em concorrência. */
-export async function advanceSettlement(ctx: Ctx, settlementId: string) {
-  await withTx(ctx.db, async tx => {
+export async function advanceSettlement(ctx: Ctx, settlementId: string): Promise<StepResult> {
+  return withTx(ctx.db, async (tx): Promise<StepResult> => {
     const s = (await tx.query(`SELECT * FROM settlements WHERE id=$1 FOR UPDATE`, [settlementId])).rows[0]
     if (!s || ['confirmed', 'failed', 'manual_review'].includes(s.status)) return
     const active = (await tx.query(`SELECT * FROM settlement_attempts WHERE settlement_id=$1 AND status = ANY($2) FOR UPDATE`, [settlementId, ACTIVE])).rows[0]
@@ -52,7 +83,8 @@ export async function advanceSettlement(ctx: Ctx, settlementId: string) {
       return
     }
     // Reserva de nonce sob a trava da tesouraria, ligada a uma tentativa durável (contrato 4.4).
-    await txLock(tx, `treasury:${s.chain_id}:${s.sender.toLowerCase()}`)
+    const paused = await treasuryPause(tx, s.chain_id, s.sender, null)
+    if (paused) { await noteWaiting(tx, 'settlement_waiting', s.id, paused, 'advance'); return 'wait' }
     const pending = await ctx.chain.pendingNonce()
     const maxRes = (await tx.query(`SELECT max(nonce) AS m FROM settlement_attempts WHERE chain_id=$1 AND lower(sender)=lower($2) AND nonce_key=0`, [s.chain_id, s.sender])).rows[0].m
     const nonce = Math.max(pending, maxRes === null ? 0 : Number(maxRes) + 1)
@@ -80,18 +112,26 @@ async function loadForUpdate(tx: Tx, attemptId: string) {
   return { s, a, orderId: ids.order_id as string }
 }
 
-export async function signAttempt(ctx: Ctx, attemptId: string) {
+export async function signAttempt(ctx: Ctx, attemptId: string): Promise<StepResult> {
   const pre = await withTx(ctx.db, async tx => {
     const x = await loadForUpdate(tx, attemptId)
     if (!x || x.a.status !== 'nonce_reserved') return null
     const b = await blockers(tx, x.orderId, x.s)
+    const paused = await treasuryPause(tx, x.a.chain_id, x.a.sender, { id: x.a.id, nonce: BigInt(x.a.nonce) })
     if (b.length) {
       await setAttempt(tx, x.a, 'suspended', 'pre_sign', { pre_sign_check: { ok: false, blockers: b, at: ctx.now().toISOString() } }, b.join(','))
       return null
     }
+    if (paused) {
+      // Nonce reservado, nada assinado: espera a tesouraria voltar (R2).
+      await tx.query(`UPDATE settlement_attempts SET pre_sign_check=$2, updated_at=now() WHERE id=$1`, [attemptId, JSON.stringify({ ok: false, waiting: paused, at: ctx.now().toISOString() })])
+      await noteWaiting(tx, 'attempt_waiting', attemptId, paused, 'pre_sign')
+      return 'wait' as const
+    }
     await tx.query(`UPDATE settlement_attempts SET pre_sign_check=$2 WHERE id=$1`, [attemptId, JSON.stringify({ ok: true, at: ctx.now().toISOString() })])
     return { s: x.s, a: x.a }
   })
+  if (pre === 'wait') return 'wait'
   if (!pre) return
   ctx.crashAt?.('after_pre_sign_check')
   const signed = await ctx.chain.sign(intentOf(pre.s), Number(pre.a.nonce))
@@ -104,11 +144,24 @@ export async function signAttempt(ctx: Ctx, attemptId: string) {
   })
 }
 
-export async function broadcastAttempt(ctx: Ctx, attemptId: string) {
+export async function broadcastAttempt(ctx: Ctx, attemptId: string): Promise<StepResult> {
   const pre = await withTx(ctx.db, async tx => {
     const x = await loadForUpdate(tx, attemptId)
     if (!x || !['signed', 'broadcast_pending'].includes(x.a.status)) return null
     const b = await blockers(tx, x.orderId, x.s)
+    const paused = await treasuryPause(tx, x.a.chain_id, x.a.sender, { id: x.a.id, nonce: BigInt(x.a.nonce) })
+    if (!b.length && paused) {
+      if (x.a.status === 'signed') {
+        // Assinado e nunca enviado: não transmite enquanto a tesouraria estiver pausada (R2).
+        await tx.query(`UPDATE settlement_attempts SET pre_broadcast_check=$2, updated_at=now() WHERE id=$1`, [attemptId, JSON.stringify({ ok: false, waiting: paused, at: ctx.now().toISOString() })])
+        await noteWaiting(tx, 'attempt_waiting', attemptId, paused, 'pre_broadcast')
+        return 'wait' as const
+      }
+      // broadcast_pending: pode já ter saído. Só observar; sem reenviar enquanto pausada.
+      await setAttempt(tx, x.a, 'unknown', 'pre_broadcast', { pre_broadcast_check: { ok: false, waiting: paused, at: ctx.now().toISOString() } }, 'tesouraria pausada depois de possível envio')
+      await enqueue(tx, 'reconcile_attempt', attemptId, { try: 0 })
+      return null
+    }
     if (b.length) {
       if (x.a.status === 'signed') {
         // Nunca transmitir pagamento proibido; bytes e nonce preservados, fila da tesouraria parada.
@@ -123,6 +176,7 @@ export async function broadcastAttempt(ctx: Ctx, attemptId: string) {
     if (x.a.status === 'signed') await setAttempt(tx, x.a, 'broadcast_pending', 'pre_broadcast', { pre_broadcast_check: { ok: true, at: ctx.now().toISOString() } })
     return { raw: x.a.raw_tx as string }
   })
+  if (pre === 'wait') return 'wait'
   if (!pre) return
   ctx.crashAt?.('after_broadcast_pending_before_rpc')
   let out: Broadcast
@@ -138,23 +192,33 @@ export async function broadcastAttempt(ctx: Ctx, attemptId: string) {
 
 export async function reconcileAttempt(ctx: Ctx, attemptId: string, tryNo: number): Promise<'done' | 'retry'> {
   const snap = (await ctx.db.query(`SELECT a.*, s.chain_id AS s_chain, s.token, s.sender AS s_sender, s.recipient, s.amount_units, s.memo, s.order_id FROM settlement_attempts a JOIN settlements s ON s.id=a.settlement_id WHERE a.id=$1`, [attemptId])).rows[0]
-  if (!snap || !['broadcast_pending', 'broadcast_sent', 'unknown', 'manual_review'].includes(snap.status)) return 'done'
+  if (!snap || !RECONCILABLE.includes(snap.status)) return 'done'
   const intent: Intent = { chainId: snap.s_chain, token: snap.token, from: snap.s_sender, to: snap.recipient, amount: BigInt(snap.amount_units), memo: snap.memo }
   let obs
   try { obs = await ctx.chain.observe(snap.tx_hash, intent) } catch (e) {
-    await ctx.db.query(`UPDATE settlement_attempts SET observed=$2, updated_at=now() WHERE id=$1`, [attemptId, JSON.stringify({ rpc_error: (e as Error).message, at: ctx.now().toISOString() })])
+    // Coluna própria: um erro atrasado nunca apaga a evidência conclusiva em `observed` (R1).
+    await ctx.db.query(`UPDATE settlement_attempts SET last_rpc_error=$2, updated_at=now() WHERE id=$1`, [attemptId, JSON.stringify({ rpc_error: (e as Error).message, at: ctx.now().toISOString() })])
     return 'retry' // RPC fora do ar: continua desconhecido, nunca sucesso
   }
   if (!obs) {
-    // Sem recibo ainda: reenviar os MESMOS bytes é seguro, se nada proíbe.
-    const blocked = await withTx(ctx.db, async tx => { const x = await loadForUpdate(tx, attemptId); return x ? (await blockers(tx, x.orderId, x.s)).length > 0 : true })
-    if (!blocked && snap.status !== 'manual_review') {
+    // Sem recibo ainda. Decide com o estado ATUAL sob a trava, nunca com o snapshot anterior à RPC (R1):
+    // outro reconciliador pode ter confirmado enquanto esta consulta esperava.
+    const now = await withTx(ctx.db, async tx => {
+      const x = await loadForUpdate(tx, attemptId)
+      if (!x || !REBROADCASTABLE.includes(x.a.status)) return { status: x?.a.status as string | undefined, resend: false }
+      const blocked = (await blockers(tx, x.orderId, x.s)).length > 0
+      const paused = await treasuryPause(tx, x.a.chain_id, x.a.sender, { id: x.a.id, nonce: BigInt(x.a.nonce) })
+      return { status: x.a.status as string, resend: !blocked && !paused }
+    })
+    if (!now.status || !RECONCILABLE.includes(now.status)) return 'done' // já concluída por outro caminho
+    if (now.resend) {
+      // Reenviar os MESMOS bytes é seguro: mesmo hash e mesmo nonce (nunca assinatura nova).
       const out = await ctx.chain.broadcast(snap.raw_tx).catch(e => ({ kind: 'unknown', detail: (e as Error).message }))
-      await ctx.db.query(`UPDATE settlement_attempts SET broadcast_outcome=$2, updated_at=now() WHERE id=$1`, [attemptId, JSON.stringify({ rebroadcast: out, try: tryNo })])
+      await ctx.db.query(`UPDATE settlement_attempts SET last_reconcile=$2, updated_at=now() WHERE id=$1`, [attemptId, JSON.stringify({ rebroadcast: out, try: tryNo, at: ctx.now().toISOString() })])
     }
-    if (tryNo + 1 >= ctx.cfg.reconcileMaxTries && snap.status !== 'manual_review') {
+    if (tryNo + 1 >= ctx.cfg.reconcileMaxTries && now.status !== 'manual_review') {
       await withTx(ctx.db, async tx => {
-        const x = await loadForUpdate(tx, attemptId); if (!x || x.a.status === 'manual_review') return
+        const x = await loadForUpdate(tx, attemptId); if (!x || !REBROADCASTABLE.includes(x.a.status)) return // terminal não regride
         await setAttempt(tx, x.a, 'manual_review', 'reconcile', {}, `${tryNo + 1} consultas sem recibo`)
         await tx.query(`UPDATE settlements SET status='manual_review', updated_at=now() WHERE id=$1`, [x.s.id])
         await recordTransition(tx, 'settlement', x.s.id, x.s.status, 'manual_review', 'reconcile')
@@ -165,7 +229,7 @@ export async function reconcileAttempt(ctx: Ctx, attemptId: string, tryNo: numbe
   }
   await withTx(ctx.db, async tx => {
     const x = await loadForUpdate(tx, attemptId)
-    if (!x || !['broadcast_pending', 'broadcast_sent', 'unknown', 'manual_review'].includes(x.a.status)) return
+    if (!x || !RECONCILABLE.includes(x.a.status)) return // confirmed/attempt_reverted são terminais (R1)
     if (obs.status === 'success' && obs.identityOk) {
       await setAttempt(tx, x.a, 'confirmed', 'reconcile', { observed: obs })
       await tx.query(`UPDATE settlements SET status='confirmed', updated_at=now() WHERE id=$1`, [x.s.id])
@@ -179,8 +243,9 @@ export async function reconcileAttempt(ctx: Ctx, attemptId: string, tryNo: numbe
       const q = (await tx.query(`SELECT * FROM quotes WHERE order_id=$1`, [o.id])).rows[0]
       const gross = (BigInt(o.amount_minor) * BigInt(q.rate_num)) / BigInt(q.rate_den)
       const reserve = (gross * BigInt(m.reserve_bps)) / 10000n
-      await tx.query(`INSERT INTO ledger_entries (merchant_id, order_id, kind, amount_units, currency, simulated) VALUES ($1,$2,'settlement_net',$3,'pathUSD',false),($1,$2,'reserve_simulated',$4,'pathUSD',true)`,
-        [o.merchant_id, o.id, x.s.amount_units, reserve.toString()])
+      // op_key único: mesmo com defeito futuro de transição, o banco recusa o lançamento em dobro (R1).
+      await tx.query(`INSERT INTO ledger_entries (merchant_id, order_id, kind, amount_units, currency, simulated, op_key) VALUES ($1,$2,'settlement_net',$3,'pathUSD',false,$5),($1,$2,'reserve_simulated',$4,'pathUSD',true,$6)`,
+        [o.merchant_id, o.id, x.s.amount_units, reserve.toString(), `settlement:${x.s.id}:net`, `settlement:${x.s.id}:reserve`])
       await enqueue(tx, 'issue_receipt', x.s.id)
     } else if (obs.status === 'reverted') {
       await setAttempt(tx, x.a, 'attempt_reverted', 'reconcile', { observed: obs }, 'recibo revertido (prova final desta tentativa)')

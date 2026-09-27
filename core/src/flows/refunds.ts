@@ -140,8 +140,8 @@ async function confirmCase(tx: Tx, ctx: Ctx, order: any, s: any, caseId: string,
          FROM ledger_entries WHERE merchant_id=$1`, [order.merchant_id])).rows[0].v)
     const consumed = exposure < bal ? exposure : (bal > 0n ? bal : 0n)
     const debt = exposure - consumed
-    if (consumed > 0n) await tx.query(`INSERT INTO ledger_entries (merchant_id, order_id, kind, amount_units, currency, simulated) VALUES ($1,$2,'reserve_consumed_simulated',$3,'pathUSD',true)`, [order.merchant_id, order.id, consumed.toString()])
-    if (debt > 0n) await tx.query(`INSERT INTO ledger_entries (merchant_id, order_id, kind, amount_units, currency, simulated) VALUES ($1,$2,'debt_simulated',$3,'pathUSD',true)`, [order.merchant_id, order.id, debt.toString()])
+    if (consumed > 0n) await tx.query(`INSERT INTO ledger_entries (merchant_id, order_id, kind, amount_units, currency, simulated, op_key) VALUES ($1,$2,'reserve_consumed_simulated',$3,'pathUSD',true,$4)`, [order.merchant_id, order.id, consumed.toString(), `refund:${caseId}:reserve`])
+    if (debt > 0n) await tx.query(`INSERT INTO ledger_entries (merchant_id, order_id, kind, amount_units, currency, simulated, op_key) VALUES ($1,$2,'debt_simulated',$3,'pathUSD',true,$4)`, [order.merchant_id, order.id, debt.toString(), `refund:${caseId}:debt`])
     await recordTransition(tx, 'refund_accounting', caseId, null, 'recorded', source, JSON.stringify({ exposure: exposure.toString(), reserve_consumed_simulated: consumed.toString(), debt_simulated: debt.toString(), reserve_before: bal.toString() }))
   } else if (s && order.status !== 'late_paid') {
     // Devolvido antes de liquidar: a liquidação nunca será assinada (o caso bloqueia) e fica encerrada.

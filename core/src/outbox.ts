@@ -3,7 +3,7 @@ import { withTx } from './db.js'
 import { CrashError, type Ctx } from './context.js'
 import { processProviderEvent } from './flows/events.js'
 import { reconcileChargeCreation } from './flows/orders.js'
-import { advanceSettlement, signAttempt, broadcastAttempt, reconcileAttempt } from './flows/settle.js'
+import { advanceSettlement, signAttempt, broadcastAttempt, reconcileAttempt, TREASURY_WAIT_MS } from './flows/settle.js'
 import { issueSettlementReceipt } from './flows/receipts.js'
 import { executeRefund, reconcileRefund, issueRefundReceipt } from './flows/refunds.js'
 
@@ -13,9 +13,10 @@ type Handler = (ctx: Ctx, job: Job) => Promise<void | { retryInMs: number; paylo
 export const handlers: Record<string, Handler> = {
   process_provider_event: (ctx, j) => processProviderEvent(ctx, j.entity_id),
   reconcile_charge_creation: (ctx, j) => reconcileChargeCreation(ctx, j.entity_id),
-  settle: (ctx, j) => advanceSettlement(ctx, j.entity_id),
-  sign_attempt: (ctx, j) => signAttempt(ctx, j.entity_id),
-  broadcast_attempt: (ctx, j) => broadcastAttempt(ctx, j.entity_id),
+  // 'wait' = tesouraria pausada (R2): o job volta depois, com diagnóstico gravado no histórico.
+  settle: async (ctx, j) => (await advanceSettlement(ctx, j.entity_id)) === 'wait' ? { retryInMs: TREASURY_WAIT_MS } : undefined,
+  sign_attempt: async (ctx, j) => (await signAttempt(ctx, j.entity_id)) === 'wait' ? { retryInMs: TREASURY_WAIT_MS } : undefined,
+  broadcast_attempt: async (ctx, j) => (await broadcastAttempt(ctx, j.entity_id)) === 'wait' ? { retryInMs: TREASURY_WAIT_MS } : undefined,
   issue_receipt: (ctx, j) => issueSettlementReceipt(ctx, j.entity_id),
   request_refund: async (ctx, j) => { await executeRefund(ctx, j.entity_id) },
   issue_refund_receipt: (ctx, j) => issueRefundReceipt(ctx, j.entity_id),

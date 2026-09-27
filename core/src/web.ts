@@ -2,12 +2,10 @@
 // Tudo servido do próprio core, sem CDN: a página do recibo confere a cadeia direto na RPC da Tempo.
 import type { FastifyInstance } from 'fastify'
 import { readFileSync, existsSync } from 'node:fs'
-import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import QRCode from 'qrcode'
 import type { Ctx } from './context.js'
-
-const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
+import { checkoutSession } from './app.js'
 
 export const PUBLIC_DIR = fileURLToPath(new URL('../../web/public/', import.meta.url))
 const TYPES: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml' }
@@ -46,8 +44,11 @@ export function registerWeb(app: FastifyInstance, ctx: Ctx, opts: WebOptions) {
 
   // QR do Pix para a tela do pagador (mesmo token da sessão de checkout).
   app.get('/api/v1/checkout/:token/qr.svg', async (req, reply) => {
-    const t = (await ctx.db.query(`SELECT c.qr_payload FROM checkout_sessions s JOIN pix_charges c ON c.order_id=s.order_id WHERE s.token_hash=$1`, [sha256((req.params as any).token)])).rows[0]
-    if (!t?.qr_payload) return reply.code(404).send({ error: { code: 'not_found', message: 'QR indisponível' } })
+    const s = await checkoutSession(ctx, (req.params as any).token)
+    if (!s) return reply.code(404).send({ error: { code: 'not_found', message: 'QR indisponível', details: {} } })
+    if (s.expired) return reply.code(410).send({ error: { code: 'checkout_expired', message: 'link de pagamento expirado', details: {} } })
+    const t = (await ctx.db.query(`SELECT qr_payload FROM pix_charges WHERE order_id=$1`, [s.orderId])).rows[0]
+    if (!t?.qr_payload) return reply.code(404).send({ error: { code: 'not_found', message: 'QR indisponível', details: {} } })
     const svg = await QRCode.toString(t.qr_payload, { type: 'svg', margin: 1, errorCorrectionLevel: 'M' })
     return reply.type('image/svg+xml').header('cache-control', 'no-store').send(svg)
   })
