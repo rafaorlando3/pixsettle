@@ -4,6 +4,7 @@ import { CrashError, type Ctx } from './context.js'
 import { processProviderEvent } from './flows/events.js'
 import { reconcileChargeCreation } from './flows/orders.js'
 import { advanceSettlement, signAttempt, broadcastAttempt, reconcileAttempt } from './flows/settle.js'
+import { issueSettlementReceipt } from './flows/receipts.js'
 
 export type Job = { id: string; topic: string; entity_id: string; payload: any; attempts: number }
 type Handler = (ctx: Ctx, job: Job) => Promise<void | { retryInMs: number; payload?: any }>
@@ -14,6 +15,7 @@ export const handlers: Record<string, Handler> = {
   settle: (ctx, j) => advanceSettlement(ctx, j.entity_id),
   sign_attempt: (ctx, j) => signAttempt(ctx, j.entity_id),
   broadcast_attempt: (ctx, j) => broadcastAttempt(ctx, j.entity_id),
+  issue_receipt: (ctx, j) => issueSettlementReceipt(ctx, j.entity_id),
   reconcile_attempt: async (ctx, j) => {
     const tryNo = Number(j.payload?.try ?? 0)
     const r = await reconcileAttempt(ctx, j.entity_id, tryNo)

@@ -14,9 +14,11 @@
   "type": "module",
   "private": "true",
   "dependencies": {
+    "canonicalize": "^2.1.0",
     "fastify": "^5.12.5",
     "pg": "^8.23.0",
-    "ulid": "^2.4.0"
+    "ulid": "^2.4.0",
+    "viem": "^2.56.9"
   },
   "devDependencies": {
     "@types/node": "^26.6.3",
