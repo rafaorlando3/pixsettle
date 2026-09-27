@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PixSettle demo console</title>
+<link rel="stylesheet" href="/assets/app.css">
+<script type="module" src="/assets/demo.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="logo">P</div>
+  <div><div class="brand">PixSettle</div><div class="tag">Pix in, stablecoin out, with a receipt anyone can verify</div></div>
+  <div class="spacer"></div>
+  <span class="badge sim">Pix simulated</span><span class="badge warn">Tempo testnet</span>
+</header>
+<main class="wide-main">
+  <div class="grid3">
+    <div class="stack">
+      <section class="card">
+        <h2>1. Merchant creates an order</h2>
+        <label for="amt">Amount (BRL)</label>
+        <div class="amount-in"><span>R$</span><input id="amt" inputmode="decimal" value="100,90" autocomplete="off"></div>
+        <label for="desc" class="mt10">Description</label>
+        <input id="desc" value="Açaí bowl x2" maxlength="80">
+        <button id="create" class="btn-block mt14">Create Pix charge</button>
+        <p class="small muted mb0">Calls the real merchant API with an Idempotency-Key.</p>
+      </section>
+      <section class="card">
+        <h2>3. Pix provider (simulated)</h2>
+        <div class="stack">
+          <button id="pay" class="sim btn-block" disabled>Payer pays, webhook delivered 3 times</button>
+          <button id="under" class="ghost btn-block" disabled>Payer sends R$ 0,01 less</button>
+        </div>
+        <p class="small muted mb0">Stands in for the payer's bank and the provider webhook. Duplicates are sent on purpose.</p>
+      </section>
+      <section class="card">
+        <h2>Recent orders</h2>
+        <ul class="recent" id="recent"><li class="muted">None yet</li></ul>
+      </section>
+    </div>
+    <section>
+      <h2 class="col-title">2. Payer checkout</h2>
+      <div class="phone" id="phone"><div class="empty">Create an order to open the payer checkout here.</div></div>
+    </section>
+    <div class="stack wide">
+      <section class="card">
+        <div class="row between mb12">
+          <h2 class="m0">4. Settlement</h2><span id="status" class="badge muted">Idle</span>
+        </div>
+        <div class="kpis">
+          <div class="kpi"><div class="v" id="k-brl">-</div><div class="l">Pix received (BRL)</div></div>
+          <div class="kpi"><div class="v" id="k-net">-</div><div class="l" id="l-net">Merchant will get (pathUSD)</div></div>
+          <div class="kpi"><div class="v" id="k-res">-</div><div class="l">Reserve (simulated)</div></div>
+          <div class="kpi"><div class="v" id="k-time">-</div><div class="l">Pix to on-chain</div></div>
+        </div>
+        <dl class="kv" id="facts"></dl>
+        <div class="row mt12" id="links"></div>
+      </section>
+      <section class="card">
+        <h2>Timeline</h2>
+        <ol class="timeline" id="timeline"><li class="muted small placeholder">Events will appear here in real time.</li></ol>
+      </section>
+    </div>
+  </div>
+</main>
+<footer class="foot">Every state change is recorded append-only. Pix is simulated in this demo; the stablecoin transfer is real on Tempo testnet.</footer>
+</body>
+</html>

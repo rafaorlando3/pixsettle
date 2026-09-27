@@ -17,7 +17,7 @@ export class SimulatedPixProvider implements PixProvider {
     const id = `pay_sim_${++this.seq}`
     this.charges.set(id, { id, orderId: input.orderId, valueMinor: input.amountMinor, status: 'PENDING', paidAt: null, paidMinor: 0n, refundedMinor: 0n })
     if (this.failNext === 'create_timeout_after_commit') { this.failNext = null; throw new ProviderError('timeout', null, null, 'timeout simulado depois de criar') }
-    return { paymentId: id, qrPayload: `SIMULADO|${id}|${input.amountMinor}`, qrExpiresAt: new Date(Date.now() + 3600_000) }
+    return { paymentId: id, qrPayload: `SIMULATED-PIX|${id}|${input.amountMinor}`, qrExpiresAt: new Date(Date.now() + 3600_000) }
   }
 
   private view(c: Charge): ProviderPayment {

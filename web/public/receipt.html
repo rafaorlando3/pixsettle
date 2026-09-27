@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PixSettle receipt</title>
+<link rel="stylesheet" href="/assets/app.css">
+<script type="module" src="/assets/receipt.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="logo">P</div>
+  <div><div class="brand">PixSettle receipt</div><div class="tag">Verified in your browser, not by our server</div></div>
+  <div class="spacer"></div>
+  <span class="badge sim">Pix simulated</span><span class="badge warn">Tempo testnet</span>
+</header>
+<main class="receipt-wrap">
+  <div id="hero" class="hero run"><div class="big-ico"><span class="spin"></span></div><div><h1>Verifying</h1><p>Checking the signature and reading the transaction from Tempo.</p></div></div>
+  <div class="card"><h2>Verification</h2><div class="steps" id="steps"></div></div>
+  <div class="card mt18"><h2>Details</h2><dl class="kv" id="details"></dl></div>
+  <div class="card mt18">
+    <h2>Check it yourself</h2>
+    <p class="small">Your browser recomputed the SHA-256 digest of the canonical JSON (RFC 8785), recovered the EIP-191 signer, and fetched the transaction receipt straight from the public Tempo RPC. The on-chain step does not trust the PixSettle server.</p>
+    <p class="small">Trusted issuer: <span class="mono" id="issuer"></span>. To pin a different issuer, add <span class="mono">?issuer=0x...</span> to this URL.</p>
+    <div class="row"><button id="dl" class="ghost">Download receipt JSON</button><button id="again" class="ghost">Verify again</button></div>
+  </div>
+</main>
+<footer class="foot">PixSettle: Pix in, stablecoin out, with a receipt anyone can verify.</footer>
+</body>
+</html>

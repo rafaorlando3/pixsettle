@@ -10,10 +10,19 @@ const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 const err = (reply: FastifyReply, status: number, code: string, message: string, details: Record<string, unknown> = {}) =>
   reply.code(status).send({ error: { code, message, details } })
 
-export type AppOptions = { asaasWebhookToken: string; diagnosticsToken: string }
+export type AppOptions = { asaasWebhookToken: string; diagnosticsToken: string; tempoRpc?: string; trustProxy?: boolean }
 
 export function buildApp(ctx: Ctx, opts: AppOptions) {
-  const app = Fastify({ logger: false })
+  const app = Fastify({ logger: false, trustProxy: opts.trustProxy ?? false, bodyLimit: 64 * 1024 })
+
+  // CSP estrita: só o próprio servidor; a RPC da Tempo é a única origem externa (verificador do recibo).
+  const rpcOrigin = new URL(opts.tempoRpc ?? 'https://rpc.moderato.tempo.xyz').origin
+  app.addHook('onSend', async (_req, reply, payload) => {
+    reply.header('content-security-policy', `default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' ${rpcOrigin}; frame-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`)
+    reply.header('x-content-type-options', 'nosniff')
+    reply.header('referrer-policy', 'no-referrer') // o token do checkout vai na URL: não vazar por Referer
+    return payload
+  })
 
   // Lojista derivado da autenticação, nunca do corpo.
   const merchantOf = async (req: FastifyRequest): Promise<string | null> => {
@@ -87,8 +96,9 @@ export function buildApp(ctx: Ctx, opts: AppOptions) {
   app.get('/api/v1/checkout/:token', async (req, reply) => {
     const t = (await ctx.db.query(`SELECT order_id, expires_at FROM checkout_sessions WHERE token_hash=$1`, [sha256((req.params as any).token)])).rows[0]
     if (!t) return err(reply, 404, 'not_found', 'sessão de checkout inválida')
-    const o = (await ctx.db.query(`SELECT o.status, o.amount_minor, o.expires_at, c.qr_payload FROM orders o JOIN pix_charges c ON c.order_id=o.id WHERE o.id=$1`, [t.order_id])).rows[0]
-    const payer = ['settling', 'settled'].includes(o.status) ? 'paid' : o.status === 'awaiting_payment' ? 'awaiting_payment' : o.status
+    const o = (await ctx.db.query(`SELECT o.status, o.hold_reason, o.amount_minor, o.expires_at, c.qr_payload FROM orders o JOIN pix_charges c ON c.order_id=o.id WHERE o.id=$1`, [t.order_id])).rows[0]
+    // O pagador vê só o essencial: nunca o motivo interno da retenção.
+    const payer = o.hold_reason ? 'under_review' : ['paid', 'settling', 'settled'].includes(o.status) ? 'paid' : o.status
     return { amount: { amount: String(o.amount_minor), currency: 'BRL', scale: 2 }, status: payer, pix_payload: o.qr_payload, expires_at: o.expires_at }
   })
 

@@ -1,9 +1,8 @@
 // Recibo verificável do PixSettle (contrato v0.3, seção 7).
 // Mesmo algoritmo do lado PHP (core/app/Receipts). Qualquer mudança aqui exige
 // regenerar contract/vectors/receipt-v1.json e rodar os testes dos dois lados.
-import { createHash } from 'node:crypto'
 import canonicalizeLib from 'canonicalize'
-import { recoverMessageAddress, getAddress, isAddress, type Hex } from 'viem'
+import { recoverMessageAddress, getAddress, isAddress, sha256, stringToBytes, type Hex } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 
 const canonicalize = canonicalizeLib as unknown as (v: unknown) => string | undefined
@@ -65,7 +64,7 @@ export function canonicalJson(value: unknown): string {
 }
 
 export function digestHex(payload: unknown): string {
-  return createHash('sha256').update(Buffer.from(canonicalJson(payload), 'utf8')).digest('hex')
+  return sha256(stringToBytes(canonicalJson(payload))).slice(2) // isomórfico: Node e navegador
 }
 
 /** Mensagem assinada: LF reais, sem quebra final. */

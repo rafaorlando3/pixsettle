@@ -8,7 +8,10 @@ export type Tx = pg.PoolClient
 
 export function createPool(connectionString = process.env.DATABASE_URL): Db {
   if (!connectionString) throw new Error('DATABASE_URL ausente')
-  return new pg.Pool({ connectionString, max: 10 })
+  const pool = new pg.Pool({ connectionString, max: 10 })
+  // Conexão ociosa derrubada pelo servidor (reinício, failover): registra o motivo e segue; o pool reabre.
+  pool.on('error', err => console.error(`pg: conexão ociosa caiu: ${(err as any).code ?? ''} ${err.message}`))
+  return pool
 }
 
 export async function withTx<T>(db: Db, fn: (tx: Tx) => Promise<T>): Promise<T> {
