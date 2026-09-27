@@ -108,4 +108,82 @@ describe('correções da revisão', () => {
     expect(q.statusCode).toBe(410); expect(q.body).not.toContain('<svg')
     await app.close()
   })
+
+  it('R4: queda logo depois de marcar submitting não reenvia; sem prova no provedor o caso fica aberto e bloqueando', async () => {
+    env = await setup()
+    const orderId = await paid('r4-crash')
+    await settleAll(env.ctx, env.chain)
+    const pid = (await env.db.query(`SELECT provider_payment_id FROM pix_charges WHERE order_id=$1`, [orderId])).rows[0].provider_payment_id
+    const { requestRefund, executeRefund } = await import('../src/flows/refunds.js')
+    const r = await requestRefund(env.ctx, env.merchantId, orderId, { type: 'merchant_refund', amountMinor: 1000n, source: 'test' })
+    if (!r.ok) throw new Error(r.code)
+    env.ctx.crashAt = p => { if (p === 'refund_after_submitting') throw new Error('queda simulada') }
+    await expect(executeRefund(env.ctx, r.refundCaseId)).rejects.toThrow(/queda/)
+    env.ctx.crashAt = undefined
+    await executeRefund(env.ctx, r.refundCaseId) // retomada
+    await settleAll(env.ctx, env.chain)
+    expect(env.provider.charges.get(pid)!.refundedMinor).toBe(0n) // nunca chegou ao provedor e nunca foi reenviado
+    expect((await env.db.query(`SELECT state FROM refund_cases WHERE id=$1`, [r.refundCaseId])).rows[0].state).toBe('unknown')
+    const t = (await env.db.query(`SELECT reason FROM state_transitions WHERE entity='refund_case' AND entity_id=$1 ORDER BY id`, [r.refundCaseId])).rows.map(x => x.reason)
+    expect(t.some(x => /nunca repetir/.test(x ?? ''))).toBe(true)
+    expect(t.some(x => /revisão manual/.test(x ?? ''))).toBe(true)
+  })
+
+  it('R4: queda depois do provedor aceitar: retomada só observa e confirma, um estorno só', async () => {
+    env = await setup()
+    const orderId = await paid('r4-accept')
+    await settleAll(env.ctx, env.chain)
+    const pid = (await env.db.query(`SELECT provider_payment_id FROM pix_charges WHERE order_id=$1`, [orderId])).rows[0].provider_payment_id
+    const { requestRefund, executeRefund } = await import('../src/flows/refunds.js')
+    const r = await requestRefund(env.ctx, env.merchantId, orderId, { type: 'merchant_refund', amountMinor: 1000n, source: 'test' })
+    if (!r.ok) throw new Error(r.code)
+    env.ctx.crashAt = p => { if (p === 'refund_after_provider_accept') throw new Error('queda simulada') }
+    await expect(executeRefund(env.ctx, r.refundCaseId)).rejects.toThrow(/queda/)
+    env.ctx.crashAt = undefined
+    await executeRefund(env.ctx, r.refundCaseId)
+    await settleAll(env.ctx, env.chain)
+    expect(env.provider.charges.get(pid)!.refundedMinor).toBe(1000n)
+    expect((await env.db.query(`SELECT state FROM refund_cases WHERE id=$1`, [r.refundCaseId])).rows[0].state).toBe('confirmed')
+  })
+
+  it('R6: estorno externo parcial antes de liquidar retém para revisão, sem encerrar liquidação nem marcar devolvido', async () => {
+    env = await setup()
+    const { signReceipt } = await import('../../settlement/src/receipt.js')
+    const KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80' as const // chave pública de TESTE (Hardhat #0)
+    env.ctx.cfg.issuer = { id: 'pixsettle-test', address: '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266' }
+    env.chain.signReceipt = (payload: any) => signReceipt(payload, KEY)
+    const orderId = await paid('r6-partial')
+    const pid = (await env.db.query(`SELECT provider_payment_id FROM pix_charges WHERE order_id=$1`, [orderId])).rows[0].provider_payment_id
+    env.provider.providerRefund(pid, 1000n)
+    await deliver(env.ctx, asaasEvent('evt_r6p', 'PAYMENT_PARTIALLY_REFUNDED', pid, 'PARTIALLY_REFUNDED'))
+    await drain(env.ctx, 5, ['process_provider_event'])
+    await settleAll(env.ctx, env.chain)
+    const c = await counts(env.db, orderId)
+    expect(c.order).toEqual({ status: 'settling', hold_reason: 'partial_refund_before_settlement' })
+    expect(c.settlements[0].status).toBe('intent_recorded')
+    expect(c.attempts).toHaveLength(0)
+    expect(env.chain.mined).toHaveLength(0)
+    const n = (await env.db.query(`SELECT envelope FROM receipts WHERE order_id=$1 AND receipt_type='refund_notice'`, [orderId])).rows
+    expect(n).toHaveLength(1)
+    expect(n[0].envelope.payload.settlement_ref).toBeUndefined()
+  })
+
+  it('R6: depois que a liquidação conclui, a varredura confirma o estorno externo pendente e contabiliza uma vez', async () => {
+    env = await setup()
+    const orderId = await paid('r6-later')
+    await drain(env.ctx, 20, ['settle', 'sign_attempt', 'broadcast_attempt'])
+    const pid = (await env.db.query(`SELECT provider_payment_id FROM pix_charges WHERE order_id=$1`, [orderId])).rows[0].provider_payment_id
+    env.provider.providerRefund(pid, 1000n)
+    await deliver(env.ctx, asaasEvent('evt_r6l', 'PAYMENT_PARTIALLY_REFUNDED', pid, 'PARTIALLY_REFUNDED'))
+    await drain(env.ctx, 5, ['process_provider_event'])
+    expect((await env.db.query(`SELECT state FROM refund_cases WHERE order_id=$1`, [orderId])).rows.map(r => r.state)).toEqual(['unknown'])
+    await settleAll(env.ctx, env.chain) // a transferência já transmitida confirma
+    expect((await counts(env.db, orderId)).settlements[0].status).toBe('confirmed')
+    const { sweep } = await import('../src/flows/sweep.js')
+    await sweep(env.ctx); await settleAll(env.ctx, env.chain)
+    await sweep(env.ctx); await settleAll(env.ctx, env.chain)
+    expect((await env.db.query(`SELECT state FROM refund_cases WHERE order_id=$1`, [orderId])).rows.map(r => r.state)).toEqual(['confirmed'])
+    const l = (await env.db.query(`SELECT kind, count(*)::int AS n FROM ledger_entries WHERE order_id=$1 GROUP BY kind ORDER BY kind`, [orderId])).rows
+    expect(l).toEqual([{ kind: 'reserve_consumed_simulated', n: 1 }, { kind: 'reserve_simulated', n: 1 }, { kind: 'settlement_net', n: 1 }])
+  })
 })

@@ -31,7 +31,7 @@ export async function sweep(ctx: Ctx, cfg: SweepConfig = defaultSweep): Promise<
         WHERE c.creation_state='created' AND c.provider_payment_id IS NOT NULL AND (
               c.observed_state IN ('created','overdue','confirmed')
            OR (c.observed_state IN ('received','partially_refunded') AND c.updated_at > $1)
-           OR EXISTS (SELECT 1 FROM refund_cases rc WHERE rc.order_id=o.id AND rc.state IN ('requested','unknown')))
+           OR EXISTS (SELECT 1 FROM refund_cases rc WHERE rc.order_id=o.id AND rc.state IN ('requested','submitting','unknown')))
           AND o.status <> 'expired' AND o.hold_reason IS DISTINCT FROM 'provider_charge_missing'
         ORDER BY c.last_observed_at NULLS FIRST LIMIT $2`,
       [new Date(ctx.now().getTime() - cfg.recentReceivedMs), cfg.batch])).rows

@@ -1,6 +1,6 @@
 // Devoluções (contrato 3.3, 3.6 e 6): pedido, execução no provedor, confirmação observada,
 // contabilidade da reserva SIMULADA e recibo refund_notice ligado ao anterior.
-import { withTx, recordTransition, enqueue, type Tx } from '../db.js'
+import { withTx, txLock, recordTransition, enqueue, type Tx } from '../db.js'
 import { newId } from '../ids.js'
 import { ProviderError, type ProviderPayment } from '../providers/types.js'
 import type { Ctx } from '../context.js'
@@ -9,8 +9,8 @@ import { applyObservation } from './events.js'
 import { verifyEnvelope, type ReceiptEnvelope } from '../../../settlement/src/receipt.js'
 
 const ACTIVE_ATTEMPT = ['nonce_reserved', 'signed', 'suspended', 'broadcast_pending', 'broadcast_sent', 'unknown', 'manual_review']
-const OPEN = ['requested', 'unknown']
-const COUNTED = ['requested', 'unknown', 'confirmed', 'partial']
+const OPEN = ['requested', 'submitting', 'unknown']
+const COUNTED = ['requested', 'submitting', 'unknown', 'confirmed', 'partial']
 
 export type RefundRequest = { type: 'merchant_refund' | 'med_simulated'; amountMinor: bigint; simulationReason?: string; source: string }
 export type RefundResult = { ok: true; refundCaseId: string } | { ok: false; code: string; message: string; httpStatus: number }
@@ -52,34 +52,56 @@ export async function requestRefund(ctx: Ctx, merchantId: string, orderId: strin
   })
 }
 
-/** Job request_refund: pede ao provedor e observa o resultado. Nunca marca confirmado sem observar. */
-export async function executeRefund(ctx: Ctx, refundCaseId: string): Promise<void | { retryInMs: number }> {
-  const c = (await ctx.db.query(`SELECT rc.*, pc.provider_payment_id FROM refund_cases rc JOIN pix_charges pc ON pc.order_id=rc.order_id WHERE rc.id=$1`, [refundCaseId])).rows[0]
-  if (!c || c.state !== 'requested') return
-  const setState = (to: string, reason: string, err?: unknown) => withTx(ctx.db, async tx => {
+/**
+ * Job request_refund (revisão R4): execução e observação separadas de forma durável.
+ * 1. Sob a trava do caso, `requested -> submitting` é gravado ANTES de chamar o provedor.
+ * 2. Só quem fez essa transição chama `refund`, uma única vez.
+ * 3. Qualquer retomada que encontre `submitting` (queda, erro na consulta, job repetido) NÃO chama o provedor de novo:
+ *    vira `unknown` e a conciliação observa. Sem prova, o caso fica aberto e bloqueando, nunca é reenviado.
+ */
+export async function executeRefund(ctx: Ctx, refundCaseId: string): Promise<void> {
+  const claim = await withTx(ctx.db, async tx => {
+    const c = (await tx.query(`SELECT rc.*, pc.provider_payment_id FROM refund_cases rc JOIN pix_charges pc ON pc.order_id=rc.order_id WHERE rc.id=$1 FOR UPDATE OF rc`, [refundCaseId])).rows[0]
+    if (!c) return null
+    if (c.state === 'submitting') {
+      await tx.query(`UPDATE refund_cases SET state='unknown', updated_at=now() WHERE id=$1`, [refundCaseId])
+      await recordTransition(tx, 'refund_case', refundCaseId, 'submitting', 'unknown', 'provider_refund', 'retomada depois de possível envio: só observar, nunca repetir o estorno')
+      await enqueue(tx, 'reconcile_refund', refundCaseId, { try: 0 })
+      return null
+    }
+    if (c.state !== 'requested') return null
+    await tx.query(`UPDATE refund_cases SET state='submitting', updated_at=now() WHERE id=$1`, [refundCaseId])
+    await recordTransition(tx, 'refund_case', refundCaseId, 'requested', 'submitting', 'provider_refund')
+    return c
+  })
+  if (!claim) return
+  ctx.crashAt?.('refund_after_submitting')
+  const settle = (to: 'unknown' | 'failed', reason: string, err?: unknown) => withTx(ctx.db, async tx => {
     const cur = (await tx.query(`SELECT state FROM refund_cases WHERE id=$1 FOR UPDATE`, [refundCaseId])).rows[0]
-    if (cur.state !== 'requested') return
+    if (cur.state !== 'submitting') return // a observação já decidiu
     await tx.query(`UPDATE refund_cases SET state=$2, last_error=$3, updated_at=now() WHERE id=$1`, [refundCaseId, to, err ? JSON.stringify(err) : null])
-    await recordTransition(tx, 'refund_case', refundCaseId, 'requested', to, 'provider_refund', reason)
+    await recordTransition(tx, 'refund_case', refundCaseId, 'submitting', to, 'provider_refund', reason)
     if (to === 'unknown') await enqueue(tx, 'reconcile_refund', refundCaseId, { try: 0 })
   })
   try {
-    const out = await ctx.provider.refund(c.provider_payment_id, BigInt(c.amount_minor), `PixSettle ${c.refund_type} ${refundCaseId}`)
+    const out = await ctx.provider.refund(claim.provider_payment_id, BigInt(claim.amount_minor), `PixSettle ${claim.refund_type} ${refundCaseId}`)
     await ctx.db.query(`UPDATE refund_cases SET provider_ref=$2, updated_at=now() WHERE id=$1`, [refundCaseId, out.refundRef])
   } catch (e) {
-    if (e instanceof ProviderError && e.outcomeUnknown) return setState('unknown', `resposta perdida: ${e.message}`, { message: e.message })
+    if (e instanceof ProviderError && e.outcomeUnknown) return settle('unknown', `resposta perdida: ${e.message}`, { message: e.message })
     const pe = e as ProviderError
-    return setState('failed', `provedor recusou: ${pe.message}`, { message: pe.message, status: pe.status ?? null, body: pe.body ?? null })
+    return settle('failed', `provedor recusou: ${pe.message}`, { message: pe.message, status: pe.status ?? null, body: pe.body ?? null })
   }
-  await observeRefund(ctx, c.provider_payment_id, `refund:${refundCaseId}`)
-  const now = (await ctx.db.query(`SELECT state FROM refund_cases WHERE id=$1`, [refundCaseId])).rows[0].state
-  if (now === 'requested') await setState('unknown', 'provedor aceitou; confirmação ainda não observada')
+  ctx.crashAt?.('refund_after_provider_accept')
+  try { await observeRefund(ctx, claim.provider_payment_id, `refund:${refundCaseId}`) } catch (e) {
+    return settle('unknown', `provedor aceitou; consulta falhou: ${(e as Error).message}`, { message: (e as Error).message })
+  }
+  await settle('unknown', 'provedor aceitou; confirmação ainda não observada')
 }
 
 /** Job reconcile_refund: consulta o provedor até ver o estorno (ou desistir para revisão). */
 export async function reconcileRefund(ctx: Ctx, refundCaseId: string, tryNo: number): Promise<'done' | 'retry'> {
   const c = (await ctx.db.query(`SELECT rc.state, pc.provider_payment_id FROM refund_cases rc JOIN pix_charges pc ON pc.order_id=rc.order_id WHERE rc.id=$1`, [refundCaseId])).rows[0]
-  if (!c || !OPEN.includes(c.state)) return 'done'
+  if (!c || !['submitting', 'unknown'].includes(c.state)) return 'done' // `requested` ainda não foi ao provedor: é do request_refund
   await observeRefund(ctx, c.provider_payment_id, `reconcile_refund:${refundCaseId}`)
   const st = (await ctx.db.query(`SELECT state FROM refund_cases WHERE id=$1`, [refundCaseId])).rows[0].state
   if (!OPEN.includes(st)) return 'done'
@@ -97,7 +119,9 @@ async function observeRefund(ctx: Ctx, paymentId: string, source: string) {
 
 /**
  * Chamado por applyObservation quando o provedor mostra estorno (total ou parcial).
- * Confirma nossos casos abertos na ordem em que foram pedidos; o excedente vira provider_refund.
+ * Com a liquidação ainda sem resultado conclusivo (tentativa ativa ou manual_review), NADA é confirmado,
+ * contabilizado ou encerrado (revisão R6): o fato fica registrado, os casos abertos cobrem o valor observado
+ * e o pedido fica retido. Sem exposição pendente, confirma nossos casos na ordem; o excedente vira provider_refund.
  */
 export async function onRefundObserved(tx: Tx, ctx: Ctx, order: any, p: ProviderPayment, source: string, hold: (reason: string, detail: string) => Promise<void>) {
   const total = p.status === 'REFUNDED' && p.refundedMinor === 0n ? BigInt(order.amount_minor) : p.refundedMinor
@@ -106,6 +130,24 @@ export async function onRefundObserved(tx: Tx, ctx: Ctx, order: any, p: Provider
   if (remaining <= 0n) return
   const s = (await tx.query(`SELECT s.*, EXISTS (SELECT 1 FROM settlement_attempts a WHERE a.settlement_id=s.id AND a.status = ANY($2)) AS active FROM settlements s WHERE s.order_id=$1 FOR UPDATE`, [order.id, ACTIVE_ATTEMPT])).rows[0]
   const pending = (await tx.query(`SELECT * FROM refund_cases WHERE order_id=$1 AND state = ANY($2) ORDER BY created_at, id FOR UPDATE`, [order.id, OPEN])).rows
+
+  if (s && (s.active || s.status === 'manual_review')) {
+    // Exposição desconhecida: registra o fato, garante casos abertos cobrindo o valor e retém. Sem contabilizar.
+    const covered = pending.reduce((a: bigint, c: any) => a + BigInt(c.amount_minor), 0n)
+    if (remaining > covered) {
+      const id = newId('rfc')
+      await tx.query(`INSERT INTO refund_cases (id, order_id, refund_type, state, amount_minor, observed_at) VALUES ($1,$2,'provider_refund','unknown',$3,$4)`, [id, order.id, (remaining - covered).toString(), ctx.now()])
+      await recordTransition(tx, 'refund_case', id, null, 'unknown', source, 'estorno observado no provedor sem pedido nosso, com liquidação em andamento')
+    }
+    const fact = `provedor mostra ${total} devolvido; liquidação ${s.id} sem resultado conclusivo`
+    const last = (await tx.query(`SELECT reason FROM state_transitions WHERE entity='refund_observed' AND entity_id=$1 ORDER BY id DESC LIMIT 1`, [order.id])).rows[0]
+    if (last?.reason !== fact) await recordTransition(tx, 'refund_observed', order.id, null, 'pending_exposure', source, fact)
+    if (s.hold_reason !== 'exposure_reconciliation') await tx.query(`UPDATE settlements SET hold_reason='exposure_reconciliation', updated_at=now() WHERE id=$1`, [s.id])
+    const o = (await tx.query(`SELECT hold_reason FROM orders WHERE id=$1`, [order.id])).rows[0]
+    if (o.hold_reason !== 'exposure_reconciliation') await hold('exposure_reconciliation', `liquidação ${s.id} em andamento com estorno externo`)
+    return
+  }
+
   for (const c of pending) {
     if (BigInt(c.amount_minor) > remaining) break
     remaining -= BigInt(c.amount_minor)
@@ -114,14 +156,6 @@ export async function onRefundObserved(tx: Tx, ctx: Ctx, order: any, p: Provider
   if (remaining > 0n) {
     // Estorno que não pedimos (ex.: iniciado no provedor): nunca descartado.
     const id = newId('rfc')
-    if (s && (s.active || s.status === 'manual_review')) {
-      // Exposição desconhecida: registra, retém e não contabiliza até a liquidação ter resultado conclusivo.
-      await tx.query(`INSERT INTO refund_cases (id, order_id, refund_type, state, amount_minor, observed_at) VALUES ($1,$2,'provider_refund','unknown',$3,$4)`, [id, order.id, remaining.toString(), ctx.now()])
-      await recordTransition(tx, 'refund_case', id, null, 'unknown', source, 'estorno observado no provedor sem pedido nosso, com liquidação em andamento')
-      await tx.query(`UPDATE settlements SET hold_reason='exposure_reconciliation', updated_at=now() WHERE id=$1`, [s.id])
-      await hold('exposure_reconciliation', `liquidação ${s.id} em andamento com estorno externo`)
-      return
-    }
     await tx.query(`INSERT INTO refund_cases (id, order_id, refund_type, state, amount_minor) VALUES ($1,$2,'provider_refund','requested',$3)`, [id, order.id, remaining.toString()])
     await confirmCase(tx, ctx, order, s, id, null, source, 'estorno observado no provedor sem pedido nosso')
   }
@@ -133,6 +167,9 @@ async function confirmCase(tx: Tx, ctx: Ctx, order: any, s: any, caseId: string,
   const c = (await tx.query(`SELECT * FROM refund_cases WHERE id=$1`, [caseId])).rows[0]
   if (s?.status === 'confirmed') {
     // Reserva contábil SIMULADA do lojista cobre o que puder; o resto vira dívida simulada (contrato 6).
+    // Trava do lojista (revisão R5): leitura e consumo do saldo comum serializados entre pedidos.
+    // Ordem: pedido -> liquidação -> caso -> reserva do lojista, igual em todos os caminhos que debitam.
+    await txLock(tx, `merchant_reserve:${order.merchant_id}`)
     const q = (await tx.query(`SELECT rate_num, rate_den FROM quotes WHERE order_id=$1`, [order.id])).rows[0]
     const exposure = (BigInt(c.amount_minor) * BigInt(q.rate_num)) / BigInt(q.rate_den)
     const bal = BigInt((await tx.query(
@@ -144,7 +181,19 @@ async function confirmCase(tx: Tx, ctx: Ctx, order: any, s: any, caseId: string,
     if (debt > 0n) await tx.query(`INSERT INTO ledger_entries (merchant_id, order_id, kind, amount_units, currency, simulated, op_key) VALUES ($1,$2,'debt_simulated',$3,'pathUSD',true,$4)`, [order.merchant_id, order.id, debt.toString(), `refund:${caseId}:debt`])
     await recordTransition(tx, 'refund_accounting', caseId, null, 'recorded', source, JSON.stringify({ exposure: exposure.toString(), reserve_consumed_simulated: consumed.toString(), debt_simulated: debt.toString(), reserve_before: bal.toString() }))
   } else if (s && order.status !== 'late_paid') {
-    // Devolvido antes de liquidar: a liquidação nunca será assinada (o caso bloqueia) e fica encerrada.
+    // Antes de liquidar (sem tentativa ativa, conferido pelo chamador): só a devolução TOTAL encerra a liquidação.
+    const refunded = BigInt((await tx.query(`SELECT coalesce(sum(amount_minor),0)::text AS v FROM refund_cases WHERE order_id=$1 AND state IN ('confirmed','partial')`, [order.id])).rows[0].v)
+    if (refunded < BigInt(order.amount_minor)) {
+      // Parcial antes de liquidar: a intenção on-chain é imutável; o caso confirmado bloqueia a assinatura e o pedido vai para revisão.
+      const o = (await tx.query(`SELECT hold_reason FROM orders WHERE id=$1`, [order.id])).rows[0]
+      if (!o.hold_reason) {
+        await tx.query(`UPDATE orders SET hold_reason='partial_refund_before_settlement', updated_at=now() WHERE id=$1`, [order.id])
+        await recordTransition(tx, 'order_hold', order.id, null, 'partial_refund_before_settlement', source, `${refunded} de ${order.amount_minor} devolvidos antes da liquidação`)
+      }
+      await tx.query(`UPDATE refund_cases SET observed_at=coalesce(observed_at, now()) WHERE id=$1`, [caseId])
+      await enqueue(tx, 'issue_refund_receipt', caseId)
+      return
+    }
     if (!['failed', 'confirmed'].includes(s.status)) {
       await tx.query(`UPDATE settlements SET status='failed', hold_reason='refunded_before_settlement', updated_at=now() WHERE id=$1`, [s.id])
       await recordTransition(tx, 'settlement', s.id, s.status, 'failed', source, 'devolvido antes de liquidar')

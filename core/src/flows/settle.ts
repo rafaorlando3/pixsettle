@@ -5,7 +5,7 @@ import type { Ctx } from '../context.js'
 import type { Intent, Broadcast } from '../chain/gateway.js'
 
 export const ACTIVE = ['nonce_reserved', 'signed', 'suspended', 'broadcast_pending', 'broadcast_sent', 'unknown', 'manual_review'] as const
-const BLOCKING_REFUND = ['requested', 'unknown', 'confirmed', 'partial']
+const BLOCKING_REFUND = ['requested', 'submitting', 'unknown', 'confirmed', 'partial']
 
 /** Estados em que a tentativa ainda aguarda prova on-chain (R1: só eles podem ser reconciliados). */
 const RECONCILABLE = ['broadcast_pending', 'broadcast_sent', 'unknown', 'manual_review']

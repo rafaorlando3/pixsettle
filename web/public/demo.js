@@ -30,7 +30,9 @@ const LABELS = {
   'attempt:manual_review': 'Sent to manual review',
   'order:late_paid': 'Paid after the deadline',
   'refund_case:requested': 'Refund case opened',
+  'refund_case:submitting': 'Refund sent to the Pix provider (never resent)',
   'refund_case:confirmed': 'Refund confirmed by the Pix provider',
+  'refund_observed:pending_exposure': 'Refund seen at the provider; waiting for the on-chain result',
   'refund_case:unknown': 'Refund outcome unknown, reconciling',
   'refund_case:failed': 'Refund rejected by the provider',
   'refund_accounting:recorded': 'Reserve accounting updated (simulated)',
@@ -123,7 +125,7 @@ function render(o) {
     lastCount = tl.length
   }
   renderRefunds(o)
-  const open = o.refunds.some(r => ['requested', 'unknown'].includes(r.state))
+  const open = o.refunds.some(r => ['requested', 'submitting', 'unknown'].includes(r.state))
   const refunded = o.refunds.filter(r => r.state !== 'failed').reduce((a, r) => a + Number(r.amount_minor), 0)
   const done = o.status === 'settled' && o.receipt_id && !open && o.refunds.every(r => r.state !== 'confirmed' || o.receipts.some(x => x.refund_case_id === r.id))
   $('#pay').disabled = $('#under').disabled = !(o.status === 'awaiting_payment' && !o.hold_reason)
@@ -140,7 +142,7 @@ function renderRefunds(o) {
   if (!o.refunds.length) { $('#refunds').replaceChildren(h('li', { class: 'muted' }, 'No refunds for this order.')); return }
   $('#refunds').replaceChildren(...o.refunds.map(r => {
     const rc = o.receipts.find(x => x.refund_case_id === r.id)
-    const state = { confirmed: 'ok', failed: 'bad', unknown: 'warn', requested: 'warn' }[r.state] ?? 'muted'
+    const state = { confirmed: 'ok', failed: 'bad', unknown: 'warn', requested: 'warn', submitting: 'warn' }[r.state] ?? 'muted'
     return h('li', {},
       h('span', {}, `${REFUND_TYPE[r.refund_type] ?? r.refund_type}: ${brl(r.amount_minor)}`),
       h('span', { class: 'row' }, rc ? h('a', { href: `/receipt/${rc.id}`, target: '_blank', rel: 'noopener', class: 'small' }, 'notice') : null, h('span', { class: `badge ${state}` }, r.state)))

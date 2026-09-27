@@ -97,7 +97,7 @@ export async function registerDemo(app: FastifyInstance, ctx: Ctx, opts: DemoOpt
     if (!perIp(req.ip)) return err(reply, 429, 'rate_limited', 'Demo limit reached. Try again in a few minutes.')
     const o = await own((req.params as any).id)
     if (!o) return err(reply, 404, 'not_found', 'Order not found.')
-    const used = BigInt((await ctx.db.query(`SELECT coalesce(sum(amount_minor),0)::text AS v FROM refund_cases WHERE order_id=$1 AND state IN ('requested','unknown','confirmed','partial')`, [o.id])).rows[0].v)
+    const used = BigInt((await ctx.db.query(`SELECT coalesce(sum(amount_minor),0)::text AS v FROM refund_cases WHERE order_id=$1 AND state IN ('requested','submitting','unknown','confirmed','partial')`, [o.id])).rows[0].v)
     const left = BigInt(o.amount_minor) - used
     if (left <= 0n) return err(reply, 409, 'nothing_left', 'Order already fully refunded.')
     const r = await requestRefund(ctx, merchantId, o.id, { type: 'med_simulated', amountMinor: left, simulationReason: 'demo: payer opened a MED claim at their bank (simulated, no real MED event)', source: 'demo' })
