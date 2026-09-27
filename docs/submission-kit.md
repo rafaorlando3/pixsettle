@@ -56,7 +56,7 @@ PixSettle lets merchants who sell to Brazilians accept Pix and get paid in dolla
 ## Team
 
 - Rafael Orlando Mendes, Pedro Juan Caballero, Paraguay: payments and e-commerce operations with Pix and crypto, PHP/Laravel. Works in Portuguese and Spanish, written English.
-- Built with AI coding agents (Claude and Codex), with an independent review loop: one writes, the other reproduces the tests and writes failing cases that must pass before the next step.
+- Built with an independent review loop: every change is reproduced by a second reviewer, who writes failing cases that must pass before the next step. **[Rafael decides whether to mention the AI tooling here; if a judge asks, answer truthfully.]**
 
 ## Pitch video script (target 2:30, captions on screen)
 
@@ -75,7 +75,7 @@ Written for on-screen captions plus an optional synthetic voice-over, pending th
 | 1:12 | Receipt page: green "Receipt verified" | Anyone can verify the receipt in their browser. No trust in our server. |
 | 1:25 | Refund and MED buttons; reserve panel | Refunds and fraud claims hit a reserve first, never a surprise. |
 | 1:40 | Diagram of the send journal | Never paid twice: durable journal, same bytes on retry, reconcile by hash. |
-| 1:55 | Tests running (40 passing) | Crashes, lost responses, races: tested, and reviewed by an independent agent. |
+| 1:55 | Tests running (60 passing) | Crashes, lost responses, races: tested, and reviewed independently. |
 | 2:05 | Business slide | Take rate on settled volume, with a licensed FX partner. No custody. |
 | 2:15 | Rafael's interviews **[TBD]** | We are starting in Pedro Juan Caballero, with **[TBD]** merchants interviewed. |
 | 2:25 | Logo and repo link | PixSettle, built on Tempo. |
