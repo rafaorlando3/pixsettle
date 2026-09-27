@@ -172,6 +172,7 @@ export function buildApp(ctx: Ctx, opts: AppOptions) {
       outbox_errors: await q(`SELECT id, topic, entity_id, attempts, last_error FROM outbox WHERE done_at IS NULL AND last_error IS NOT NULL ORDER BY id DESC LIMIT 20`),
       attempts_stuck: await q(`SELECT id, status, nonce, updated_at FROM settlement_attempts WHERE status IN ('suspended','unknown','manual_review','broadcast_pending') OR (status='broadcast_sent' AND updated_at < now() - interval '10 minutes')`),
       holds: await q(`SELECT id, status, hold_reason FROM orders WHERE hold_reason IS NOT NULL ORDER BY updated_at DESC LIMIT 50`),
+      webhook_liveness: await q(`SELECT entity_id AS charge_id, from_state, reason, created_at FROM state_transitions WHERE entity='webhook_liveness' ORDER BY id DESC LIMIT 20`),
       treasury_paused_by: await q(`SELECT chain_id, sender, id AS attempt_id, nonce::text, updated_at FROM settlement_attempts WHERE status='suspended' ORDER BY nonce`),
       waiting_on_treasury: await q(`SELECT entity, entity_id, reason, created_at FROM state_transitions WHERE entity IN ('settlement_waiting','attempt_waiting') ORDER BY id DESC LIMIT 50`),
     }

@@ -11,6 +11,7 @@ import { buildApp } from './app.js'
 import { registerWeb } from './web.js'
 import { registerDemo } from './demo.js'
 import { runOnce } from './outbox.js'
+import { sweep } from './flows/sweep.js'
 
 export type CoreEnv = Record<string, string | undefined>
 
@@ -45,9 +46,14 @@ export async function startCore(env: CoreEnv = process.env) {
   // Worker da outbox. Erro de um job fica gravado no próprio job (last_error); aqui só o que escapa.
   let stopping = false
   const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+  const sweepEvery = Number(env.SWEEP_INTERVAL_MS ?? 300_000) // contrato: a cada 5 minutos
+  let lastSweep = 0
   const worker = (async () => {
     while (!stopping) {
-      try { if (!(await runOnce(ctx))) await sleep(200) } catch (e) { console.error('worker:', (e as Error).message); await sleep(1000) }
+      try {
+        if (Date.now() - lastSweep >= sweepEvery) { lastSweep = Date.now(); await sweep(ctx) }
+        if (!(await runOnce(ctx))) await sleep(200)
+      } catch (e) { console.error('worker:', (e as Error).message); await sleep(1000) }
     }
   })()
 

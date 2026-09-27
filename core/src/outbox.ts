@@ -6,6 +6,7 @@ import { reconcileChargeCreation } from './flows/orders.js'
 import { advanceSettlement, signAttempt, broadcastAttempt, reconcileAttempt, TREASURY_WAIT_MS } from './flows/settle.js'
 import { issueSettlementReceipt } from './flows/receipts.js'
 import { executeRefund, reconcileRefund, issueRefundReceipt } from './flows/refunds.js'
+import { observeCharge, expireOrder } from './flows/sweep.js'
 
 export type Job = { id: string; topic: string; entity_id: string; payload: any; attempts: number }
 type Handler = (ctx: Ctx, job: Job) => Promise<void | { retryInMs: number; payload?: any }>
@@ -19,6 +20,8 @@ export const handlers: Record<string, Handler> = {
   broadcast_attempt: async (ctx, j) => (await broadcastAttempt(ctx, j.entity_id)) === 'wait' ? { retryInMs: TREASURY_WAIT_MS } : undefined,
   issue_receipt: (ctx, j) => issueSettlementReceipt(ctx, j.entity_id),
   request_refund: async (ctx, j) => { await executeRefund(ctx, j.entity_id) },
+  observe_charge: (ctx, j) => observeCharge(ctx, j.entity_id),
+  expire_order: (ctx, j) => expireOrder(ctx, j.entity_id),
   issue_refund_receipt: (ctx, j) => issueRefundReceipt(ctx, j.entity_id),
   reconcile_refund: async (ctx, j) => {
     const tryNo = Number(j.payload?.try ?? 0)

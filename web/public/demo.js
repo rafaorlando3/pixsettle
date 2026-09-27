@@ -36,9 +36,12 @@ const LABELS = {
   'refund_accounting:recorded': 'Reserve accounting updated (simulated)',
   'settlement:failed': 'Settlement cancelled',
   'order:refunded': 'Order refunded',
+  'order:expired': 'Order expired, charge deleted at the provider',
+  'charge_observed:deleted': 'Provider confirms the charge was deleted',
+  'webhook_liveness:missed': 'Webhook never arrived; found by periodic reconciliation',
 }
 const REFUND_TYPE = { merchant_refund: 'Merchant refund', med_simulated: 'MED claim (simulated)', provider_refund: 'Refund made at the provider', late_payment_refund: 'Late payment refund' }
-const WARN = /hold|suspended|unknown|manual_review|late_paid|refund|blocked|failed|conflict|review|MED/
+const WARN = /hold|suspended|unknown|manual_review|late_paid|refund|blocked|failed|conflict|review|MED|liveness|expired/
 
 function label(t) {
   if (t.entity === 'order_hold') return `On hold: ${t.to_state.replaceAll('_', ' ')}`
@@ -61,6 +64,7 @@ function detail(t) {
   if (t.entity === 'refund_case' && t.to_state === 'requested') return (t.reason ?? '').startsWith('SIMULADO') ? 'MED claim, simulated' : (REFUND_TYPE[t.reason] ?? '')
   if (t.entity === 'settlement_blocked') return 'an open refund case blocks signing'
   if (t.entity === 'attempt' && t.to_state === 'nonce_reserved') return (t.reason ?? '').replace('pendente na cadeia', 'chain pending').replace('maior reservado', 'max reserved')
+  if (t.source === 'sweep') return 'from periodic reconciliation'
   return t.source?.startsWith('event:') ? `from webhook ${t.source.slice(6)}` : ''
 }
 

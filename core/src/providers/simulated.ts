@@ -44,7 +44,10 @@ export class SimulatedPixProvider implements PixProvider {
 
   async deleteCharge(id: string): Promise<void> {
     const c = this.charges.get(id)
-    if (c && c.status === 'PENDING') c.status = 'DELETED'
+    if (!c) throw new ProviderError('http', 404, { errors: [{ code: 'not_found' }] }, `cobrança ${id} não existe`)
+    // Como o Asaas: só exclui cobrança pendente; paga devolve 400.
+    if (c.status !== 'PENDING') throw new ProviderError('http', 400, { errors: [{ code: 'invalid_action', description: 'só cobranças pendentes' }] }, `cobrança ${id} em ${c.status}`)
+    c.status = 'DELETED'
   }
 
   async refund(id: string, amountMinor: bigint): Promise<{ refundRef: string }> {

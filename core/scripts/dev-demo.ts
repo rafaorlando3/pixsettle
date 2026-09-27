@@ -14,7 +14,7 @@ const TOKEN = '0x20c0000000000000000000000000000000000000'
 const srv = buildServer({ port: 7401, hmacSecret: secret, treasuryKey: keys.treasury, issuerKey, token: TOKEN })
 await new Promise<void>(r => srv.listen(7401, '127.0.0.1', r))
 const core = await startCore({
-  ...process.env, DEMO_MODE: '1', PORT: process.env.PORT ?? '8080', HOST: process.env.HOST ?? '127.0.0.1',
+  SWEEP_INTERVAL_MS: '20000', ...process.env, DEMO_MODE: '1', PORT: process.env.PORT ?? '8080', HOST: process.env.HOST ?? '127.0.0.1',
   SETTLEMENT_HMAC_SECRET: secret, TREASURY_ADDRESS: privateKeyToAccount(keys.treasury).address,
   ISSUER_ADDRESS: privateKeyToAccount(issuerKey).address, DEMO_MERCHANT_ADDRESS: privateKeyToAccount(keys.merchant).address,
   ASAAS_WEBHOOK_TOKEN: process.env.ASAAS_WEBHOOK_TOKEN ?? randomBytes(16).toString('hex'),
