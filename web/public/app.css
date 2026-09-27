@@ -30,8 +30,9 @@ button.sim { background: var(--sim); }
 .badge.sim { background: var(--sim-soft); color: var(--sim); } .badge.ok { background: var(--ok-soft); color: var(--ok); }
 .badge.warn { background: var(--warn-soft); color: var(--warn); } .badge.bad { background: var(--bad-soft); color: var(--bad); }
 .badge.muted { background: var(--line); color: var(--muted); }
-.qr { background: #fff; border-radius: 12px; padding: 10px; width: 220px; height: 220px; margin: 8px auto; display: grid; place-items: center; }
-.qr svg { width: 100%; height: 100%; }
+/* QR nunca passa da largura útil do cartão (checkout dentro do celular da demo, telas estreitas, barra de rolagem do macOS). */
+.qr { background: #fff; border-radius: 12px; padding: 10px; width: min(220px, 100%); height: auto; aspect-ratio: 1 / 1; margin: 8px auto; display: grid; place-items: center; }
+.qr svg, .qr img { display: block; width: 100%; height: 100%; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
 .muted { color: var(--muted); } .small { font-size: 13px; }
 .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
