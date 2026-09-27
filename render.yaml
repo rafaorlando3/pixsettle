@@ -1,0 +1,19 @@
+# Blueprint da Render para a demo pública (plano gratuito). Banco: PostgreSQL da Neon (gratuito, não expira).
+services:
+  - type: web
+    name: pixsettle-demo
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL        # cole a connection string da Neon (termina com ?sslmode=require)
+        sync: false
+      - key: PIXSETTLE_SEED      # semente das chaves de TESTNET; gerada pela Render, ninguém copia chave à mão
+        generateValue: true
+      - key: DIAGNOSTICS_TOKEN
+        generateValue: true
+      - key: ASAAS_WEBHOOK_TOKEN
+        generateValue: true
+      - key: SWEEP_INTERVAL_MS
+        value: "60000"

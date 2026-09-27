@@ -5,7 +5,7 @@ import { createHmac, createHash, timingSafeEqual } from 'node:crypto'
 import { tempoModerato } from 'viem/chains'
 import { privateKeyToAccount } from 'viem/accounts'
 import type { Hex } from 'viem'
-import { TempoChain, type TransferIntent } from './chain.js'
+import { TempoChain, TIP20_ABI, type TransferIntent } from './chain.js'
 import { signReceipt, type ReceiptPayload } from './receipt.js'
 
 export type ServerConfig = { port: number; hmacSecret: string; treasuryKey: Hex; issuerKey: Hex; token: Hex; rpcUrl?: string }
@@ -73,4 +73,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     token: (process.env.TOKEN ?? '0x20c0000000000000000000000000000000000000') as Hex, rpcUrl: process.env.TEMPO_RPC,
   }
   buildServer(cfg).listen(cfg.port, '127.0.0.1', () => console.log(`settlement ouvindo em 127.0.0.1:${cfg.port}`))
+  // Testnet: mantém a tesouraria com pathUSD do faucet (tempo_fundAddress). Nunca em outra rede.
+  const min = BigInt(process.env.TREASURY_MIN_UNITS ?? '50000000') // 50 pathUSD
+  const topUp = async () => {
+    try { console.log(await ensureFunded(new TempoChain(tempoModerato, cfg.rpcUrl), privateKeyToAccount(cfg.treasuryKey).address, cfg.token, min)) }
+    catch (e) { console.error('faucet:', (e as Error).message) }
+  }
+  if (process.env.FAUCET_TOPUP !== '0') { void topUp(); setInterval(topUp, 3_600_000).unref() }
+}
+
+/** Abastece pelo faucet da testnet se o saldo estiver abaixo do mínimo. Recusa qualquer rede que não seja a Moderato. */
+export async function ensureFunded(chain: TempoChain, address: Hex, token: Hex, min: bigint): Promise<string> {
+  if (chain.chain.id !== tempoModerato.id) throw new Error(`faucet só na testnet Moderato (rede ${chain.chain.id})`)
+  const bal = await chain.pub.readContract({ address: token, abi: TIP20_ABI, functionName: 'balanceOf', args: [address] }) as bigint
+  if (bal >= min) return `tesouraria com ${bal} unidades; sem faucet`
+  const txs = await chain.pub.request({ method: 'tempo_fundAddress' as any, params: [address] as any }) as unknown as string[]
+  return `tesouraria com ${bal} unidades; faucet pedido: ${Array.isArray(txs) ? txs.join(',') : String(txs)}`
 }

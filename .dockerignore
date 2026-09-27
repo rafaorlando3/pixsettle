@@ -1,0 +1,9 @@
+**/node_modules
+.git
+**/*.log
+**/.env*
+**/*.key
+**/.spike-keys.json
+**/*.local.json
+web/src
+web/node_modules
