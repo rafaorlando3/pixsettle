@@ -1,5 +1,6 @@
 // Provedor Pix SIMULADO, identificado como tal em todo registro (provider = 'simulated').
 // Usado nos testes e na demo sem credenciais. Permite injetar falhas para os testes P1.
+import { randomBytes } from 'node:crypto'
 import { ProviderError, type PixProvider, type ProviderPayment, type CreatedCharge, type ProviderStatus } from './types.js'
 
 type Charge = { id: string; orderId: string; valueMinor: bigint; status: ProviderStatus; paidAt: Date | null; paidMinor: bigint; refundedMinor: bigint }
@@ -10,11 +11,11 @@ export class SimulatedPixProvider implements PixProvider {
   charges = new Map<string, Charge>()
   private seq = 0
   /** Falhas injetáveis: 'create_timeout_after_commit' simula resposta perdida depois de criar. */
-  failNext: null | 'create_timeout_after_commit' | 'create_timeout_before_commit' | 'get_timeout' = null
+  failNext: null | 'create_timeout_after_commit' | 'create_timeout_before_commit' | 'get_timeout' | 'refund_timeout_after_commit' | 'refund_rejected' = null
 
   async createCharge(input: { orderId: string; amountMinor: bigint }): Promise<CreatedCharge> {
     if (this.failNext === 'create_timeout_before_commit') { this.failNext = null; throw new ProviderError('timeout', null, null, 'timeout simulado') }
-    const id = `pay_sim_${++this.seq}`
+    const id = `pay_sim_${randomBytes(8).toString('hex')}` // único entre reinícios: o banco sobrevive, a memória não
     this.charges.set(id, { id, orderId: input.orderId, valueMinor: input.amountMinor, status: 'PENDING', paidAt: null, paidMinor: 0n, refundedMinor: 0n })
     if (this.failNext === 'create_timeout_after_commit') { this.failNext = null; throw new ProviderError('timeout', null, null, 'timeout simulado depois de criar') }
     return { paymentId: id, qrPayload: `SIMULATED-PIX|${id}|${input.amountMinor}`, qrExpiresAt: new Date(Date.now() + 3600_000) }
@@ -41,10 +42,17 @@ export class SimulatedPixProvider implements PixProvider {
   }
 
   async refund(id: string, amountMinor: bigint): Promise<{ refundRef: string }> {
+    if (this.failNext === 'refund_rejected') { this.failNext = null; throw new ProviderError('http', 400, { errors: [{ code: 'invalid_action', description: 'saldo insuficiente (simulado)' }] }, 'estorno recusado (simulado)') }
+    this.providerRefund(id, amountMinor)
+    if (this.failNext === 'refund_timeout_after_commit') { this.failNext = null; throw new ProviderError('timeout', null, null, 'timeout simulado depois de estornar') }
+    return { refundRef: `ref_sim_${++this.seq}` }
+  }
+
+  /** Estorno feito no provedor (pedido nosso, MED ou painel do provedor). */
+  providerRefund(id: string, amountMinor: bigint) {
     const c = this.charges.get(id)!
     c.refundedMinor += amountMinor
     c.status = c.refundedMinor >= c.paidMinor ? 'REFUNDED' : 'PARTIALLY_REFUNDED'
-    return { refundRef: `ref_sim_${++this.seq}` }
   }
 
   // ---- ações da "bancada" (simulam o pagador) ----

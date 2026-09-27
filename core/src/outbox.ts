@@ -5,6 +5,7 @@ import { processProviderEvent } from './flows/events.js'
 import { reconcileChargeCreation } from './flows/orders.js'
 import { advanceSettlement, signAttempt, broadcastAttempt, reconcileAttempt } from './flows/settle.js'
 import { issueSettlementReceipt } from './flows/receipts.js'
+import { executeRefund, reconcileRefund, issueRefundReceipt } from './flows/refunds.js'
 
 export type Job = { id: string; topic: string; entity_id: string; payload: any; attempts: number }
 type Handler = (ctx: Ctx, job: Job) => Promise<void | { retryInMs: number; payload?: any }>
@@ -16,6 +17,13 @@ export const handlers: Record<string, Handler> = {
   sign_attempt: (ctx, j) => signAttempt(ctx, j.entity_id),
   broadcast_attempt: (ctx, j) => broadcastAttempt(ctx, j.entity_id),
   issue_receipt: (ctx, j) => issueSettlementReceipt(ctx, j.entity_id),
+  request_refund: async (ctx, j) => { await executeRefund(ctx, j.entity_id) },
+  issue_refund_receipt: (ctx, j) => issueRefundReceipt(ctx, j.entity_id),
+  reconcile_refund: async (ctx, j) => {
+    const tryNo = Number(j.payload?.try ?? 0)
+    const r = await reconcileRefund(ctx, j.entity_id, tryNo)
+    if (r === 'retry') return { retryInMs: Math.min(60_000, 2_000 * 2 ** Math.min(tryNo, 5)), payload: { try: tryNo + 1 } }
+  },
   reconcile_attempt: async (ctx, j) => {
     const tryNo = Number(j.payload?.try ?? 0)
     const r = await reconcileAttempt(ctx, j.entity_id, tryNo)

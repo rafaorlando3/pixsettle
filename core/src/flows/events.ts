@@ -3,8 +3,7 @@ import { withTx, recordTransition, enqueue, type Tx } from '../db.js'
 import { newId } from '../ids.js'
 import { OBSERVED_RANK, mapObserved, type ProviderPayment } from '../providers/types.js'
 import type { Ctx } from '../context.js'
-
-const ACTIVE_ATTEMPT = ['nonce_reserved', 'signed', 'suspended', 'broadcast_pending', 'broadcast_sent', 'unknown', 'manual_review']
+import { onRefundObserved } from './refunds.js'
 
 /** Só o que precisamos do webhook; dados do pagador ficam de fora. */
 export function sanitizeAsaasEvent(body: any) {
@@ -85,12 +84,15 @@ export async function applyObservation(tx: Tx, ctx: Ctx, p: ProviderPayment, sou
   if (next !== cur) {
     await tx.query(`UPDATE pix_charges SET observed_state=$2, last_observed_at=now(), updated_at=now() WHERE id=$1`, [charge.id, next])
     await recordTransition(tx, 'charge_observed', charge.id, cur, next, source)
-  } else if (next !== 'received') {
-    return 'stale'
+  } else if (next !== 'received' && next !== 'partially_refunded') {
+    return 'stale' // parcial repetida segue: o valor devolvido pode ter mudado
   }
 
   if (next === 'received') return onReceived(tx, ctx, order, p, source)
-  if (next === 'refunded' || next === 'partially_refunded') return onProviderRefund(tx, order, p, source)
+  if (next === 'refunded' || next === 'partially_refunded') {
+    await onRefundObserved(tx, ctx, order, p, source, (reason, detail) => hold(tx, order.id, reason, source, detail))
+    return 'applied'
+  }
   return 'applied'
 }
 
@@ -156,24 +158,4 @@ async function createSettlementIntent(tx: Tx, ctx: Ctx, order: any, q: any, sour
   await tx.query(`UPDATE orders SET status='settling', updated_at=now() WHERE id=$1`, [order.id])
   await recordTransition(tx, 'order', order.id, 'paid', 'settling', source)
   await enqueue(tx, 'settle', id)
-}
-
-async function onProviderRefund(tx: Tx, order: any, p: ProviderPayment, source: string): Promise<'applied'> {
-  // Estorno observado no provedor nunca é descartado (contrato 3.6).
-  const existing = (await tx.query(`SELECT id FROM refund_cases WHERE order_id=$1 AND state IN ('requested','unknown')`, [order.id])).rows[0]
-  const state = p.status === 'REFUNDED' ? 'confirmed' : 'partial'
-  if (existing) {
-    await tx.query(`UPDATE refund_cases SET state=$2, updated_at=now() WHERE id=$1`, [existing.id, state])
-    await recordTransition(tx, 'refund_case', existing.id, 'requested', state, source)
-  } else {
-    const rfc = newId('rfc')
-    await tx.query(`INSERT INTO refund_cases (id, order_id, refund_type, state, amount_minor) VALUES ($1,$2,'provider_refund',$3,$4)`, [rfc, order.id, state, p.refundedMinor > 0n ? p.refundedMinor.toString() : order.amount_minor])
-    await recordTransition(tx, 'refund_case', rfc, null, state, source, 'estorno iniciado no provedor')
-  }
-  const s = (await tx.query(`SELECT s.id, s.status, EXISTS (SELECT 1 FROM settlement_attempts a WHERE a.settlement_id = s.id AND a.status = ANY($2)) AS active FROM settlements s WHERE s.order_id=$1 FOR UPDATE`, [order.id, ACTIVE_ATTEMPT])).rows[0]
-  if (s && (s.active || s.status === 'confirmed')) {
-    await hold(tx, order.id, 'exposure_reconciliation', source, `liquidação ${s.id} em ${s.status}`)
-    await tx.query(`UPDATE settlements SET hold_reason='exposure_reconciliation', updated_at=now() WHERE id=$1`, [s.id])
-  }
-  return 'applied'
 }

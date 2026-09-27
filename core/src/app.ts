@@ -4,6 +4,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import type { Ctx } from './context.js'
 import { createOrder, DomainError } from './flows/orders.js'
 import { ingestProviderEvent } from './flows/events.js'
+import { requestRefund } from './flows/refunds.js'
 import { newId } from './ids.js'
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
@@ -73,16 +74,48 @@ export function buildApp(ctx: Ctx, opts: AppOptions) {
     }
   })
 
+  // Devolução pedida pelo lojista (contrato 5.2 e 3.6). Aceita = caso aberto; confirmação só observada no provedor.
+  app.post('/api/v1/orders/:id/refund', async (req, reply) => {
+    const merchantId = await merchantOf(req)
+    if (!merchantId) return err(reply, 401, 'unauthorized', 'chave do lojista ausente ou inválida')
+    const key = String(req.headers['idempotency-key'] ?? '')
+    if (!key) return err(reply, 400, 'idempotency_key_required', 'envie o cabeçalho Idempotency-Key')
+    const orderId = String((req.params as any).id)
+    const body = req.body as any
+    const reqHash = sha256(JSON.stringify({ orderId, body: body ?? {} }))
+    const op = 'refund'
+    const prior = (await ctx.db.query(`SELECT request_hash, status_code, response FROM idempotency_keys WHERE merchant_id=$1 AND operation=$2 AND key=$3`, [merchantId, op, key])).rows[0]
+    if (prior) {
+      if (prior.request_hash !== reqHash) return err(reply, 409, 'idempotency_conflict', 'mesma Idempotency-Key com corpo diferente')
+      if (prior.status_code) return reply.code(prior.status_code).send(prior.response)
+      return err(reply, 409, 'in_progress', 'requisição com esta chave ainda em andamento')
+    }
+    try { await ctx.db.query(`INSERT INTO idempotency_keys (merchant_id, operation, key, request_hash) VALUES ($1,$2,$3,$4)`, [merchantId, op, key, reqHash]) }
+    catch { return err(reply, 409, 'in_progress', 'requisição com esta chave ainda em andamento') }
+    const release = () => ctx.db.query(`DELETE FROM idempotency_keys WHERE merchant_id=$1 AND operation=$2 AND key=$3`, [merchantId, op, key])
+    const amount = typeof body?.amount?.amount === 'string' && /^\d+$/.test(body.amount.amount) ? BigInt(body.amount.amount) : null
+    if (!amount || body?.amount?.currency !== 'BRL') { await release(); return err(reply, 422, 'invalid_body', 'esperado amount {amount: "centavos", currency: "BRL"}') }
+    try {
+      const r = await requestRefund(ctx, merchantId, orderId, { type: 'merchant_refund', amountMinor: amount, source: 'api' })
+      if (!r.ok) { await release(); return err(reply, r.httpStatus, r.code, r.message) } // recusa fica registrada no pedido; pode tentar de novo depois
+      const resp = { refund_case_id: r.refundCaseId, state: 'requested' }
+      await ctx.db.query(`UPDATE idempotency_keys SET status_code=202, response=$4 WHERE merchant_id=$1 AND operation=$2 AND key=$3`, [merchantId, op, key, JSON.stringify(resp)])
+      return reply.code(202).send(resp)
+    } catch (e) { await release(); throw e }
+  })
+
   app.get('/api/v1/orders/:id', async (req, reply) => {
     const merchantId = await merchantOf(req)
     if (!merchantId) return err(reply, 401, 'unauthorized', 'chave do lojista ausente ou inválida')
     const id = (req.params as any).id
     const o = (await ctx.db.query(`SELECT id, external_ref, status, hold_reason, amount_minor, expires_at, paid_at FROM orders WHERE id=$1 AND merchant_id=$2`, [id, merchantId])).rows[0]
     if (!o) return err(reply, 404, 'not_found', 'pedido não encontrado') // mesmo código para "de outro lojista"
-    const timeline = (await ctx.db.query(`SELECT entity, from_state, to_state, reason, source, created_at FROM state_transitions WHERE entity_id IN (SELECT $1 UNION SELECT id FROM settlements WHERE order_id=$1 UNION SELECT id FROM pix_charges WHERE order_id=$1 UNION SELECT a.id FROM settlement_attempts a JOIN settlements s ON s.id=a.settlement_id WHERE s.order_id=$1) ORDER BY id`, [id])).rows
+    const timeline = (await ctx.db.query(`SELECT entity, from_state, to_state, reason, source, created_at FROM state_transitions WHERE entity_id IN (SELECT $1 UNION SELECT id FROM settlements WHERE order_id=$1 UNION SELECT id FROM pix_charges WHERE order_id=$1 UNION SELECT a.id FROM settlement_attempts a JOIN settlements s ON s.id=a.settlement_id WHERE s.order_id=$1 UNION SELECT id FROM refund_cases WHERE order_id=$1) ORDER BY id`, [id])).rows
     const settlement = (await ctx.db.query(`SELECT s.id, s.status, s.amount_units, s.memo, a.tx_hash, a.status AS attempt_status FROM settlements s LEFT JOIN settlement_attempts a ON a.settlement_id=s.id WHERE s.order_id=$1 ORDER BY a.attempt_no DESC NULLS LAST LIMIT 1`, [id])).rows[0] ?? null
-    const receipt = (await ctx.db.query(`SELECT id FROM receipts WHERE order_id=$1 ORDER BY created_at LIMIT 1`, [id])).rows[0]?.id ?? null
-    return { ...o, amount_minor: String(o.amount_minor), settlement, receipt_id: receipt, timeline }
+    const receipts = (await ctx.db.query(`SELECT id, receipt_type, refund_case_id, created_at FROM receipts WHERE order_id=$1 ORDER BY created_at, id`, [id])).rows
+    const refunds = (await ctx.db.query(`SELECT id, refund_type, state, amount_minor::text, simulation_reason, created_at, updated_at FROM refund_cases WHERE order_id=$1 ORDER BY created_at, id`, [id])).rows
+    const receipt = receipts.find(r => r.receipt_type === 'settlement')?.id ?? null
+    return { ...o, amount_minor: String(o.amount_minor), settlement, receipt_id: receipt, receipts, refunds, timeline }
   })
 
   app.get('/api/v1/merchants/me/ledger', async (req, reply) => {

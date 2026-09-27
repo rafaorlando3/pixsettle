@@ -6,6 +6,7 @@ import type { Ctx } from './context.js'
 import { SimulatedPixProvider } from './providers/simulated.js'
 import { computeAmounts } from './flows/events.js'
 import { newId } from './ids.js'
+import { requestRefund } from './flows/refunds.js'
 
 export type DemoOptions = { webhookToken: string; merchantAddress: string; explorer: string; merchantName?: string }
 
@@ -54,6 +55,7 @@ export async function registerDemo(app: FastifyInstance, ctx: Ctx, opts: DemoOpt
     const o = await own((req.params as any).id)
     if (!o) return err(reply, 404, 'not_found', 'Order not found.')
     if (o.status !== 'awaiting_payment' || o.hold_reason) return err(reply, 409, 'not_payable', `Order is ${o.hold_reason ? 'on hold' : o.status}.`)
+    if (!provider.charges.has(o.provider_payment_id)) return err(reply, 409, 'stale_demo_order', 'This order was created before the demo restarted. Create a new one.')
     const b = (req.body ?? {}) as any
     const scenario = b.scenario === 'underpay' ? 'underpay' : 'pay'
     const deliveries = Math.min(5, Math.max(1, Number(b.deliveries ?? 3) | 0))
@@ -67,6 +69,30 @@ export async function registerDemo(app: FastifyInstance, ctx: Ctx, opts: DemoOpt
     return { scenario, deliveries: results }
   })
 
+  // Devolução parcial pelo endpoint REAL do lojista (com Idempotency-Key).
+  app.post('/demo/api/orders/:id/refund', async (req, reply) => {
+    if (!perIp(req.ip)) return err(reply, 429, 'rate_limited', 'Demo limit reached. Try again in a few minutes.')
+    const o = await own((req.params as any).id)
+    if (!o) return err(reply, 404, 'not_found', 'Order not found.')
+    const amount = String((req.body as any)?.amount_minor ?? '')
+    if (!/^\d{1,6}$/.test(amount)) return err(reply, 422, 'invalid_amount', 'Invalid amount.')
+    const r = await app.inject({ method: 'POST', url: `/api/v1/orders/${o.id}/refund`, headers: { ...auth, 'idempotency-key': randomUUID() }, payload: { amount: { amount, currency: 'BRL' } } })
+    return reply.code(r.statusCode).send(r.json())
+  })
+
+  // MED SIMULADO: não existe evento real de MED aqui; o caso nasce rotulado como simulação (contrato 6).
+  app.post('/demo/api/orders/:id/med', async (req, reply) => {
+    if (!perIp(req.ip)) return err(reply, 429, 'rate_limited', 'Demo limit reached. Try again in a few minutes.')
+    const o = await own((req.params as any).id)
+    if (!o) return err(reply, 404, 'not_found', 'Order not found.')
+    const used = BigInt((await ctx.db.query(`SELECT coalesce(sum(amount_minor),0)::text AS v FROM refund_cases WHERE order_id=$1 AND state IN ('requested','unknown','confirmed','partial')`, [o.id])).rows[0].v)
+    const left = BigInt(o.amount_minor) - used
+    if (left <= 0n) return err(reply, 409, 'nothing_left', 'Order already fully refunded.')
+    const r = await requestRefund(ctx, merchantId, o.id, { type: 'med_simulated', amountMinor: left, simulationReason: 'demo: payer opened a MED claim at their bank (simulated, no real MED event)', source: 'demo' })
+    if (!r.ok) return err(reply, r.httpStatus, r.code, r.message)
+    return reply.code(202).send({ refund_case_id: r.refundCaseId, state: 'requested', amount_minor: left.toString() })
+  })
+
   app.get('/demo/api/orders/:id', async (req, reply) => {
     const id = (req.params as any).id
     const r = await app.inject({ method: 'GET', url: `/api/v1/orders/${encodeURIComponent(id)}`, headers: auth })
@@ -78,7 +104,10 @@ export async function registerDemo(app: FastifyInstance, ctx: Ctx, opts: DemoOpt
     const att = (await ctx.db.query(`SELECT a.nonce, a.observed FROM settlement_attempts a JOIN settlements s ON s.id=a.settlement_id WHERE s.order_id=$1 ORDER BY a.attempt_no DESC LIMIT 1`, [id])).rows[0]
     const stl = (await ctx.db.query(`SELECT recipient FROM settlements WHERE order_id=$1`, [id])).rows[0]
     const tx = order.settlement?.tx_hash as string | undefined
+    const pool = Object.fromEntries((await ctx.db.query(`SELECT kind, sum(amount_units)::text AS v FROM ledger_entries WHERE merchant_id=$1 GROUP BY kind`, [merchantId])).rows.map(r => [r.kind, r.v]))
+    const held = BigInt(pool.reserve_simulated ?? 0), consumed = BigInt(pool.reserve_consumed_simulated ?? 0), released = BigInt(pool.reserve_release_simulated ?? 0)
     return {
+      reserve_pool: { held: held.toString(), consumed: consumed.toString(), balance: (held - consumed - released).toString(), debt: String(pool.debt_simulated ?? '0'), scale: 6, simulated: true },
       ...order,
       amounts: { gross: a.gross.toString(), reserve_simulated: a.reserve.toString(), net: a.net.toString(), scale: 6, token: 'pathUSD', rate_num: String(q.rate_num), rate_den: String(q.rate_den), reserve_bps: q.reserve_bps },
       webhooks: { events: ev.events, deliveries: ev.events + ev.duplicates, duplicates_ignored: ev.duplicates },

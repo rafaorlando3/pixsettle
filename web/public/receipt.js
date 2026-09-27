@@ -26,6 +26,7 @@ async function run() {
   }
   $('#again').onclick = () => verify(env, trusted, meta)
   details(env.payload, meta)
+  if (env.payload.receipt_type === 'refund_notice') $('#how').textContent = 'Your browser recomputed the SHA-256 digest of the canonical JSON (RFC 8785) and recovered the EIP-191 signer. A refund notice is a signed statement by the issuer about what the Pix provider reported; there is no on-chain transfer to check.'
   await verify(env, trusted, meta)
 }
 
@@ -39,10 +40,31 @@ async function verify(env, trusted, meta) {
   const fail = steps.some(s => s.state === 'fail'), unavailable = steps.some(s => s.state === 'unavailable')
   if (fail) hero('bad', 'Verification failed', 'Do not trust this receipt. See the failing check below.')
   else if (unavailable) hero('warn', 'Signature valid, chain check unavailable', 'The Tempo RPC could not be reached. Try again in a moment.')
+  else if (env.payload.receipt_type === 'refund_notice') hero('ok', 'Refund notice verified', 'Signed by a trusted issuer. The refund itself is attested by the issuer from the Pix provider, not proven on-chain.')
   else hero('ok', 'Receipt verified', 'Signed by a trusted issuer and matched to a successful transfer on Tempo.')
 }
 
+function refundDetails(p) {
+  const r = p.refund, acc = p.accounting
+  const TYPES = { merchant_refund: 'Merchant refund', med_simulated: 'MED claim (simulated)', provider_refund: 'Refund made at the provider', late_payment_refund: 'Late payment refund' }
+  const rows = [
+    ['Order', h('span', { class: 'mono' }, p.order.id)],
+    ['Order amount', brl(p.order.amount.amount)],
+    ['Refunded', h('b', {}, brl(r.amount.amount))],
+    ['Type', TYPES[r.refund_type] ?? r.refund_type],
+    ['State', `${r.state}, observed ${new Date(r.observed_at).toLocaleString()} at ${r.provider} (${p.provider_env})`],
+  ]
+  if (r.simulation_reason) rows.push(['Simulation', r.simulation_reason])
+  if (acc) rows.push(['Reserve used', `${units(acc.reserve_consumed_simulated, acc.scale)} ${acc.currency} (simulated)`], ['Merchant debt', `${units(acc.debt_simulated, acc.scale)} ${acc.currency} (simulated)`])
+  if (p.settlement_ref) rows.push(['Settlement receipt', h('a', { class: 'mono', href: `/receipt/${p.settlement_ref.receipt_id}` }, p.settlement_ref.receipt_id)])
+  else rows.push(['Settlement', 'None on-chain before this refund'])
+  if (p.previous_receipt_id) rows.push(['Previous receipt', h('a', { class: 'mono', href: `/receipt/${p.previous_receipt_id}` }, p.previous_receipt_id)])
+  rows.push(['Issued', new Date(p.issued_at).toLocaleString()], ['Receipt id', h('span', { class: 'mono' }, p.receipt_id)])
+  $('#details').replaceChildren(...rows.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))
+}
+
 function details(p, meta) {
+  if (p.receipt_type === 'refund_notice') return refundDetails(p)
   const s = p.settlement, a = p.amounts
   const rows = [
     ['Order', h('span', { class: 'mono' }, p.order.id)],

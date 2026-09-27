@@ -31,7 +31,12 @@
           <button id="pay" class="sim btn-block" disabled>Payer pays, webhook delivered 3 times</button>
           <button id="under" class="ghost btn-block" disabled>Payer sends R$ 0,01 less</button>
         </div>
-        <p class="small muted mb0">Stands in for the payer's bank and the provider webhook. Duplicates are sent on purpose.</p>
+        <div class="sep"></div>
+        <div class="stack">
+          <button id="refund" class="ghost btn-block" disabled>Merchant refunds R$ 10,00</button>
+          <button id="med" class="sim btn-block" disabled>Payer opens a MED claim</button>
+        </div>
+        <p class="small muted mb0">Stands in for the payer's bank and the provider webhook. Duplicates are sent on purpose. MED is simulated: no real MED event exists in this demo.</p>
       </section>
       <section class="card">
         <h2>Recent orders</h2>
@@ -55,6 +60,17 @@
         </div>
         <dl class="kv" id="facts"></dl>
         <div class="row mt12" id="links"></div>
+      </section>
+      <section class="card" id="refund-card">
+        <div class="row between mb12"><h2 class="m0">5. Refunds and reserve</h2><span class="badge sim">Simulated accounting</span></div>
+        <div class="kpis">
+          <div class="kpi"><div class="v" id="r-held">-</div><div class="l">Reserve held (pathUSD)</div></div>
+          <div class="kpi"><div class="v" id="r-used">-</div><div class="l">Used by refunds</div></div>
+          <div class="kpi"><div class="v" id="r-bal">-</div><div class="l">Reserve balance</div></div>
+          <div class="kpi"><div class="v" id="r-debt">-</div><div class="l">Merchant debt</div></div>
+        </div>
+        <ul class="recent" id="refunds"><li class="muted">No refunds for this order.</li></ul>
+        <p class="small muted mb0">10% of every settlement is held as a rolling reserve for this merchant. Refunds and MED claims use the reserve first; anything above it becomes merchant debt. Refunds never move tokens on-chain in this version.</p>
       </section>
       <section class="card">
         <h2>Timeline</h2>
