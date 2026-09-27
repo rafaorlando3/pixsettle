@@ -277,3 +277,13 @@ Conferir só os trechos da tabela "Mudanças da v0.3" e responder no canal (`CAN
 ## Conferência do Codex (v0.3)
 
 Ok técnico na mensagem X-0002 do canal (27/09 02:05), com uma correção redacional na seção 3.5 já aplicada. Regra de implementação acordada em C-0003/X-0002: `already known` e `nonce too low` na retransmissão levam a reconciliar pelo hash; não provam sucesso nem falha e não autorizam novo nonce.
+
+
+## Adendo v0.3.1: stack do core (C-0004 e X-0003, 27/09/2026 02:26)
+
+- `core/` passa de Laravel para **TypeScript** (Node 22, Fastify 5, PostgreSQL 16 com `pg`, SQL explícito, migrações SQL versionadas, vitest com banco real). Motivo: o ambiente do Claude não baixa dists do Composer (403 da política de rede para codeload/api.github.com), e uma linguagem só elimina a duplicação de JCS e EIP-191 no caminho de produção.
+- Nada muda no contrato funcional: estados, travas, outbox, diário de envio, recibo, formatos HTTP/JSON, unidades, isolamento entre lojistas e testes P1.
+- Verificador PHP do recibo fica para o futuro; o teste de interoperabilidade PHP/TypeScript **não** está concluído. Os vetores seguem fixos em `contract/vectors/` e ganham um verificador independente (outra linguagem e outra biblioteca) para não validar com a mesma lógica que assina.
+- A fronteira do assinante continua: só o processo `settlement/` tem a chave; core e checkout nunca.
+- Transações do `pg`: uma conexão reservada do BEGIN ao COMMIT/ROLLBACK, incluindo travas e outbox.
+- Material comercial não apresenta esta demo como implementação Laravel.
