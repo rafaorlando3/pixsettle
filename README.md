@@ -79,3 +79,8 @@ The core suite covers duplicate webhooks, two workers racing for the same settle
 - Asaas sandbox adapter (real Pix in sandbox), periodic reconciliation with the provider and webhook liveness alerts.
 - Licensed FX partner integration and real quotes.
 - On-chain reserve with an explicit release policy (today the reserve is accounting only).
+
+## Deploy and license
+
+- One-container deploy on a free host with testnet keys derived from a host-generated seed: see `Dockerfile`, `render.yaml` and `docs/deploy.md` (Portuguese).
+- MIT license (see `LICENSE`).
