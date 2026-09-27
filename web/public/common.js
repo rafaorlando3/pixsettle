@@ -27,6 +27,15 @@ export function toast(msg) {
 export async function copy(text) {
   try { await navigator.clipboard.writeText(text); toast('Copied') } catch { toast('Copy not available here') }
 }
+/** Rótulo do provedor Pix vindo do servidor (simulado ou Asaas sandbox). */
+export async function providerBadge() {
+  try {
+    const m = await (await fetch('/.well-known/pixsettle.json')).json()
+    const b = document.getElementById('pix-badge')
+    if (b && m.pix_provider?.name === 'asaas') b.textContent = 'Pix: Asaas sandbox'
+    return m
+  } catch { return null }
+}
 export async function api(path, init) {
   const r = await fetch(path, { ...init, headers: { 'content-type': 'application/json', ...(init?.headers ?? {}) } })
   const body = await r.json().catch(() => ({}))

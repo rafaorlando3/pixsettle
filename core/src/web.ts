@@ -56,6 +56,7 @@ export function registerWeb(app: FastifyInstance, ctx: Ctx, opts: WebOptions) {
   // Emissores confiáveis e dados públicos da cadeia para o verificador do navegador.
   app.get('/.well-known/pixsettle.json', async () => ({
     trusted_issuers: [ctx.cfg.issuer],
+    pix_provider: { name: ctx.provider.name, env: ctx.provider.env },
     chain: { id: ctx.chain.chainId, token: ctx.chain.token, treasury: ctx.chain.treasury, rpc: opts.tempoRpc, explorer: opts.explorer },
   }))
 }

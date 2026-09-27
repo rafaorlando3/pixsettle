@@ -31,6 +31,8 @@ export interface PixProvider {
   readonly name: 'asaas' | 'simulated'
   readonly env: 'sandbox' | 'simulated'
   createCharge(input: { orderId: string; amountMinor: bigint; description: string; dueDate: string }): Promise<CreatedCharge>
+  /** QR (copia e cola) de uma cobrança já criada; usado quando a criação teve resposta perdida. */
+  getPixQr(paymentId: string): Promise<{ qrPayload: string; qrExpiresAt: Date }>
   getPayment(paymentId: string): Promise<ProviderPayment>
   findByExternalReference(orderId: string): Promise<ProviderPayment[]>
   deleteCharge(paymentId: string): Promise<void>

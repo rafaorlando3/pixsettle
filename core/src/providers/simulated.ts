@@ -21,6 +21,12 @@ export class SimulatedPixProvider implements PixProvider {
     return { paymentId: id, qrPayload: `SIMULATED-PIX|${id}|${input.amountMinor}`, qrExpiresAt: new Date(Date.now() + 3600_000) }
   }
 
+  async getPixQr(id: string): Promise<{ qrPayload: string; qrExpiresAt: Date }> {
+    const c = this.charges.get(id)
+    if (!c) throw new ProviderError('http', 404, { errors: [{ code: 'not_found' }] }, `cobrança ${id} não existe`)
+    return { qrPayload: `SIMULATED-PIX|${id}|${c.valueMinor}`, qrExpiresAt: new Date(Date.now() + 3600_000) }
+  }
+
   private view(c: Charge): ProviderPayment {
     return { id: c.id, status: c.status, rawStatus: c.status, billingType: 'PIX', valueMinor: c.paidMinor || c.valueMinor, externalReference: c.orderId, paidAt: c.paidAt, paidDate: c.paidAt ? c.paidAt.toISOString().slice(0, 10) : null, refundedMinor: c.refundedMinor }
   }

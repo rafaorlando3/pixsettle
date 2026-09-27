@@ -1,4 +1,4 @@
-import { $, h, brl, units, short, api, toast } from './common.js'
+import { $, h, brl, units, short, api, toast, providerBadge } from './common.js'
 
 let current = null, poll = null, lastCount = 0
 
@@ -179,7 +179,7 @@ async function simulate(scenario) {
   try {
     const r = await api(`/demo/api/orders/${current.id}/simulate`, { method: 'POST', body: JSON.stringify({ scenario, deliveries: 3 }) })
     const dup = r.deliveries.filter(d => d.duplicate).length
-    toast(`Webhook sent ${r.deliveries.length} times, ${dup} flagged as duplicate`)
+    toast(r.via ? `Paid in the Asaas sandbox (${r.via.replace('_', ' ')}); waiting for the webhook` : `Webhook sent ${r.deliveries.length} times, ${dup} flagged as duplicate`)
     if (!poll) watch()
   } catch (e) { toast(e.message) }
 }
@@ -204,3 +204,8 @@ async function loadRecent() {
   } catch { }
 }
 loadRecent()
+providerBadge().then(m => {
+  if (m?.pix_provider?.name !== 'asaas') return
+  $('#pay').textContent = 'Payer pays in the Asaas sandbox'
+  $('#under').classList.add('hidden')
+})

@@ -4,11 +4,12 @@ import type { FastifyInstance } from 'fastify'
 import { randomBytes, randomUUID, createHash } from 'node:crypto'
 import type { Ctx } from './context.js'
 import { SimulatedPixProvider } from './providers/simulated.js'
+import { AsaasPixProvider, type AsaasSandboxPayer } from './providers/asaas.js'
 import { computeAmounts } from './flows/events.js'
 import { newId } from './ids.js'
 import { requestRefund } from './flows/refunds.js'
 
-export type DemoOptions = { webhookToken: string; merchantAddress: string; explorer: string; merchantName?: string }
+export type DemoOptions = { webhookToken: string; merchantAddress: string; explorer: string; merchantName?: string; bench?: AsaasSandboxPayer }
 
 const err = (reply: any, status: number, code: string, message: string) => reply.code(status).send({ error: { code, message } })
 
@@ -25,8 +26,10 @@ function limiter(max: number, windowMs: number) {
 }
 
 export async function registerDemo(app: FastifyInstance, ctx: Ctx, opts: DemoOptions) {
-  if (!(ctx.provider instanceof SimulatedPixProvider)) throw new Error('demo exige o provedor Pix simulado')
-  const provider = ctx.provider
+  // Só sem dinheiro real: provedor simulado, ou Asaas SANDBOX com um pagador de sandbox explícito.
+  const sim = ctx.provider instanceof SimulatedPixProvider ? ctx.provider : null
+  const sandbox = ctx.provider instanceof AsaasPixProvider && ctx.provider.env === 'sandbox' && opts.bench ? opts.bench : null
+  if (!sim && !sandbox) throw new Error('demo exige o provedor Pix simulado ou o Asaas sandbox com pagador de sandbox')
   const apiKey = 'sk_demo_' + randomBytes(24).toString('base64url') // só na memória deste processo
   const merchantId = newId('mer')
   await ctx.db.query(`INSERT INTO merchants (id, name, api_key_hash, payout_address) VALUES ($1,$2,$3,$4)`,
@@ -35,7 +38,7 @@ export async function registerDemo(app: FastifyInstance, ctx: Ctx, opts: DemoOpt
   const perIp = limiter(20, 10 * 60_000), global = limiter(300, 60 * 60_000)
 
   const own = async (id: string) => (await ctx.db.query(
-    `SELECT o.id, o.status, o.hold_reason, o.amount_minor, c.provider_payment_id FROM orders o JOIN pix_charges c ON c.order_id=o.id WHERE o.id=$1 AND o.merchant_id=$2`,
+    `SELECT o.id, o.status, o.hold_reason, o.amount_minor, c.provider_payment_id, c.qr_payload FROM orders o JOIN pix_charges c ON c.order_id=o.id WHERE o.id=$1 AND o.merchant_id=$2`,
     [id, merchantId])).rows[0]
 
   app.post('/demo/api/orders', async (req, reply) => {
@@ -55,9 +58,18 @@ export async function registerDemo(app: FastifyInstance, ctx: Ctx, opts: DemoOpt
     const o = await own((req.params as any).id)
     if (!o) return err(reply, 404, 'not_found', 'Order not found.')
     if (o.status !== 'awaiting_payment' || o.hold_reason) return err(reply, 409, 'not_payable', `Order is ${o.hold_reason ? 'on hold' : o.status}.`)
-    if (!provider.charges.has(o.provider_payment_id)) return err(reply, 409, 'stale_demo_order', 'This order was created before the demo restarted. Create a new one.')
     const b = (req.body ?? {}) as any
     const scenario = b.scenario === 'underpay' ? 'underpay' : 'pay'
+    if (sandbox) {
+      // Asaas sandbox: paga de verdade no sandbox; o aviso chega pelo webhook real (ou pela conciliação periódica).
+      if (scenario === 'underpay') return err(reply, 409, 'not_supported', 'The Asaas sandbox QR has a fixed amount; underpayment is only simulated with the simulated provider.')
+      try {
+        const r = await sandbox.pay(o.provider_payment_id, o.qr_payload, BigInt(o.amount_minor))
+        return { scenario, via: r.via, deliveries: [] }
+      } catch (e) { return err(reply, 502, 'sandbox_payment_failed', (e as Error).message) }
+    }
+    const provider = sim!
+    if (!provider.charges.has(o.provider_payment_id)) return err(reply, 409, 'stale_demo_order', 'This order was created before the demo restarted. Create a new one.')
     const deliveries = Math.min(5, Math.max(1, Number(b.deliveries ?? 3) | 0))
     provider.pay(o.provider_payment_id, scenario === 'underpay' ? { valueMinor: BigInt(o.amount_minor) - 1n } : {})
     const event = { id: `evt_sim_${o.id}`, event: 'PAYMENT_RECEIVED', payment: { id: o.provider_payment_id, status: 'RECEIVED', billingType: 'PIX' } }

@@ -4,6 +4,8 @@ import { createPool } from './db.js'
 import { migrate } from './migrate.js'
 import { defaultConfig, type Ctx } from './context.js'
 import { SimulatedPixProvider } from './providers/simulated.js'
+import { AsaasPixProvider, AsaasSandboxPayer, type AsaasOptions } from './providers/asaas.js'
+import type { PixProvider } from './providers/types.js'
 import { HttpChainGateway } from './chain/gateway.js'
 import { buildApp } from './app.js'
 import { registerWeb } from './web.js'
@@ -15,22 +17,30 @@ export type CoreEnv = Record<string, string | undefined>
 export async function startCore(env: CoreEnv = process.env) {
   const need = (k: string) => { const v = env[k]; if (!v) throw new Error(`variável ${k} ausente`); return v }
   const demo = env.DEMO_MODE === '1'
-  if (!demo) throw new Error('provedor Asaas ainda não ligado nesta versão: rode com DEMO_MODE=1 (Pix simulado)')
+  if (!demo) throw new Error('esta versão só roda como demo (DEMO_MODE=1): Pix simulado ou Asaas sandbox, Tempo testnet')
   const tempoRpc = env.TEMPO_RPC ?? 'https://rpc.moderato.tempo.xyz'
   const explorer = env.EXPLORER ?? 'https://explore.testnet.tempo.xyz'
   const token = env.TOKEN ?? '0x20c0000000000000000000000000000000000000'
   const webhookToken = need('ASAAS_WEBHOOK_TOKEN')
 
+  // Provedor Pix: simulado (padrão) ou Asaas SANDBOX (o adaptador recusa chave e URL de produção).
+  let provider: PixProvider = new SimulatedPixProvider()
+  let bench: AsaasSandboxPayer | undefined
+  if ((env.PIX_PROVIDER ?? 'simulated') === 'asaas') {
+    const ao: AsaasOptions = { apiKey: need('ASAAS_API_KEY'), customerId: need('ASAAS_CUSTOMER_ID'), baseUrl: env.ASAAS_BASE_URL, userAgent: env.ASAAS_USER_AGENT ?? 'PixSettle/0.1' }
+    provider = new AsaasPixProvider(ao)
+    bench = new AsaasSandboxPayer(ao, env.ASAAS_PAYER_API_KEY || undefined)
+  }
   const db = createPool(need('DATABASE_URL'))
   await migrate(db)
   const ctx: Ctx = {
-    db, provider: new SimulatedPixProvider(), now: () => new Date(),
+    db, provider, now: () => new Date(),
     chain: new HttpChainGateway(env.SETTLEMENT_URL ?? 'http://127.0.0.1:7401', need('SETTLEMENT_HMAC_SECRET'), Number(env.CHAIN_ID ?? 42431), token, need('TREASURY_ADDRESS')),
     cfg: defaultConfig({ issuer: { id: env.ISSUER_ID ?? 'pixsettle-demo', address: need('ISSUER_ADDRESS') } }),
   }
   const app = buildApp(ctx, { asaasWebhookToken: webhookToken, diagnosticsToken: need('DIAGNOSTICS_TOKEN'), tempoRpc })
   registerWeb(app, ctx, { tempoRpc, explorer, demo })
-  if (demo) await registerDemo(app, ctx, { webhookToken, merchantAddress: need('DEMO_MERCHANT_ADDRESS'), explorer })
+  if (demo) await registerDemo(app, ctx, { webhookToken, merchantAddress: need('DEMO_MERCHANT_ADDRESS'), explorer, bench })
 
   // Worker da outbox. Erro de um job fica gravado no próprio job (last_error); aqui só o que escapa.
   let stopping = false

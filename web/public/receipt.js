@@ -1,5 +1,5 @@
 import './verify.js'
-import { $, h, brl, units, short, api } from './common.js'
+import { $, h, brl, units, short, api, providerBadge } from './common.js'
 
 const id = location.pathname.split('/').pop()
 const ICON = { ok: '✓', fail: '✕', info: 'i', unavailable: '?' }
@@ -82,4 +82,5 @@ function details(p, meta) {
   ]
   $('#details').replaceChildren(...rows.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))
 }
+providerBadge()
 run()

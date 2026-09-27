@@ -78,13 +78,14 @@ export async function reconcileChargeCreation(ctx: Ctx, chargeId: string) {
   const c = (await ctx.db.query(`SELECT order_id, creation_state FROM pix_charges WHERE id=$1`, [chargeId])).rows[0]
   if (!c || !['creation_unknown', 'creation_review'].includes(c.creation_state)) return
   const found = await ctx.provider.findByExternalReference(c.order_id)
+  // QR real da cobrança encontrada (fora da transação: chamada de rede). Falhou? O job tenta de novo.
+  const qr = found.length === 1 ? await ctx.provider.getPixQr(found[0]!.id) : null
   await withTx(ctx.db, async tx => {
     const cur = (await tx.query(`SELECT creation_state FROM pix_charges WHERE id=$1 FOR UPDATE`, [chargeId])).rows[0].creation_state
     if (!['creation_unknown', 'creation_review'].includes(cur)) return
     if (found.length === 1) {
       const p = found[0]!
-      // QR do provedor: o simulado reconstrói; no Asaas vem de GET /payments/{id}/pixQrCode.
-      await markCreated(tx, chargeId, c.order_id, p.id, `RECUPERADO|${p.id}`, new Date(ctx.now().getTime() + ctx.cfg.orderTtlMs), 'reconcile_creation')
+      await markCreated(tx, chargeId, c.order_id, p.id, qr!.qrPayload, qr!.qrExpiresAt, 'reconcile_creation')
     } else {
       const to = found.length === 0 ? 'creation_review' : 'creation_conflict'
       if (cur === to) return
