@@ -124,11 +124,18 @@ describe('Pix simulado persistido: reinício recupera a cobrança com as referê
     await start()
     const { pid } = await newOrder()
     const p = env.ctx.provider as SimulatedPixProvider
+    // A primeira UPDATE da tabela falha, venha do pool ou de um cliente de transação (ITEM2-03 usa transação).
     const failNextUpdate = () => {
-      const q = env.db.query.bind(env.db) as any
-      ;(env.db as any).query = (sql: any, ...rest: any[]) => {
-        if (typeof sql === 'string' && sql.startsWith('UPDATE simulated_pix_charges')) { (env.db as any).query = q; return Promise.reject(new Error('conexão caiu antes do commit (simulado)')) }
-        return q(sql, ...rest)
+      const db = env.db as any, q = db.query.bind(db), connect = db.connect.bind(db)
+      let armed = true
+      const hit = (sql: any) => armed && typeof sql === 'string' && sql.startsWith('UPDATE simulated_pix_charges') && !(armed = false)
+      const restore = () => { db.query = q; db.connect = connect }
+      db.query = (sql: any, ...rest: any[]) => hit(sql) ? (restore(), Promise.reject(new Error('conexão caiu antes do commit (simulado)'))) : q(sql, ...rest)
+      db.connect = async () => {
+        const c = await connect(), cq = c.query.bind(c)
+        c.query = (sql: any, ...rest: any[]) => { if (hit(sql)) { restore(); c.query = cq; return Promise.reject(new Error('conexão caiu antes do commit (simulado)')) } return cq(sql, ...rest) }
+        const rel = c.release.bind(c); c.release = (...a: any[]) => { c.query = cq; c.release = rel; return rel(...a) }
+        return c
       }
     }
     failNextUpdate()
