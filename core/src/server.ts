@@ -10,8 +10,8 @@ import { HttpChainGateway } from './chain/gateway.js'
 import { buildApp } from './app.js'
 import { registerWeb } from './web.js'
 import { registerDemo } from './demo.js'
-import { runOnce } from './outbox.js'
-import { sweep } from './flows/sweep.js'
+import { defaultSweep } from './flows/sweep.js'
+import { startWorker, wakeOnWrites } from './worker.js'
 
 export type CoreEnv = Record<string, string | undefined>
 
@@ -25,15 +25,16 @@ export async function startCore(env: CoreEnv = process.env) {
   const webhookToken = need('ASAAS_WEBHOOK_TOKEN')
 
   // Provedor Pix: simulado (padrão) ou Asaas SANDBOX (o adaptador recusa chave e URL de produção).
-  let provider: PixProvider = new SimulatedPixProvider()
+  const db = createPool(need('DATABASE_URL'))
+  await migrate(db)
+  // Simulado persiste no banco (tabela própria): a cobrança sobrevive a reinício da demo.
+  let provider: PixProvider = new SimulatedPixProvider({ store: db })
   let bench: AsaasSandboxPayer | undefined
   if ((env.PIX_PROVIDER ?? 'simulated') === 'asaas') {
     const ao: AsaasOptions = { apiKey: need('ASAAS_API_KEY'), customerId: need('ASAAS_CUSTOMER_ID'), baseUrl: env.ASAAS_BASE_URL, userAgent: env.ASAAS_USER_AGENT ?? 'PixSettle/0.1' }
     provider = new AsaasPixProvider(ao)
     bench = new AsaasSandboxPayer(ao, env.ASAAS_PAYER_API_KEY || undefined)
   }
-  const db = createPool(need('DATABASE_URL'))
-  await migrate(db)
   const ctx: Ctx = {
     db, provider, now: () => new Date(),
     chain: new HttpChainGateway(env.SETTLEMENT_URL ?? 'http://127.0.0.1:7401', need('SETTLEMENT_HMAC_SECRET'), Number(env.CHAIN_ID ?? 42431), token, need('TREASURY_ADDRESS')),
@@ -43,25 +44,29 @@ export async function startCore(env: CoreEnv = process.env) {
   registerWeb(app, ctx, { tempoRpc, explorer, demo })
   if (demo) await registerDemo(app, ctx, { webhookToken, merchantAddress: need('DEMO_MERCHANT_ADDRESS'), explorer, bench })
 
-  // Worker da outbox. Erro de um job fica gravado no próprio job (last_error); aqui só o que escapa.
-  let stopping = false
-  const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
-  const sweepEvery = Number(env.SWEEP_INTERVAL_MS ?? 300_000) // contrato: a cada 5 minutos
-  let lastSweep = 0
-  const worker = (async () => {
-    while (!stopping) {
-      try {
-        if (Date.now() - lastSweep >= sweepEvery) { lastSweep = Date.now(); await sweep(ctx) }
-        if (!(await runOnce(ctx))) await sleep(200)
-      } catch (e) { console.error('worker:', (e as Error).message); await sleep(1000) }
-    }
-  })()
+  // Worker da outbox com estado ocioso de zero consultas (src/worker.ts). Erro de um job fica gravado
+  // no próprio job (last_error); erro do banco vira espera crescente com motivo, nunca "fila vazia".
+  const simulated = provider instanceof SimulatedPixProvider
+  const sweepCfg = {
+    ...defaultSweep,
+    // Com o Pix SIMULADO nada muda "lá fora" sem uma requisição nossa (que acorda o worker), então não há
+    // por que continuar observando cobrança já recebida. Com o Asaas, mantém a janela de 2 dias.
+    recentReceivedMs: Number(env.SWEEP_RECENT_RECEIVED_MS ?? (simulated ? 0 : defaultSweep.recentReceivedMs)),
+  }
+  const worker = startWorker(ctx, {
+    sweepEveryMs: Number(env.SWEEP_INTERVAL_MS ?? 300_000), // contrato: a cada 5 minutos, enquanto houver o que conciliar
+    sweep: sweepCfg,
+    maxIdleMs: env.WORKER_MAX_IDLE_MS ? Number(env.WORKER_MAX_IDLE_MS) : null,
+  })
+  // Acorda depois de cada requisição que pode gravar (o handler já fez commit antes de responder).
+  wakeOnWrites(app, worker)
 
   const port = Number(env.PORT ?? 8080), host = env.HOST ?? '127.0.0.1'
   await app.listen({ port, host })
   return {
     app, ctx, url: `http://${host}:${port}`,
-    stop: async () => { stopping = true; await worker; await app.close(); await db.end() },
+    worker,
+    stop: async () => { await worker.stop(); await app.close(); await db.end() },
   }
 }
 

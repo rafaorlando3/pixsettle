@@ -33,13 +33,25 @@ async function run() {
 async function verify(env, trusted, meta) {
   hero('run', 'Verifying', 'Checking the signature and reading the transaction from Tempo.')
   $('#steps').replaceChildren(h('div', { class: 'step' }, h('span', { class: 'ico run' }, h('span', { class: 'spin' })), h('div', {}, 'Running checks...')))
-  const steps = await globalThis.PixSettleVerify.verifyReceipt(env, trusted, meta.chain.rpc)
+  let steps
+  try { steps = await globalThis.PixSettleVerify.verifyReceipt(env, trusted, meta.chain.rpc) }
+  catch (e) {
+    // Nunca deixar a tela presa em "Verifying": mostra o motivo e deixa tentar de novo.
+    $('#steps').replaceChildren(h('div', { class: 'step' }, h('span', { class: 'ico unavailable' }, '?'), h('div', {}, h('div', { class: 'strong' }, 'Verification could not complete'), h('div', { class: 'small muted' }, String(e?.message ?? e)))))
+    hero('warn', 'Verification could not complete', 'Nothing was concluded about this receipt. Use "Verify again" in a moment.')
+    return
+  }
   $('#steps').replaceChildren(...steps.map(s => h('div', { class: 'step' },
     h('span', { class: `ico ${s.state}` }, ICON[s.state]),
     h('div', {}, h('div', { class: 'strong' }, s.label), h('div', { class: 'small muted' }, s.detail)))))
   const fail = steps.some(s => s.state === 'fail'), unavailable = steps.some(s => s.state === 'unavailable')
   if (fail) hero('bad', 'Verification failed', 'Do not trust this receipt. See the failing check below.')
-  else if (unavailable) hero('warn', 'Signature valid, chain check unavailable', 'The Tempo RPC could not be reached. Try again in a moment.')
+  else if (unavailable) {
+    const reason = steps.find(s => s.state === 'unavailable')?.reason
+    if (reason === 'receipt_not_found') hero('warn', 'Signature valid, transaction not found yet', 'The Tempo RPC answered but has no receipt for this transaction yet. It may still be pending, or the node may be behind. Use "Verify again" in a moment.')
+    else if (reason === 'rpc_incomplete') hero('warn', 'Signature valid, chain answer incomplete', 'The Tempo RPC returned an incomplete receipt. Nothing was concluded. Use "Verify again" in a moment.')
+    else hero('warn', 'Signature valid, chain check unavailable', 'The Tempo RPC could not be reached. Nothing was concluded. Use "Verify again" in a moment.')
+  }
   else if (env.payload.receipt_type === 'refund_notice') hero('ok', 'Refund notice verified', 'Signed by a trusted issuer. The refund itself is attested by the issuer from the Pix provider, not proven on-chain.')
   else hero('ok', 'Receipt verified', 'Signed by a trusted issuer and matched to a successful transfer on Tempo.')
 }

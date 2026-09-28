@@ -100,7 +100,7 @@ describe('verificador do navegador: assinatura', () => {
   })
 })
 
-describe('verificador do navegador: falha do recibo nunca vira "indisponível"', () => {
+describe('verificador do navegador: recibo que não bate com a cadeia falha', () => {
   it('rede errada (chain_id 1): fail, sem consultar a RPC', async () => {
     const r = await run(await signed(p => { p.chain_id = 1 }), { kind: 'receipt' })
     expect(r.sig.state).toBe('ok')
@@ -120,15 +120,6 @@ describe('verificador do navegador: falha do recibo nunca vira "indisponível"',
     expect(r.chain.detail).toMatch(/amount/)
     expect(r.chain.detail).toMatch(/\bto\b/)
     expect(r.calls).toBe(0)
-  })
-  it('transação inexistente na Tempo: fail "not found"', async () => {
-    const r = await run(await signed(), { kind: 'null' })
-    expect(r.chain.state).toBe('fail')
-    expect(r.chain.detail).toContain('not found on Tempo Moderato')
-    const other = await run(await signed(p => { p.settlement.tx_hash = '0x' + 'ab'.repeat(32) }), { kind: 'receipt' })
-    expect(other.chain.state).toBe('fail')
-    expect(other.chain.detail).toContain('not found on Tempo Moderato')
-    expect(other.calls).toBe(1)
   })
   it('transação revertida: fail', async () => {
     const r = await run(await signed(), { kind: 'receipt', patch: x => { x.status = '0x0' } })
@@ -161,6 +152,45 @@ describe('verificador do navegador: falha do recibo nunca vira "indisponível"',
   })
 })
 
+describe('verificador do navegador: recibo não encontrado ou incompleto é inconclusivo (REV-01)', () => {
+  it('RPC responde sem recibo: indisponível com motivo próprio, nunca falha', async () => {
+    const r = await run(await signed(), { kind: 'null' })
+    expect(r.sig.state).toBe('ok')
+    expect(r.chain.state).toBe('unavailable')
+    expect(r.chain.reason).toBe('receipt_not_found')
+    expect(r.chain.detail).toContain('does not prove the receipt is false')
+  })
+  it('mesmo envelope: sem recibo na primeira consulta, recibo correto na seguinte fica ok (sem poll infinito: uma consulta por verificação)', async () => {
+    const env = await signed()
+    const first = await run(env, { kind: 'null' })
+    expect(first.chain.reason).toBe('receipt_not_found')
+    expect(first.calls).toBe(1)
+    const second = await run(env, { kind: 'receipt' })
+    expect(second.chain.state).toBe('ok')
+    expect(second.calls).toBe(1)
+  })
+  it('hash bem formado que o nó não conhece: indisponível (receipt_not_found)', async () => {
+    const r = await run(await signed(p => { p.settlement.tx_hash = '0x' + 'ab'.repeat(32) }), { kind: 'receipt' })
+    expect(r.chain.state).toBe('unavailable')
+    expect(r.chain.reason).toBe('receipt_not_found')
+    expect(r.calls).toBe(1)
+  })
+  it('recibo sem blockHash: indisponível (rpc_incomplete), sem exceção', async () => {
+    const r = await run(await signed(), { kind: 'receipt', patch: x => { delete x.blockHash } })
+    expect(r.chain.state).toBe('unavailable')
+    expect(r.chain.reason).toBe('rpc_incomplete')
+  })
+  it('recibo sem logs: indisponível (rpc_incomplete), sem exceção', async () => {
+    const r = await run(await signed(), { kind: 'receipt', patch: x => { delete x.logs } })
+    expect(r.chain.state).toBe('unavailable')
+    expect(r.chain.reason).toBe('rpc_incomplete')
+  })
+  it('log estranho sem topics nem address no meio da lista: ignorado, o log certo ainda confere', async () => {
+    const r = await run(await signed(), { kind: 'receipt', patch: x => { x.logs.unshift({ data: '0x', logIndex: '0x5', blockHash: x.blockHash, blockNumber: x.blockNumber, transactionHash: x.transactionHash, transactionIndex: '0x0', removed: false, topics: [], address: '0x0000000000000000000000000000000000000000' }) } })
+    expect(r.chain.state).toBe('ok')
+  })
+})
+
 describe('verificador do navegador: RPC fora do ar vira "indisponível", nunca válido nem inválido', () => {
   it('porta fechada', async () => {
     const closed = createServer(); await new Promise<void>(ok => closed.listen(0, '127.0.0.1', ok))
@@ -168,6 +198,7 @@ describe('verificador do navegador: RPC fora do ar vira "indisponível", nunca v
     const r = await run(await signed(), { kind: 'receipt' }, url)
     expect(r.sig.state).toBe('ok')
     expect(r.chain.state).toBe('unavailable')
+    expect(r.chain.reason).toBe('rpc_unreachable')
   })
   it('HTTP 500', async () => {
     const r = await run(await signed(), { kind: 'http_500' })

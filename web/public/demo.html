@@ -53,9 +53,9 @@
           <h2 class="m0">4. Settlement</h2><span id="status" class="badge muted">Idle</span>
         </div>
         <div class="kpis">
-          <div class="kpi"><div class="v" id="k-brl">-</div><div class="l">Pix received (BRL)</div></div>
+          <div class="kpi"><div class="v" id="k-brl">-</div><div class="l" id="l-brl">Amount charged (BRL)</div></div>
           <div class="kpi"><div class="v" id="k-net">-</div><div class="l" id="l-net">Merchant will get (pathUSD)</div></div>
-          <div class="kpi"><div class="v" id="k-res">-</div><div class="l">Reserve (simulated)</div></div>
+          <div class="kpi"><div class="v" id="k-res">-</div><div class="l" id="l-res">Reserve from this order (simulated)</div></div>
           <div class="kpi"><div class="v" id="k-time">-</div><div class="l">Pix to on-chain</div></div>
         </div>
         <dl class="kv" id="facts"></dl>
@@ -64,7 +64,7 @@
       <section class="card" id="refund-card">
         <div class="row between mb12"><h2 class="m0">5. Refunds and reserve</h2><span class="badge sim">Simulated accounting</span></div>
         <div class="kpis">
-          <div class="kpi"><div class="v" id="r-held">-</div><div class="l">Reserve held (pathUSD)</div></div>
+          <div class="kpi"><div class="v" id="r-held">-</div><div class="l">Merchant reserve, all orders (pathUSD)</div></div>
           <div class="kpi"><div class="v" id="r-used">-</div><div class="l">Used by refunds</div></div>
           <div class="kpi"><div class="v" id="r-bal">-</div><div class="l">Reserve balance</div></div>
           <div class="kpi"><div class="v" id="r-debt">-</div><div class="l">Merchant debt</div></div>

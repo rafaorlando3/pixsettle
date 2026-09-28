@@ -6,10 +6,9 @@ import type { Ctx } from './context.js'
 import { SimulatedPixProvider } from './providers/simulated.js'
 import { AsaasPixProvider, type AsaasSandboxPayer } from './providers/asaas.js'
 import { computeAmounts } from './flows/events.js'
-import { newId } from './ids.js'
 import { requestRefund } from './flows/refunds.js'
 
-export type DemoOptions = { webhookToken: string; merchantAddress: string; explorer: string; merchantName?: string; bench?: AsaasSandboxPayer }
+export type DemoOptions = { webhookToken: string; merchantAddress: string; explorer: string; merchantName?: string; merchantId?: string; bench?: AsaasSandboxPayer }
 
 const err = (reply: any, status: number, code: string, message: string) => reply.code(status).send({ error: { code, message } })
 
@@ -31,8 +30,12 @@ export async function registerDemo(app: FastifyInstance, ctx: Ctx, opts: DemoOpt
   const sandbox = ctx.provider instanceof AsaasPixProvider && ctx.provider.env === 'sandbox' && opts.bench ? opts.bench : null
   if (!sim && !sandbox) throw new Error('demo exige o provedor Pix simulado ou o Asaas sandbox com pagador de sandbox')
   const apiKey = 'sk_demo_' + randomBytes(24).toString('base64url') // só na memória deste processo
-  const merchantId = newId('mer')
-  await ctx.db.query(`INSERT INTO merchants (id, name, api_key_hash, payout_address) VALUES ($1,$2,$3,$4)`,
+  // Lojista da demo com id FIXO: depois de um reinício, os pedidos antigos continuam do mesmo lojista e o
+  // console da demo ainda os enxerga. A chave troca a cada partida (só o hash fica no banco).
+  const merchantId = opts.merchantId ?? 'mer_demo'
+  await ctx.db.query(
+    `INSERT INTO merchants (id, name, api_key_hash, payout_address) VALUES ($1,$2,$3,$4)
+     ON CONFLICT (id) DO UPDATE SET api_key_hash=EXCLUDED.api_key_hash, payout_address=EXCLUDED.payout_address, name=EXCLUDED.name`,
     [merchantId, opts.merchantName ?? 'Demo Store (simulated)', createHash('sha256').update(apiKey).digest('hex'), opts.merchantAddress])
   const auth = { authorization: `Bearer ${apiKey}` }
   const perIp = limiter(20, 10 * 60_000), global = limiter(300, 60 * 60_000)
@@ -69,9 +72,9 @@ export async function registerDemo(app: FastifyInstance, ctx: Ctx, opts: DemoOpt
       } catch (e) { return err(reply, 502, 'sandbox_payment_failed', (e as Error).message) }
     }
     const provider = sim!
-    if (!provider.charges.has(o.provider_payment_id)) return err(reply, 409, 'stale_demo_order', 'This order was created before the demo restarted. Create a new one.')
+    if (!(await provider.has(o.provider_payment_id))) return err(reply, 409, 'stale_demo_order', 'The simulated charge for this order no longer exists (it was created before the simulator kept its state). Create a new one.')
     const deliveries = Math.min(5, Math.max(1, Number(b.deliveries ?? 3) | 0))
-    provider.pay(o.provider_payment_id, scenario === 'underpay' ? { valueMinor: BigInt(o.amount_minor) - 1n } : {})
+    await provider.pay(o.provider_payment_id, scenario === 'underpay' ? { valueMinor: BigInt(o.amount_minor) - 1n } : {})
     const event = { id: `evt_sim_${o.id}`, event: 'PAYMENT_RECEIVED', payment: { id: o.provider_payment_id, status: 'RECEIVED', billingType: 'PIX' } }
     const results = []
     for (let i = 1; i <= deliveries; i++) {

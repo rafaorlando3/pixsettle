@@ -2,14 +2,19 @@
 // e confere a transação direto na RPC pública da Tempo, sem confiar no servidor do PixSettle.
 //
 // Estados da checagem on-chain:
-//   fail        o recibo não bate com a cadeia (rede errada, campo malformado, transação inexistente,
-//               revertida, bloco/log/valor/memo diferentes).
-//   unavailable só quando a RPC não respondeu (rede, tempo esgotado, erro do próprio nó).
+//   fail        o recibo não bate com a cadeia (rede errada, campo malformado, revertida,
+//               bloco/log/valor/memo diferentes). Só com evidência observada.
+//   unavailable inconclusivo, com motivo em `reason`:
+//               rpc_unreachable   a RPC não respondeu (rede, HTTP, erro do nó, tempo esgotado);
+//               receipt_not_found a RPC respondeu sem recibo (transação pendente ou nó atrasado;
+//                                 "não encontrado" não prova que o recibo é falso, revisão REV-01);
+//               rpc_incomplete    a RPC devolveu um recibo sem os campos necessários.
 import { createPublicClient, http, getAddress, isAddress, toEventSelector, TransactionReceiptNotFoundError, type Hex } from 'viem'
 import { tempoModerato } from 'viem/chains'
 import { verifyEnvelope, type ReceiptEnvelope } from '../../settlement/src/receipt.js'
 
-export type Step = { key: string; label: string; state: 'ok' | 'fail' | 'unavailable' | 'info'; detail: string }
+export type Reason = 'rpc_unreachable' | 'receipt_not_found' | 'rpc_incomplete'
+export type Step = { key: string; label: string; state: 'ok' | 'fail' | 'unavailable' | 'info'; detail: string; reason?: Reason }
 export type VerifyOptions = { timeoutMs?: number; retryCount?: number }
 
 const TOPIC = toEventSelector('TransferWithMemo(address,address,uint256,bytes32)')
@@ -59,10 +64,18 @@ export async function verifyReceipt(env: ReceiptEnvelope, trustedIssuers: string
     r = await client.getTransactionReceipt({ hash: s.tx_hash })
   } catch (e) {
     if (e instanceof TransactionReceiptNotFoundError || (e as Error)?.name === 'TransactionReceiptNotFoundError') {
-      steps.push({ key: 'chain', label: CHAIN, state: 'fail', detail: `transaction ${s.tx_hash} not found on Tempo Moderato` })
+      steps.push({ key: 'chain', label: CHAIN, state: 'unavailable', reason: 'receipt_not_found',
+        detail: `Not found yet: the Tempo RPC has no receipt for ${s.tx_hash}. The transaction may still be pending or the node may be behind; this alone does not prove the receipt is false. Verify again in a moment.` })
     } else {
-      steps.push({ key: 'chain', label: CHAIN, state: 'unavailable', detail: `Verification unavailable: ${(e as Error).message}` })
+      steps.push({ key: 'chain', label: CHAIN, state: 'unavailable', reason: 'rpc_unreachable', detail: `Verification unavailable: ${(e as Error).message}` })
     }
+    return steps
+  }
+
+  // Recibo estruturalmente incompleto não pode travar a tela nem virar falha: é inconclusivo.
+  const missing = ['status', 'blockHash', 'blockNumber', 'logs'].filter(k => (r as any)?.[k] === undefined || (r as any)?.[k] === null)
+  if (missing.length || !Array.isArray(r.logs)) {
+    steps.push({ key: 'chain', label: CHAIN, state: 'unavailable', reason: 'rpc_incomplete', detail: `Verification unavailable: the Tempo RPC returned an incomplete receipt (missing ${missing.join(', ') || 'logs'}).` })
     return steps
   }
 
@@ -70,12 +83,12 @@ export async function verifyReceipt(env: ReceiptEnvelope, trustedIssuers: string
   if (r.status !== 'success') checks.push('transaction reverted')
   if (r.blockHash.toLowerCase() !== s.block_hash.toLowerCase()) checks.push('block hash differs')
   if (r.blockNumber.toString() !== String(s.block_number)) checks.push('block number differs')
-  const log = r.logs.find(l =>
+  const log = r.logs.find(l => Array.isArray(l?.topics) && typeof l?.address === 'string' && isAddress(l.address, { strict: false }) &&
     l.topics[0]?.toLowerCase() === TOPIC.toLowerCase() && getAddress(l.address) === getAddress(p.token) &&
     l.topics[1]?.toLowerCase() === pad(p.treasury) && l.topics[2]?.toLowerCase() === pad(s.to) &&
     l.topics[3]?.toLowerCase() === s.memo.toLowerCase() && safeBig(l.data) === BigInt(s.amount))
   if (!log) checks.push('no TransferWithMemo matching token, from, to, amount and memo')
-  else if (log.logIndex !== Number(s.log_index)) checks.push('log index differs')
+  else if (Number(log.logIndex) !== Number(s.log_index)) checks.push('log index differs')
   steps.push(checks.length
     ? { key: 'chain', label: CHAIN, state: 'fail', detail: checks.join('; ') }
     : { key: 'chain', label: CHAIN, state: 'ok', detail: `Verified by your browser on Tempo: ${BigInt(s.amount)} units (6 decimals) to ${s.to}, block ${r.blockNumber}` })

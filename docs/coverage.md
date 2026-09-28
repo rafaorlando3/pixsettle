@@ -2,7 +2,7 @@
 
 This file maps the failure scenarios that matter for a payment settlement system to the automated tests that cover them, and says plainly what is still open. Test names are quoted exactly as they appear in the code (in Portuguese), so each one can be found with a search.
 
-The evidence is the test run for the same commit as this file: GitHub Actions runs every suite on every push (`.github/workflows/tests.yml`). Last local run of the same steps, on 2026-09-27: **111 passed, 1 skipped** (the testnet integration test, see below), and the Python vector check passed.
+The evidence is the test run for the same commit as this file: GitHub Actions runs every suite on every push (`.github/workflows/tests.yml`). Last local run of the same steps, on 2026-09-28: **136 passed, 1 skipped** (the testnet integration test, see below), and the Python vector check passed.
 
 ## How the tests run
 
@@ -88,10 +88,14 @@ Status: **Covered.**
 
 Expected: after a restart, the order, the Pix charge, the send attempt, the receipt and the reconciliation continue with their original references.
 
-Status: **Covered for everything stored in PostgreSQL. Open for the simulated Pix charge.**
+Status: **Covered.** The simulated Pix provider now keeps its charges in its own table (`simulated_pix_charges`, isolated from the real providers: no core table references it, and ids must start with `pay_sim_`). Each "restart" in these tests is a new provider object with empty memory on the same database.
 
-- Covered: `p1.test.ts` › the four crash points of scenario 2, and `7. evento persistido e processo cai antes de terminar: a outbox recupera, mesmo com duplicata`; `review-fixes.test.ts` › both `R4` tests.
-- **Open:** the simulated Pix provider keeps its charges in memory (`core/src/providers/simulated.ts`). After the public demo restarts, an order created before the restart is intact in the database, but the simulator no longer knows its charge. The demo says so instead of failing silently ("This order was created before the demo restarted. Create a new one.", HTTP 409), and the sweep holds such orders for review (`sweep.test.ts` › `cobrança sumiu do provedor`). Plan: persist the simulator's state in the database, isolated from the real providers, with a restart test. The Asaas sandbox adapter does not have this gap, because the charge lives at the provider.
+- `simulator-restart.test.ts` › `cria, reinicia, paga, reinicia, webhook: liquida uma vez com o mesmo pedido e a mesma cobrança`
+- `simulator-restart.test.ts` › `webhook perdido e reinício: a varredura acha o pagamento pelo banco do simulador, sem reter como cobrança sumida`
+- `simulator-restart.test.ts` › `estorno depois de reiniciar: o provedor novo acha a cobrança, estorna uma vez e grava no banco`
+- `simulator-restart.test.ts` › `demo: pedido criado antes do reinício continua pagável pelo botão da demo (antes dava 409 stale_demo_order)`. This test also found that every demo boot created a new demo merchant, so the console lost access to older orders (HTTP 404). The demo merchant now has a fixed id and only its key rotates on each boot.
+- `simulator-restart.test.ts` › `cobrança que nunca existiu no simulador continua 404 (a varredura retém com motivo, como antes)` and `o banco recusa id que não seja do simulador (isolamento dos provedores reais)`
+- Still covered from before: `p1.test.ts` › the four crash points of scenario 2 and `7. evento persistido e processo cai antes de terminar: a outbox recupera, mesmo com duplicata`; `review-fixes.test.ts` › both `R4` tests; `worker.test.ts` › `lease de um worker que morreu: espera o lease vencer e retoma o job`.
 
 ### 6. Amounts, rounding and minimum units
 
@@ -113,19 +117,39 @@ Status: **Covered.** One defect was found and fixed while building this matrix, 
 
 ### 7. Receipt verification in the browser
 
-Expected: a receipt that does not match the chain is "failed". "Unavailable" appears only when the Tempo RPC cannot be reached, and then the page says so instead of calling the receipt valid or invalid. A valid signature alone does not prove that the Pix was received: the page shows the Pix part as the issuer's signed statement.
+Expected: a receipt that contradicts the chain is "failed". Anything the chain did not answer conclusively is "unavailable", with its own reason, and the page never calls such a receipt valid or invalid. A valid signature alone does not prove that the Pix was received: the page shows the Pix part as the issuer's signed statement.
 
-Status: **Covered.** One defect was found and fixed: a receipt for another network, a malformed field and a transaction that does not exist were reported as "unavailable" instead of "failed". The four new tests for these cases fail on the previous verifier.
+Status: **Covered.** Two defects were fixed: a receipt for another network and a malformed field were reported as "unavailable" instead of "failed". A third case was corrected after review (REV-01): a transaction the RPC does not return is **not** proof of a false receipt, because it may still be pending or the node may be behind, so it is "unavailable" with the reason `receipt_not_found`, not "failed". A structurally incomplete RPC answer is "unavailable" with the reason `rpc_incomplete` and no longer leaves the page stuck.
 
-- `web/test/verify.test.ts` (18 tests, local JSON-RPC server):
+- `web/test/verify.test.ts` (23 tests, local JSON-RPC server that behaves like a node: malformed hash gets a parameter error, unknown hash gets no receipt):
   - valid receipt: signature ok, settlement ok
   - tampered after signing, untrusted issuer: signature fails
-  - wrong network (checked before any RPC call), malformed `tx_hash`, malformed amount and recipient, transaction not found, reverted, different block, different amount, different memo, different token, different log index: failed
-  - closed port, HTTP 500, JSON-RPC error, timeout: unavailable
+  - failed: wrong network (checked before any RPC call), malformed `tx_hash`, malformed amount and recipient, reverted, different block, different amount, different memo, different token, different log index
+  - unavailable, `receipt_not_found`: the RPC has no receipt; the same envelope verifies as ok on the next check once the receipt exists (one RPC call per check, no endless polling)
+  - unavailable, `rpc_incomplete`: receipt without block hash, receipt without logs; an odd log without topics is skipped and the right log still matches
+  - unavailable, `rpc_unreachable`: closed port, HTTP 500, JSON-RPC error, timeout
   - refund notice: informational only, no RPC call
+- The receipt page shows a different message for each reason and a "Verify again" button; if the verifier itself throws, the page says the check could not complete instead of spinning forever.
 - `receipt.test.ts`: shared vectors (`contract/vectors/receipt-v1.json`), valid and invalid, duplicate JSON keys refused
 - `chain.test.ts` › `identidade do evento (seção 4.8)`: same memo on another token, sender, recipient, amount or network does not count; a reverted receipt does not count
 - `contract/tools/verify_receipt_vectors.py`: the same vectors checked by an independent Python implementation
+
+### 8. Idle worker: zero database queries when there is nothing to do
+
+Expected: with an empty queue and nothing left to reconcile, the worker makes no database queries at all until a request wakes it, so the hosted database can suspend (Neon suspends a compute after 5 minutes without queries). It never treats a database error as an empty queue, never loses a wake-up, and still runs future jobs, expired leases and the periodic sweep on time.
+
+Status: **Covered.** Measured with `core/scripts/measure-idle.ts` on an empty database, 10 seconds: the previous loop (200 ms polling) made **150 queries (900 per minute)**; the new worker made **0**.
+
+- `worker.test.ts` › `sem nada a fazer: fica idle e faz ZERO consultas enquanto ninguém chama wake` (every query is counted: direct and inside transactions)
+- `worker.test.ts` › `pedido aguardando pagamento: não fica idle (varredura pendente), espera o intervalo da varredura sem consultar no meio`
+- `worker.test.ts` › `evento chega (commit) + wake: liquida até o fim e volta a idle; depois, zero consultas`
+- `worker.test.ts` › `wake durante o trabalho não se perde: o job gravado nesse meio-tempo roda sem esperar timer`
+- `worker.test.ts` › `job com horário futuro: fica waiting e roda sozinho na hora, sem wake`
+- `worker.test.ts` › `lease de um worker que morreu: espera o lease vencer e retoma o job`
+- `worker.test.ts` › `botão "pagar" da demo (POST) acorda o worker ocioso, que liquida sem nenhum wake manual`
+- `worker.test.ts` › `consulta falhando: estado error com o motivo, nunca idle; quando o banco volta, conclui e fica idle`
+- Known limit, stated in `src/worker.ts`: the wake-up is in-process. With more than one process writing to the outbox, set `WORKER_MAX_IDLE_MS` to cap the sleep. The demo runs one core process.
+- With the simulated Pix provider nothing changes outside without one of our own requests, so already received charges are not re-observed (`SWEEP_RECENT_RECEIVED_MS` defaults to 0 there; with Asaas it keeps the 2-day window).
 
 ## What these tests do not prove
 

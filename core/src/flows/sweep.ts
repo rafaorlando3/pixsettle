@@ -9,6 +9,26 @@ import type { Ctx } from '../context.js'
 export type SweepConfig = { batch: number; expiryGraceMs: number; recentReceivedMs: number }
 export const defaultSweep: SweepConfig = { batch: 200, expiryGraceMs: 30_000, recentReceivedMs: 2 * 86_400_000 }
 
+/** Cobranças que ainda podem mudar no provedor ($1 = corte de "recebida há pouco"). Única fonte da regra:
+ *  usada pela varredura e pela decisão do worker de ficar ocioso. */
+const WATCH_WHERE = `c.creation_state='created' AND c.provider_payment_id IS NOT NULL AND (
+              c.observed_state IN ('created','overdue','confirmed')
+           OR (c.observed_state IN ('received','partially_refunded') AND c.updated_at > $1)
+           OR EXISTS (SELECT 1 FROM refund_cases rc WHERE rc.order_id=o.id AND rc.state IN ('requested','submitting','unknown')))
+          AND o.status <> 'expired' AND o.hold_reason IS DISTINCT FROM 'provider_charge_missing'`
+
+/**
+ * Ainda há o que conciliar sem aviso nosso? Pedido aguardando pagamento (pode vencer) ou cobrança
+ * observável. Sem isso, a varredura não tem trabalho e o worker pode ficar ocioso (zero consultas).
+ */
+export async function sweepNeeded(ctx: Ctx, cfg: SweepConfig = defaultSweep): Promise<boolean> {
+  const r = await ctx.db.query(
+    `SELECT EXISTS (SELECT 1 FROM orders WHERE status='awaiting_payment' AND hold_reason IS NULL)
+         OR EXISTS (SELECT 1 FROM pix_charges c JOIN orders o ON o.id=c.order_id WHERE ${WATCH_WHERE}) AS need`,
+    [new Date(ctx.now().getTime() - cfg.recentReceivedMs)])
+  return r.rows[0].need === true
+}
+
 /** Enfileira sem duplicar: não cria job se já existe um pendente para a mesma entidade. */
 async function enqueueOnce(tx: Tx, topic: string, entityId: string) {
   await tx.query(
@@ -28,11 +48,7 @@ export async function sweep(ctx: Ctx, cfg: SweepConfig = defaultSweep): Promise<
     for (const r of due) await enqueueOnce(tx, 'expire_order', r.id)
     const watch = (await tx.query(
       `SELECT c.id FROM pix_charges c JOIN orders o ON o.id=c.order_id
-        WHERE c.creation_state='created' AND c.provider_payment_id IS NOT NULL AND (
-              c.observed_state IN ('created','overdue','confirmed')
-           OR (c.observed_state IN ('received','partially_refunded') AND c.updated_at > $1)
-           OR EXISTS (SELECT 1 FROM refund_cases rc WHERE rc.order_id=o.id AND rc.state IN ('requested','submitting','unknown')))
-          AND o.status <> 'expired' AND o.hold_reason IS DISTINCT FROM 'provider_charge_missing'
+        WHERE ${WATCH_WHERE}
         ORDER BY c.last_observed_at NULLS FIRST LIMIT $2`,
       [new Date(ctx.now().getTime() - cfg.recentReceivedMs), cfg.batch])).rows
     for (const r of watch) await enqueueOnce(tx, 'observe_charge', r.id)

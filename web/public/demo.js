@@ -1,4 +1,5 @@
 import { $, h, brl, units, short, api, toast, providerBadge } from './common.js'
+import { kpiLabels } from './kpi.js'
 
 let current = null, poll = null, lastCount = 0
 
@@ -85,10 +86,14 @@ function setStatus(o) {
 
 function render(o) {
   setStatus(o)
+  // Rótulos pelo estado real: nada de "recebido" antes do Pix, nem promessa de envio em pedido vencido.
+  const k = kpiLabels(o)
   $('#k-brl').textContent = brl(o.amount_minor)
-  $('#k-net').textContent = o.hold_reason ? '0.00' : units(o.amounts.net)
-  $('#k-res').textContent = o.hold_reason ? '0.00' : units(o.amounts.reserve_simulated)
-  $('#l-net').textContent = o.status === 'settled' ? 'Merchant got (pathUSD)' : o.hold_reason ? 'Held, not sent' : 'Merchant will get (pathUSD)'
+  $('#l-brl').textContent = k.brl
+  $('#k-net').textContent = k.sent ? units(o.amounts.net) : '0.00'
+  $('#l-net').textContent = k.net
+  $('#k-res').textContent = k.reserve ? units(o.amounts.reserve_simulated) : '0.00'
+  $('#l-res').textContent = k.res
   const tl = o.timeline
   const at = (e, s) => tl.find(t => t.entity === e && t.to_state === s)
   const paid = at('order', 'paid'), settled = at('order', 'settled')
