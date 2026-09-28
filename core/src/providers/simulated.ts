@@ -39,11 +39,32 @@ export class SimulatedPixProvider implements PixProvider {
     return c
   }
 
-  private async save(c: Charge): Promise<void> {
-    if (!this.store) return
-    await this.store.query(
-      `UPDATE simulated_pix_charges SET status=$2, paid_at=$3, paid_minor=$4, refunded_minor=$5, updated_at=now() WHERE id=$1`,
-      [c.id, c.status, c.paidAt, c.paidMinor.toString(), c.refundedMinor.toString()])
+  /**
+   * Aplica uma mudança numa cobrança. Sem banco: na hora, no próprio objeto (como sempre foi).
+   * Com banco: calcula numa cópia, grava, e só então publica na memória. Se a gravação falhar, a memória
+   * é descartada para a próxima leitura vir do banco; nunca fica um estado que o banco não tem (ITEM2-02).
+   */
+  private async mutate(id: string, change: (c: Charge) => void): Promise<void> {
+    if (!this.store) {
+      const c = this.charges.get(id)
+      if (!c) throw notFound(id)
+      change(c)
+      return
+    }
+    const cur = await this.load(id)
+    if (!cur) throw notFound(id)
+    const next: Charge = { ...cur }
+    change(next)
+    try {
+      const r = await this.store.query(
+        `UPDATE simulated_pix_charges SET status=$2, paid_at=$3, paid_minor=$4, refunded_minor=$5, updated_at=now() WHERE id=$1`,
+        [next.id, next.status, next.paidAt, next.paidMinor.toString(), next.refundedMinor.toString()])
+      if (r.rowCount !== 1) throw new Error(`cobrança simulada ${id} não gravada (rowCount=${r.rowCount})`)
+    } catch (e) {
+      this.charges.delete(id) // resultado incerto: relê do banco na próxima vez
+      throw e
+    }
+    this.charges.set(id, next)
   }
 
   /** A cobrança existe (na memória ou no banco)? Usado pela demo para distinguir pedido antigo. */
@@ -89,8 +110,7 @@ export class SimulatedPixProvider implements PixProvider {
     if (!c) throw notFound(id)
     // Como o Asaas: só exclui cobrança pendente; paga devolve 400.
     if (c.status !== 'PENDING') throw new ProviderError('http', 400, { errors: [{ code: 'invalid_action', description: 'só cobranças pendentes' }] }, `cobrança ${id} em ${c.status}`)
-    c.status = 'DELETED'
-    await this.save(c)
+    await this.mutate(id, x => { x.status = 'DELETED' })
   }
 
   async refund(id: string, amountMinor: bigint): Promise<{ refundRef: string }> {
@@ -101,20 +121,16 @@ export class SimulatedPixProvider implements PixProvider {
   }
 
   /** Estorno feito no provedor (pedido nosso, MED ou painel do provedor).
-   *  Sem banco, a mudança é aplicada na hora (os testes chamam sem await); com banco, aguarda gravar. */
+   *  Sem banco, a mudança é aplicada na hora (os testes chamam sem await); com banco, só depois de gravar. */
   async providerRefund(id: string, amountMinor: bigint): Promise<void> {
-    const c = this.charges.get(id) ?? await this.load(id)
-    if (!c) throw notFound(id)
-    c.refundedMinor += amountMinor
-    c.status = c.refundedMinor >= c.paidMinor ? 'REFUNDED' : 'PARTIALLY_REFUNDED'
-    await this.save(c)
+    await this.mutate(id, c => {
+      c.refundedMinor += amountMinor
+      c.status = c.refundedMinor >= c.paidMinor ? 'REFUNDED' : 'PARTIALLY_REFUNDED'
+    })
   }
 
   // ---- ações da "bancada" (simulam o pagador) ----
   async pay(id: string, opts: { at?: Date; valueMinor?: bigint } = {}): Promise<void> {
-    const c = this.charges.get(id) ?? await this.load(id)
-    if (!c) throw notFound(id)
-    c.status = 'RECEIVED'; c.paidAt = opts.at ?? new Date(); c.paidMinor = opts.valueMinor ?? c.valueMinor
-    await this.save(c)
+    await this.mutate(id, c => { c.status = 'RECEIVED'; c.paidAt = opts.at ?? new Date(); c.paidMinor = opts.valueMinor ?? c.valueMinor })
   }
 }

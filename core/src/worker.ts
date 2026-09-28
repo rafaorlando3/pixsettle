@@ -79,15 +79,15 @@ export function startWorker(ctx: Ctx, opts: WorkerOptions): Worker {
       try {
         woken = false // o que chegar daqui em diante impede o sono desta volta (critério: não perder wake)
         set('busy', null)
-        let needSweep = false
-        if (Date.now() - lastSweep >= opts.sweepEveryMs) {
-          needSweep = await sweepNeeded(ctx, sweepCfg)
-          if (needSweep) await sweep(ctx, sweepCfg)
+        // Varre só quando há o que conciliar e o intervalo venceu; lastSweep só anda quando varreu de fato.
+        if (Date.now() - lastSweep >= opts.sweepEveryMs && await sweepNeeded(ctx, sweepCfg)) {
+          await sweep(ctx, sweepCfg)
           lastSweep = Date.now()
-        } else {
-          needSweep = await sweepNeeded(ctx, sweepCfg)
         }
         while (!stopping && await runOnce(ctx)) { /* esvazia o que está disponível agora */ }
+        // Recalcula DEPOIS de drenar: um job pode ter criado o que conciliar (ex.: cobrança recuperada que
+        // passa a aguardar pagamento). Decidir com o valor de antes deixava o worker ocioso (ITEM2-01).
+        const needSweep = await sweepNeeded(ctx, sweepCfg)
         const due = await nextDueMs()
         errDelay = backoff.min
         lastError = null

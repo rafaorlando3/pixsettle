@@ -10,6 +10,7 @@ import { buildApp } from '../src/app.js'
 import { registerWeb } from '../src/web.js'
 import { registerDemo } from '../src/demo.js'
 import { defaultSweep } from '../src/flows/sweep.js'
+import { SimulatedPixProvider } from '../src/providers/simulated.js'
 import { signReceipt } from '../../settlement/src/receipt.js'
 import { privateKeyToAccount } from 'viem/accounts'
 
@@ -155,6 +156,39 @@ describe('worker: acordado pelas requisições do servidor', () => {
     await until(() => worker!.state === 'idle', 15_000)
     await app.close()
   }, 40_000)
+})
+
+describe('worker: necessidade de varredura recalculada depois de drenar (ITEM2-01, revisão X-0027)', () => {
+  async function orderWithLostCreation() {
+    const A = new SimulatedPixProvider({ store: env.db }); env.ctx.provider = A
+    A.failNext = 'create_timeout_after_commit' // o provedor criou, a resposta se perdeu
+    const orderId = await createOrder(env.ctx, env.merchantId, { externalRef: 'r-' + randomUUID(), amountMinor: 10090n, description: 't' })
+    expect((await env.db.query(`SELECT creation_state FROM pix_charges WHERE order_id=$1`, [orderId])).rows[0].creation_state).toBe('creation_unknown')
+    const pid = (await env.db.query(`SELECT id FROM simulated_pix_charges WHERE order_id=$1`, [orderId])).rows[0].id as string
+    return { A, orderId, pid }
+  }
+
+  it('criação com resposta perdida + pagamento sem webhook + reinício: só o worker, sem wake, liquida uma vez', async () => {
+    await start0()
+    const { A, orderId, pid } = await orderWithLostCreation()
+    await A.pay(pid) // pago no provedor; nenhum webhook vai chegar
+    env.ctx.provider = new SimulatedPixProvider({ store: env.db }) // reinício
+    miner = setInterval(() => env.chain.mine(), 30)
+    await start({ sweepEveryMs: 400 })
+    await until(async () => (await env.db.query(`SELECT 1 FROM receipts WHERE order_id=$1`, [orderId])).rowCount === 1, 25_000)
+    expect(env.chain.mined).toHaveLength(1)
+  }, 40_000)
+
+  it('mesma situação sem pagamento: depois de recuperar a cobrança o worker fica esperando a varredura, não ocioso', async () => {
+    await start0()
+    await orderWithLostCreation()
+    env.ctx.provider = new SimulatedPixProvider({ store: env.db })
+    await start({ sweepEveryMs: 60_000 })
+    await until(async () => (await env.db.query(`SELECT count(*)::int AS n FROM orders WHERE status='awaiting_payment'`)).rows[0].n === 1, 5_000)
+    await until(() => worker!.state === 'waiting' || worker!.state === 'idle', 5_000)
+    await sleep(300)
+    expect(worker!.state).toBe('waiting')
+  })
 })
 
 describe('worker: erro de banco não é fila vazia', () => {

@@ -120,6 +120,32 @@ describe('Pix simulado persistido: reinício recupera a cobrança com as referê
     await expect(b.getPayment('pay_sim_0000000000000000')).rejects.toMatchObject({ status: 404 })
   })
 
+  it('escrita que falha não deixa estado fantasma na memória (ITEM2-02, revisão X-0027): pagamento e estorno', async () => {
+    await start()
+    const { pid } = await newOrder()
+    const p = env.ctx.provider as SimulatedPixProvider
+    const failNextUpdate = () => {
+      const q = env.db.query.bind(env.db) as any
+      ;(env.db as any).query = (sql: any, ...rest: any[]) => {
+        if (typeof sql === 'string' && sql.startsWith('UPDATE simulated_pix_charges')) { (env.db as any).query = q; return Promise.reject(new Error('conexão caiu antes do commit (simulado)')) }
+        return q(sql, ...rest)
+      }
+    }
+    failNextUpdate()
+    await expect(p.pay(pid)).rejects.toThrow(/simulado/)
+    expect((await p.getPayment(pid)).status).toBe('PENDING') // mesmo objeto
+    expect((await restart().getPayment(pid)).status).toBe('PENDING') // depois de reiniciar
+
+    const q = env.ctx.provider as SimulatedPixProvider
+    await q.pay(pid)
+    failNextUpdate()
+    await expect(q.providerRefund(pid, 1000n)).rejects.toThrow(/simulado/)
+    expect((await q.getPayment(pid)).refundedMinor).toBe(0n)
+    await q.providerRefund(pid, 1000n) // repetição depois da falha: conta uma vez só
+    expect((await q.getPayment(pid)).refundedMinor).toBe(1000n)
+    expect((await restart().getPayment(pid)).refundedMinor).toBe(1000n)
+  })
+
   it('o banco recusa id que não seja do simulador (isolamento dos provedores reais)', async () => {
     await start()
     await expect(env.db.query(`INSERT INTO simulated_pix_charges (id, order_id, value_minor, status) VALUES ('pay_real_1','o',1,'PENDING')`)).rejects.toThrow(/simulated_pix_charges_id_check/)

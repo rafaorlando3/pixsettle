@@ -2,7 +2,7 @@
 
 This file maps the failure scenarios that matter for a payment settlement system to the automated tests that cover them, and says plainly what is still open. Test names are quoted exactly as they appear in the code (in Portuguese), so each one can be found with a search.
 
-The evidence is the test run for the same commit as this file: GitHub Actions runs every suite on every push (`.github/workflows/tests.yml`). Last local run of the same steps, on 2026-09-28: **136 passed, 1 skipped** (the testnet integration test, see below), and the Python vector check passed.
+The evidence is the test run for the same commit as this file: GitHub Actions runs every suite on every push (`.github/workflows/tests.yml`). Last local run of the same steps, on 2026-09-28: **139 passed, 1 skipped** (the testnet integration test, see below), and the Python vector check passed.
 
 ## How the tests run
 
@@ -95,6 +95,8 @@ Status: **Covered.** The simulated Pix provider now keeps its charges in its own
 - `simulator-restart.test.ts` › `estorno depois de reiniciar: o provedor novo acha a cobrança, estorna uma vez e grava no banco`
 - `simulator-restart.test.ts` › `demo: pedido criado antes do reinício continua pagável pelo botão da demo (antes dava 409 stale_demo_order)`. This test also found that every demo boot created a new demo merchant, so the console lost access to older orders (HTTP 404). The demo merchant now has a fixed id and only its key rotates on each boot.
 - `simulator-restart.test.ts` › `cobrança que nunca existiu no simulador continua 404 (a varredura retém com motivo, como antes)` and `o banco recusa id que não seja do simulador (isolamento dos provedores reais)`
+- `simulator-restart.test.ts` › `escrita que falha não deixa estado fantasma na memória (ITEM2-02, revisão X-0027): pagamento e estorno`. Found in review: the simulator changed its in-memory copy before the database write was confirmed. It now writes first and only then updates memory; on a failed write it drops the memory copy so the next read comes from the database.
+- Limit: the fixed demo merchant id helps restarts from now on; it does not bring back charges that existed only in memory before this version.
 - Still covered from before: `p1.test.ts` › the four crash points of scenario 2 and `7. evento persistido e processo cai antes de terminar: a outbox recupera, mesmo com duplicata`; `review-fixes.test.ts` › both `R4` tests; `worker.test.ts` › `lease de um worker que morreu: espera o lease vencer e retoma o job`.
 
 ### 6. Amounts, rounding and minimum units
@@ -136,9 +138,9 @@ Status: **Covered.** Two defects were fixed: a receipt for another network and a
 
 ### 8. Idle worker: zero database queries when there is nothing to do
 
-Expected: with an empty queue and nothing left to reconcile, the worker makes no database queries at all until a request wakes it, so the hosted database can suspend (Neon suspends a compute after 5 minutes without queries). It never treats a database error as an empty queue, never loses a wake-up, and still runs future jobs, expired leases and the periodic sweep on time.
+Expected: with an empty queue and nothing left to reconcile, the worker makes no database queries at all until a request wakes it, so it no longer keeps the hosted database awake (Neon suspends a compute after 5 minutes without queries; the suspension itself has not been observed on the hosted demo yet, zero queries in a test is not that proof). It never treats a database error as an empty queue, never loses a wake-up, and still runs future jobs, expired leases and the periodic sweep on time.
 
-Status: **Covered.** Measured with `core/scripts/measure-idle.ts` on an empty database, 10 seconds: the previous loop (200 ms polling) made **150 queries (900 per minute)**; the new worker made **0**.
+Status: **Covered.** Measured with `core/scripts/measure-idle.ts` on an empty database, 10 seconds, in two separate runs: the previous loop (200 ms polling) made **150 and 147 queries (900 and 882 per minute)**; the new worker made **0** in both.
 
 - `worker.test.ts` › `sem nada a fazer: fica idle e faz ZERO consultas enquanto ninguém chama wake` (every query is counted: direct and inside transactions)
 - `worker.test.ts` › `pedido aguardando pagamento: não fica idle (varredura pendente), espera o intervalo da varredura sem consultar no meio`
@@ -148,6 +150,7 @@ Status: **Covered.** Measured with `core/scripts/measure-idle.ts` on an empty da
 - `worker.test.ts` › `lease de um worker que morreu: espera o lease vencer e retoma o job`
 - `worker.test.ts` › `botão "pagar" da demo (POST) acorda o worker ocioso, que liquida sem nenhum wake manual`
 - `worker.test.ts` › `consulta falhando: estado error com o motivo, nunca idle; quando o banco volta, conclui e fica idle`
+- `worker.test.ts` › `criação com resposta perdida + pagamento sem webhook + reinício: só o worker, sem wake, liquida uma vez` and `mesma situação sem pagamento: depois de recuperar a cobrança o worker fica esperando a varredura, não ocioso`. Found in review (ITEM2-01): the worker decided whether a sweep was needed before draining the queue, so a job that turned an order into "awaiting payment" left it asleep with nothing watching that order. It now re-checks after draining.
 - Known limit, stated in `src/worker.ts`: the wake-up is in-process. With more than one process writing to the outbox, set `WORKER_MAX_IDLE_MS` to cap the sleep. The demo runs one core process.
 - With the simulated Pix provider nothing changes outside without one of our own requests, so already received charges are not re-observed (`SWEEP_RECENT_RECEIVED_MS` defaults to 0 there; with Asaas it keeps the 2-day window).
 
