@@ -4,17 +4,17 @@ Working draft for the Crypto World's Fair, Tempo track. Numbers marked **[TBD]**
 
 ## Name and tagline
 
-**PixSettle**: Pix in, stablecoin out, with a receipt anyone can verify.
+**PixSettle**: Reconcile Pix payments, handle exceptions, verify every settlement.
 
 ## One-paragraph description
 
-PixSettle lets merchants who sell to Brazilians accept Pix and get paid in dollar stablecoins on Tempo. It starts where the need is obvious: Paraguay's border shops, where more than 35,000 merchants already accept Pix from Brazilian shoppers but want dollars. PixSettle settles each Pix payment with a `transferWithMemo` on Tempo that is never paid twice, controls refunds and Pix fraud claims (MED) with a per-merchant reserve, and issues a receipt that anyone can verify in their browser against the public Tempo RPC.
+PixSettle is a reconciliation and exception-handling prototype for merchants who receive Pix from Brazilian shoppers. It links each order to the provider's payment status, a controlled settlement attempt and a verifiable receipt. Duplicate webhooks, interrupted processing, refunds and uncertain RPC responses are treated as explicit states that must be reconciled before another action is allowed. The current demo uses a simulated Pix provider and FX quote, with real test transactions on Tempo Moderato. Its starting market is the Paraguay-Brazil border, where merchant interviews will test whether this workflow solves a meaningful operational problem. Merchant demand and willingness to pay remain unvalidated.
 
 ## Problem
 
 - Pix is how Brazil pays: about 148 million individual users at the end of 2025 (Central Bank of Brazil). Brazilian shoppers crossing into Paraguay pay with Pix too; purchases by Brazilians in Paraguay grew 107% in the first four months of 2026 compared with a year earlier (ABC Color).
-- The merchant on the other side usually wants dollars, not reais, and today depends on intermediaries whose settlement is a black box: when it arrives, at what rate, and what happens when a payment is disputed.
-- Pix payments can be clawed back. Through MED, a payer can ask for a Pix to be returned for up to 80 days. A merchant who already converted to dollars carries that risk alone.
+- Local processors already let merchants receive Pix in guaraníes or US dollars (Bancard: 48 business hours, sales visible in its merchant portal). Access to dollars is not the gap. What remains for merchants **[TBD after interviews]** is the work around each payment: matching it to the order, knowing when and at what rate it settles, and what happens when a payment is refunded or disputed.
+- Pix payments can be clawed back. For qualifying fraud cases, a payer may request MED within 80 days; review can continue afterward. Risk allocation depends on the provider and merchant agreements. PixSettle cannot prevent a bank-initiated MED.
 - Webhooks are delivered at least once and RPCs time out. A naive "on webhook, send stablecoin" pays twice, or pays and forgets.
 
 ## Solution
@@ -59,6 +59,8 @@ PixSettle lets merchants who sell to Brazilians accept Pix and get paid in dolla
 - Built with an independent review loop: every change to the settlement core that the reviewer reproduced came with failing cases that had to pass before the next step. **[Rafael decides whether to mention the AI tooling here; if a judge asks, answer truthfully.]**
 
 ## Pitch video script (target 2:30, captions on screen)
+
+> Historical: this is the script of the first recording, made at commit f7bcbab under the earlier "stablecoin out" positioning. The current demo and pitch videos follow the reconciliation and exception-handling script.
 
 Written for on-screen captions plus an optional synthetic voice-over, pending the organizer's answer on voice.
 
