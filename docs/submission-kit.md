@@ -56,7 +56,7 @@ PixSettle is a reconciliation and exception-handling prototype for merchants who
 ## Team
 
 - Rafael Orlando Mendes, Pedro Juan Caballero, Paraguay: payments and e-commerce operations with Pix and crypto, PHP/Laravel. Works in Portuguese and Spanish, written English.
-- Built with an independent review loop: every change to the settlement core that the reviewer reproduced came with failing cases that had to pass before the next step. AI tools, in Rafael's statement of September 27, 2026: "Claude (Anthropic) wrote most of the code, tests and docs under my direction: I set the problem, scope and rules, approved or rejected each step, and reviewed the flow against my operational experience, with merchant validation still pending. OpenAI Codex reviewed the implementation and contributed targeted regression tests (the `codex-*` files)."
+- Built with an independent review loop: every change to the settlement core that the reviewer reproduced came with failing cases that had to pass before the next step. AI tools: Claude (Anthropic) wrote most of the code, tests and docs under Rafael's direction; he set the problem, scope and rules, approved or rejected each step, and reviewed the flow against his operational experience. OpenAI Codex reviewed the implementation and contributed targeted regression tests (the `codex-*` files).
 
 ## Pitch video script (target 2:30, captions on screen)
 
