@@ -161,7 +161,8 @@ Status: **Covered.** Measured with `core/scripts/measure-idle.ts` on an empty da
 - No real Pix provider in production was used. The production adapter is tested only on the bench and stays blocked until a licensed partner is in place.
 - The testnet integration test is manual; CI never talks to Tempo.
 - There are no load or long-running soak tests.
-- The pages are tested through HTTP requests, not browser automation. The demo videos were recorded against the public demo.
+- The page tests exercise HTTP requests; they do not provide end-to-end browser coverage.
+- The current [demo](https://youtu.be/IQp42vun-0s) and [pitch](https://youtu.be/StmbEOT7iHM) videos were recorded at commit `31276caac67fe9fbfc79efbf50dbd040476cf067` in an isolated cloud instance with a fresh synthetic database, not against the hosted Render demo. Their settlement transactions used Tempo Moderato testnet. The hosted demo later advanced past `31276ca`; the commits since then change positioning copy and documentation only. A recorded browser demonstration is not an automated browser regression test or proof of production behavior.
 
 ## Run it yourself
 
