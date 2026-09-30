@@ -1,6 +1,6 @@
 # Colosseum submission kit (draft)
 
-Working draft for the Crypto World's Fair, Tempo track. Numbers marked **[TBD]** come from Rafael's merchant interviews (Oct 3 to 8). Everything else is either shown in the demo or sourced at the end.
+Working draft for the Crypto World's Fair, Tempo track. Merchant figures are aggregates from a short in-person survey of 9 merchants in Pedro Juan Caballero (Sep 27 to 30, 2026); individual answers stay private. Everything else is either shown in the demo or sourced at the end.
 
 ## Name and tagline
 
@@ -8,12 +8,12 @@ Working draft for the Crypto World's Fair, Tempo track. Numbers marked **[TBD]**
 
 ## One-paragraph description
 
-PixSettle is a reconciliation and exception-handling prototype for merchants who receive Pix from Brazilian shoppers. It links each order to the provider's payment status, a controlled settlement attempt and a verifiable receipt. Duplicate webhooks, interrupted processing, refunds and uncertain RPC responses are treated as explicit states that must be reconciled before another action is allowed. The current demo uses a simulated Pix provider and FX quote, with real test transactions on Tempo Moderato. Its starting market is the Paraguay-Brazil border, where merchant interviews will test whether this workflow solves a meaningful operational problem. Merchant demand and willingness to pay remain unvalidated.
+PixSettle is a reconciliation and exception-handling prototype for merchants who receive Pix from Brazilian shoppers. It links each order to the provider's payment status, a controlled settlement attempt and a verifiable receipt. Duplicate webhooks, interrupted processing, refunds and uncertain RPC responses are treated as explicit states that must be reconciled before another action is allowed. The current demo uses a simulated Pix provider and FX quote, with real test transactions on Tempo Moderato. Its starting market is the Paraguay-Brazil border. A small in-person survey and the accompanying merchant conversations provide initial discovery evidence; demand and willingness to pay for reconciliation tooling remain unvalidated.
 
 ## Problem
 
 - Pix is how Brazil pays: about 148 million individual users at the end of 2025 (Central Bank of Brazil). Brazilian shoppers crossing into Paraguay pay with Pix too; purchases by Brazilians in Paraguay grew 107% in the first four months of 2026 compared with a year earlier (ABC Color).
-- Local processors already let merchants receive Pix in guaraníes or US dollars (Bancard: 48 business hours, sales visible in its merchant portal). Access to dollars is not the gap. What remains for merchants **[TBD after interviews]** is the work around each payment: matching it to the order, knowing when and at what rate it settles, and what happens when a payment is refunded or disputed.
+- Local processors already let merchants receive Pix in guaraníes or US dollars (Bancard: 48 business hours, sales visible in its merchant portal). Access to dollars is not the gap: in our survey, 6 of the 8 merchants who answered prefer to be paid in guaraníes. PixSettle targets the work around each payment: matching it to the order, tracing settlement and exchange rates, and handling refunds or disputes; the value of this combined workflow remains a product hypothesis. The 3 surveyed merchants who accept Pix all wait 1 to 2 days for the money, report paying 2% to 3% in fees and exchange, and have already had a Pix refunded or claimed by a customer. Rafael reports that, in the same conversations, merchants taking Pix on payment terminals said they check payments against the terminal statement, which shows only the amount: when they sell more than one product or service, nothing records what each payment was for. This is a qualitative report, not a measured reconciliation-time result. Of the 6 who do not accept Pix, 5 say it requires a Brazilian bank account; they are paid in cash or by Paraguayan bank transfer.
 - Pix payments can be clawed back. For qualifying fraud cases, a payer may request MED within 80 days; review can continue afterward. Risk allocation depends on the provider and merchant agreements. PixSettle cannot prevent a bank-initiated MED.
 - Webhooks are delivered at least once and RPCs time out. A naive "on webhook, send stablecoin" pays twice, or pays and forgets.
 
@@ -45,18 +45,18 @@ PixSettle is a reconciliation and exception-handling prototype for merchants who
 
 ## Business model (proposal)
 
-- Take rate on settled volume **[TBD after interviews: what merchants pay today to receive Pix in dollars]**.
+- Take rate on settled volume (proposal). In our survey, 7 of the 8 merchants who answered the price question said they would pay 1% to 2%, below the 2% to 3% reported by those who already accept Pix. The survey described fast settlement in dollar stablecoins with a verifiable receipt, not reconciliation tooling alone. This 1% to 2% is the total price merchants said they would pay for that service, so provider, Pix and software fees must all fit inside it; it is not PixSettle revenue. Pricing, provider costs and the cost of payout in guaraníes remain unvalidated.
 - Revenue share with the licensed FX partner that does the actual BRL to dollar conversion. PixSettle is software on top of that partner and does not hold customer funds.
 - Later: reserve as a product (on-chain reserve with an explicit release policy) and receipts as an audit trail for accounting.
 
-## Traction plan
+## Merchant discovery
 
-- Rafael lives in Pedro Juan Caballero, a Paraguayan border city whose shops serve Brazilian shoppers. Between Oct 3 and 8 he interviews **[TBD: 5 to 10]** local merchants (how they receive Pix today, fees, settlement time, disputes) and asks for letters of interest **[TBD]**.
+- Rafael lives in Pedro Juan Caballero, a Paraguayan border city whose shops serve Brazilian shoppers. Between Sep 27 and 30 he surveyed 9 local merchants in person (services, pharmacies and other shops): 3 accept Pix today and 6 do not. The sample is small, does not cover the city centre and is not representative; individual answers stay private.
 
 ## Team
 
 - Rafael Orlando Mendes, Pedro Juan Caballero, Paraguay: payments and e-commerce operations with Pix and crypto, PHP/Laravel. Works in Portuguese and Spanish, written English.
-- Built with an independent review loop: every change to the settlement core that the reviewer reproduced came with failing cases that had to pass before the next step. **[Rafael decides whether to mention the AI tooling here; if a judge asks, answer truthfully.]**
+- Built with an independent review loop: every change to the settlement core that the reviewer reproduced came with failing cases that had to pass before the next step. AI tools, in Rafael's statement of September 27, 2026: "Claude (Anthropic) wrote most of the code, tests and docs under my direction: I set the problem, scope and rules, approved or rejected each step, and reviewed the flow against my operational experience, with merchant validation still pending. OpenAI Codex reviewed the implementation and contributed targeted regression tests (the `codex-*` files)."
 
 ## Pitch video script (target 2:30, captions on screen)
 
@@ -79,7 +79,7 @@ Written for on-screen captions plus an optional synthetic voice-over, pending th
 | 1:40 | Diagram of the send journal | Never paid twice: durable journal, same bytes on retry, reconcile by hash. |
 | 1:55 | Tests running (60 passing) | Crashes, lost responses, races: tested, and reviewed independently. |
 | 2:05 | Business slide | Take rate on settled volume, with a licensed FX partner. No custody. |
-| 2:15 | Rafael's interviews **[TBD]** | We are starting in Pedro Juan Caballero, with **[TBD]** merchants interviewed. |
+| 2:15 | Rafael's merchant survey (updated copy for future use; existing video unchanged) | We are starting in Pedro Juan Caballero: 9 merchants surveyed in person. |
 | 2:25 | Logo and repo link | PixSettle, built on Tempo. |
 
 ## Technical demo script (target 3:00)
