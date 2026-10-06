@@ -1,0 +1,58 @@
+# Exception copilot
+
+Every exception PixSettle finds (a second charge for the same order, a payment under the amount, a payment after the window, a second payment, a refund request, a MED claim, a divergent manual Pix, a failed or reversed withdrawal) gets a **verdict**: an action from a closed list, a confidence, a rationale, and the evidence lines it used. The verdict is immutable, hashed, and shown next to the exception on `/pilot`.
+
+The copilot exists to decide, not to chat. Four tests, applied to every piece of it:
+
+1. **It decides with evidence.** The verdict cites evidence ids (`e1`, `e2`...) that PixSettle itself assembled from the ledger; a verdict that cites an id that does not exist is rejected.
+2. **It is measured against the same task without a model.** Deterministic rules run first and close everything they can with confidence 0.9 or more. On the first 90 days of the live pilot the rules closed 479 of 493 exceptions; the model is only called for the 14 that need judgement. The page shows both counts, and the operator's agreement rate with the copilot on decided cases.
+3. **It has a guard.** Only *reversible* actions can be applied without a human (`hold_request_balance`, `close_benign_retry`, `close_expired`, `close_superseded`, `close_reversed`, `flag_review`), and only with confidence of at least 0.85 and no disagreement between rules and model. Anything that moves money (`refund_*`, `credit_customer`, `accept_as_paid`, `accept_late`, `approve_refund`, `contest_with_evidence`...) always waits for the operator, whatever the model says. If the model is off, fails, returns something that is not JSON, or an action outside the list, the exception goes to the human with that reason on screen; nothing is retried silently.
+4. **It is visible.** The exception queue, the verdict, the confidence meter and the reason a case is waiting are the first thing on the pilot page.
+
+## Actions by exception kind
+
+| Kind | Actions (reversible in bold) |
+| --- | --- |
+| `duplicate_charge` | **close_benign_retry**, **flag_review**, escalate |
+| `duplicate_payment` | refund_duplicate, credit_customer, escalate |
+| `amount_mismatch` | **hold_request_balance**, refund_partial, refund_excess, accept_as_paid, escalate |
+| `late_payment` | refund_late, accept_late, escalate |
+| `expired_unpaid` | **close_expired**, **flag_review** |
+| `charge_failed` | **close_superseded**, **close_expired**, **flag_review** |
+| `refund_requested` | approve_refund, reject_refund, escalate |
+| `med_reported` | contest_with_evidence, accept_refund, escalate |
+| `manual_divergent` | **hold_request_balance**, refund_partial, accept_as_paid, escalate |
+| `withdrawal_failed` | **close_reversed**, retry_withdrawal, **flag_review**, escalate |
+| `withdrawal_reversal` | **close_reversed**, **flag_review**, escalate |
+
+## Rules (no model)
+
+`core/src/copilot/rules.ts`. Examples: several charges for one order with exactly one paid and the rest expired, failed or cancelled is a checkout retry (`close_benign_retry`, 0.97); a charge that expired with no payment on the order closes as unpaid (`close_expired`, 0.95); a failed charge superseded by a paid one closes (`close_superseded`, 0.96); a withdrawal reversal returns the money to the balance (`close_reversed`, 0.9); a shortfall of up to R$ 1,00 holds the order and asks the payer for the balance (`hold_request_balance`, 0.9). Everything else is **residue** and goes to the model with the reason recorded.
+
+## Model
+
+`core/src/copilot/model.ts`. One interface, two HTTP providers (Anthropic Messages, OpenAI-compatible chat completions), a **replay** store and a recording wrapper. The prompt (`core/src/copilot/judge.ts`) gives the model the exception kind, the allowed actions, which of them are reversible, the structured facts (amounts in cents, UTC timestamps, no personal data: the facts are the same pseudonymized facts the pilot stores) and the numbered evidence, and demands exactly one JSON object. The answer is validated strictly (`validateVerdict`): action in the list, confidence in [0, 1], rationale 8 to 800 characters, evidence refs known and non-empty. An irreversible action is forced to `requires_human: true`.
+
+| `COPILOT_MODE` | Behaviour |
+| --- | --- |
+| `off` (default) | no model; residue waits for the human with "model off" on screen |
+| `live` | calls the provider; `COPILOT_PROVIDER` (`anthropic` or `openai`), `COPILOT_MODEL`, `COPILOT_API_KEY`, `COPILOT_BASE_URL` |
+| `live_record` | same, and records every answer in `copilot_replay` keyed by the hash of the exact input |
+| `replay` | answers only from `copilot_replay`; an input never seen is a `replay_miss` error, shown on the exception. This is how the public demo shows real verdicts without a key and without cost |
+
+Model calls run as outbox jobs (`copilot_judge`) with exponential retry; after 6 failures, or 2 invalid answers, the exception is marked `model_error` with the last reason and goes to the human.
+
+## Audit
+
+`copilot_verdicts` is append-only (database trigger). Each row carries `input_hash` (SHA-256 of the canonical input), `verdict_hash` (SHA-256 of the canonical verdict), engine (`rules`, `model`, `replay`, `operator`), model name, latency and the provider's usage when reported. The operator's decision is a verdict too, with `agreed_with_copilot` recorded on the exception, which is what the agreement rate on the page is computed from. Every status change of an exception is a `state_transitions` row.
+
+## Measured so far (live pilot, 90 days to 06/10/2026)
+
+| | Count |
+| --- | --- |
+| Exceptions | 493 |
+| Closed by rules, no human | 479 (97%) |
+| Residue for judgement | 14: 4 amount mismatches (R$ 151 to R$ 800 short), 2 MED claims (12 and 13 days after payment), 8 failed withdrawals |
+| Operator decisions recorded | 0 (the queue opens to the operator with this release) |
+
+The next number to publish is the operator's agreement rate with the model on the residue, as decisions accumulate.

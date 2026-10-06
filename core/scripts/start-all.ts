@@ -46,7 +46,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     await new Promise(r => setTimeout(r, 500))
   }
   const passthrough = ['DATABASE_URL', 'ASAAS_WEBHOOK_TOKEN', 'DIAGNOSTICS_TOKEN', 'TEMPO_RPC', 'EXPLORER', 'PIX_PROVIDER', 'ASAAS_API_KEY', 'ASAAS_CUSTOMER_ID',
-    'ASAAS_BASE_URL', 'ASAAS_USER_AGENT', 'ASAAS_PAYER_API_KEY', 'SWEEP_INTERVAL_MS', 'TRUST_PROXY', 'ISSUER_ID']
+    'ASAAS_BASE_URL', 'ASAAS_USER_AGENT', 'ASAAS_PAYER_API_KEY', 'SWEEP_INTERVAL_MS', 'TRUST_PROXY', 'ISSUER_ID',
+    // piloto e copiloto (docs/pilot.md, docs/ai-copilot.md); a chave do modelo só vai ao core, nunca ao assinante
+    'PILOT_HMAC_SECRET', 'PILOT_OPERATOR_TOKEN', 'PILOT_SOURCE', 'PILOT_SETTLE', 'PILOT_RATE_NUM', 'PILOT_RATE_DEN', 'PILOT_MERCHANT_ADDRESS',
+    'COPILOT_MODE', 'COPILOT_PROVIDER', 'COPILOT_MODEL', 'COPILOT_API_KEY', 'COPILOT_BASE_URL']
   run('core', 'core', 'src/server.ts', {
     ...Object.fromEntries(passthrough.map(k => [k, process.env[k]])),
     DEMO_MODE: '1', PORT: process.env.PORT ?? '8080', HOST: process.env.HOST ?? '0.0.0.0',

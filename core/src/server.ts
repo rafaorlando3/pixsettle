@@ -12,6 +12,8 @@ import { registerWeb } from './web.js'
 import { registerDemo } from './demo.js'
 import { defaultSweep } from './flows/sweep.js'
 import { startWorker, wakeOnWrites } from './worker.js'
+import { registerPilot } from './pilot/routes.js'
+import { copilotFromEnv } from './copilot/model.js'
 
 export type CoreEnv = Record<string, string | undefined>
 
@@ -38,11 +40,23 @@ export async function startCore(env: CoreEnv = process.env) {
   const ctx: Ctx = {
     db, provider, now: () => new Date(),
     chain: new HttpChainGateway(env.SETTLEMENT_URL ?? 'http://127.0.0.1:7401', need('SETTLEMENT_HMAC_SECRET'), Number(env.CHAIN_ID ?? 42431), token, need('TREASURY_ADDRESS')),
-    cfg: defaultConfig({ issuer: { id: env.ISSUER_ID ?? 'pixsettle-demo', address: need('ISSUER_ADDRESS') } }),
+    cfg: defaultConfig({
+      issuer: { id: env.ISSUER_ID ?? 'pixsettle-demo', address: need('ISSUER_ADDRESS') },
+      // Piloto (eventos atestados): liquidar na testnet cada pedido real pago? Cotação SIMULADA em escala reduzida.
+      pilotSettle: (env.PILOT_SETTLE ?? '1') !== '0',
+      pilotRateNum: BigInt(env.PILOT_RATE_NUM ?? '1'), pilotRateDen: BigInt(env.PILOT_RATE_DEN ?? '1'),
+      pilotPayoutAddress: env.PILOT_MERCHANT_ADDRESS ?? need('DEMO_MERCHANT_ADDRESS'),
+    }),
+    // Copiloto: COPILOT_MODE off|replay|live|live_record; COPILOT_PROVIDER anthropic|openai; COPILOT_MODEL; COPILOT_API_KEY; COPILOT_BASE_URL.
+    copilot: copilotFromEnv(env, db),
   }
+  if (!ctx.copilot?.model) console.log(`copiloto: modelo desligado (${ctx.copilot?.offReason})`)
+  else console.log(`copiloto: ${ctx.copilot.model.name} em modo ${ctx.copilot.model.mode}`)
   const app = buildApp(ctx, { asaasWebhookToken: webhookToken, diagnosticsToken: need('DIAGNOSTICS_TOKEN'), tempoRpc, trustProxy: env.TRUST_PROXY === '1' })
   registerWeb(app, ctx, { tempoRpc, explorer, demo })
   if (demo) await registerDemo(app, ctx, { webhookToken, merchantAddress: need('DEMO_MERCHANT_ADDRESS'), explorer, bench })
+  // Piloto: ingestão só com PILOT_HMAC_SECRET; sem ele a rota recusa tudo com motivo (leitura do painel continua).
+  registerPilot(app, ctx, { hmacSecret: env.PILOT_HMAC_SECRET ?? '', operatorToken: env.PILOT_OPERATOR_TOKEN ?? '', sourceId: env.PILOT_SOURCE ?? 'odin' })
 
   // Worker da outbox com estado ocioso de zero consultas (src/worker.ts). Erro de um job fica gravado
   // no próprio job (last_error); erro do banco vira espera crescente com motivo, nunca "fila vazia".

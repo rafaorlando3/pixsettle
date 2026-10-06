@@ -7,6 +7,7 @@ import { advanceSettlement, signAttempt, broadcastAttempt, reconcileAttempt, TRE
 import { issueSettlementReceipt } from './flows/receipts.js'
 import { executeRefund, reconcileRefund, issueRefundReceipt } from './flows/refunds.js'
 import { observeCharge, expireOrder } from './flows/sweep.js'
+import { judgeWithModel } from './copilot/judge.js'
 
 export type Job = { id: string; topic: string; entity_id: string; payload: any; attempts: number }
 type Handler = (ctx: Ctx, job: Job) => Promise<void | { retryInMs: number; payload?: any }>
@@ -27,6 +28,12 @@ export const handlers: Record<string, Handler> = {
     const tryNo = Number(j.payload?.try ?? 0)
     const r = await reconcileRefund(ctx, j.entity_id, tryNo)
     if (r === 'retry') return { retryInMs: Math.min(60_000, 2_000 * 2 ** Math.min(tryNo, 5)), payload: { try: tryNo + 1 } }
+  },
+  // Copiloto: o modelo julga o resíduo fora da transação do evento; falha vira retry com motivo visível na exceção.
+  copilot_judge: async (ctx, j) => {
+    const tryNo = Number(j.payload?.try ?? 0)
+    const r = await judgeWithModel(ctx, j.entity_id, tryNo)
+    if (r === 'retry') return { retryInMs: Math.min(120_000, 3_000 * 2 ** Math.min(tryNo, 5)), payload: { try: tryNo + 1 } }
   },
   reconcile_attempt: async (ctx, j) => {
     const tryNo = Number(j.payload?.try ?? 0)

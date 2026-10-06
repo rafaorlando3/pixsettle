@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PixSettle live pilot</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/pilot.css">
+<script type="module" src="/assets/pilot.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="logo">P</div>
+  <div><div class="brand">PixSettle</div><div class="tag">Live pilot: real multi-store Pix operation, reconciled in shadow mode</div></div>
+  <div class="spacer"></div>
+  <nav class="nav"><a href="/demo">Demo console</a><a class="active" href="/pilot">Live pilot</a></nav>
+  <span class="badge live" id="live"><span class="dot"></span><span id="live-text">connecting</span></span>
+</header>
+<main class="wide-main">
+  <section class="hero-pilot card">
+    <div>
+      <h1>Every exception explained.</h1>
+      <p class="lead">Pseudonymized events from our own stores (Equilibrium and partner stores on the Brazil-Paraguay border) stream into PixSettle. Orders are reconciled against each Pix charge; every exception gets a verdict with evidence: deterministic rules first, the copilot model only for the residue, a human for anything that moves money.</p>
+      <p class="small muted mb0">No names, documents, contacts, addresses or products leave the store. Ids are pseudonymous and letters only. Nothing here changes the store's checkout or money flow.</p>
+    </div>
+    <div class="kpis hero-kpis">
+      <div class="kpi"><div class="v" id="k-orders">-</div><div class="l">Orders in the pilot</div></div>
+      <div class="kpi"><div class="v" id="k-paid">-</div><div class="l">Paid, reconciled (BRL)</div></div>
+      <div class="kpi"><div class="v" id="k-exc">-</div><div class="l">Exceptions found</div></div>
+      <div class="kpi"><div class="v ok" id="k-auto">-</div><div class="l">Closed by rules, no human</div></div>
+      <div class="kpi"><div class="v warn" id="k-human">-</div><div class="l">Need a human decision</div></div>
+      <div class="kpi"><div class="v" id="k-receipts">-</div><div class="l">Verifiable receipts</div></div>
+    </div>
+  </section>
+
+  <div class="grid-pilot">
+    <div class="stack">
+      <section class="card">
+        <div class="row between mb12"><h2 class="m0">Copilot</h2><span class="badge" id="model-badge">-</span></div>
+        <div class="bars" id="copilot-bars"></div>
+        <p class="small muted" id="copilot-note"></p>
+        <dl class="kv" id="copilot-facts"></dl>
+      </section>
+      <section class="card">
+        <h2>Stores</h2>
+        <table class="tbl" id="stores"><thead><tr><th>Store</th><th>Orders</th><th>Paid</th><th>Exceptions</th></tr></thead><tbody></tbody></table>
+      </section>
+      <section class="card">
+        <h2>Exceptions by kind</h2>
+        <div class="bars" id="kind-bars"></div>
+      </section>
+      <section class="card">
+        <h2>Stream</h2>
+        <dl class="kv" id="stream"></dl>
+      </section>
+    </div>
+    <div class="stack">
+      <section class="card">
+        <div class="row between mb12">
+          <h2 class="m0">Exception queue</h2>
+          <div class="row">
+            <select id="f-status"><option value="">all statuses</option><option value="awaiting_human" selected>awaiting human</option><option value="open">open</option><option value="auto_applied">auto-applied</option><option value="resolved">resolved</option><option value="dismissed">dismissed</option></select>
+            <select id="f-kind"><option value="">all kinds</option></select>
+            <select id="f-store"><option value="">all stores</option></select>
+          </div>
+        </div>
+        <ul class="queue" id="queue"><li class="muted">Loading</li></ul>
+      </section>
+    </div>
+  </div>
+  <div class="drawer hidden" id="drawer">
+    <div class="drawer-card card" id="drawer-card"></div>
+  </div>
+</main>
+<footer class="foot">Shadow pilot: the store keeps charging through its own rails; PixSettle reconciles a signed, pseudonymized copy of the events. Verdicts are immutable and hashed. Money never moves on the copilot's word alone.</footer>
+</body>
+</html>

@@ -61,8 +61,13 @@ export async function requestRefund(ctx: Ctx, merchantId: string, orderId: strin
  */
 export async function executeRefund(ctx: Ctx, refundCaseId: string): Promise<void> {
   const claim = await withTx(ctx.db, async tx => {
-    const c = (await tx.query(`SELECT rc.*, pc.provider_payment_id FROM refund_cases rc JOIN pix_charges pc ON pc.order_id=rc.order_id WHERE rc.id=$1 FOR UPDATE OF rc`, [refundCaseId])).rows[0]
+    const c = (await tx.query(`SELECT rc.*, pc.provider_payment_id, pc.provider FROM refund_cases rc JOIN pix_charges pc ON pc.order_id=rc.order_id WHERE rc.id=$1 FOR UPDATE OF rc`, [refundCaseId])).rows[0]
     if (!c) return null
+    if (c.provider === 'attested') {
+      // Piloto: quem executa a devolução é a loja; aqui só esperamos o atestado (order.refund.completed / rejected).
+      if (c.state === 'requested') await recordTransition(tx, 'refund_case', refundCaseId, 'requested', 'requested', 'provider_refund', 'provedor atestado: a devolução é executada pela loja; aguardando atestado do desfecho')
+      return null
+    }
     if (c.state === 'submitting') {
       await tx.query(`UPDATE refund_cases SET state='unknown', updated_at=now() WHERE id=$1`, [refundCaseId])
       await recordTransition(tx, 'refund_case', refundCaseId, 'submitting', 'unknown', 'provider_refund', 'retomada depois de possível envio: só observar, nunca repetir o estorno')
@@ -202,6 +207,13 @@ async function confirmCase(tx: Tx, ctx: Ctx, order: any, s: any, caseId: string,
     if (order.status !== 'refunded') {
       await tx.query(`UPDATE orders SET status='refunded', updated_at=now() WHERE id=$1`, [order.id])
       await recordTransition(tx, 'order', order.id, order.status, 'refunded', source)
+    }
+  } else if (!s && order.status === 'paid') {
+    // Pedido pago sem liquidação (piloto sombra com PILOT_SETTLE=0): devolução total encerra o pedido como devolvido.
+    const refunded = BigInt((await tx.query(`SELECT coalesce(sum(amount_minor),0)::text AS v FROM refund_cases WHERE order_id=$1 AND state IN ('confirmed','partial')`, [order.id])).rows[0].v)
+    if (refunded >= BigInt(order.amount_minor) && order.status !== 'refunded') {
+      await tx.query(`UPDATE orders SET status='refunded', updated_at=now() WHERE id=$1`, [order.id])
+      await recordTransition(tx, 'order', order.id, order.status, 'refunded', source, 'devolução total observada; sem liquidação a encerrar')
     }
   }
   await enqueue(tx, 'issue_refund_receipt', caseId)

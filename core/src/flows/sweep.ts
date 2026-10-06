@@ -11,7 +11,7 @@ export const defaultSweep: SweepConfig = { batch: 200, expiryGraceMs: 30_000, re
 
 /** Cobranças que ainda podem mudar no provedor ($1 = corte de "recebida há pouco"). Única fonte da regra:
  *  usada pela varredura e pela decisão do worker de ficar ocioso. */
-const WATCH_WHERE = `c.creation_state='created' AND c.provider_payment_id IS NOT NULL AND (
+const WATCH_WHERE = `c.creation_state='created' AND c.provider <> 'attested' AND c.provider_payment_id IS NOT NULL AND (
               c.observed_state IN ('created','overdue','confirmed')
            OR (c.observed_state IN ('received','partially_refunded') AND c.updated_at > $1)
            OR EXISTS (SELECT 1 FROM refund_cases rc WHERE rc.order_id=o.id AND rc.state IN ('requested','submitting','unknown')))
@@ -23,7 +23,7 @@ const WATCH_WHERE = `c.creation_state='created' AND c.provider_payment_id IS NOT
  */
 export async function sweepNeeded(ctx: Ctx, cfg: SweepConfig = defaultSweep): Promise<boolean> {
   const r = await ctx.db.query(
-    `SELECT EXISTS (SELECT 1 FROM orders WHERE status='awaiting_payment' AND hold_reason IS NULL)
+    `SELECT EXISTS (SELECT 1 FROM orders WHERE status='awaiting_payment' AND hold_reason IS NULL AND provider_env <> 'attested')
          OR EXISTS (SELECT 1 FROM pix_charges c JOIN orders o ON o.id=c.order_id WHERE ${WATCH_WHERE}) AS need`,
     [new Date(ctx.now().getTime() - cfg.recentReceivedMs)])
   return r.rows[0].need === true
@@ -43,7 +43,7 @@ async function enqueueOnce(tx: Tx, topic: string, entityId: string) {
 export async function sweep(ctx: Ctx, cfg: SweepConfig = defaultSweep): Promise<{ observe: number; expire: number }> {
   return withTx(ctx.db, async tx => {
     const due = (await tx.query(
-      `SELECT o.id FROM orders o WHERE o.status='awaiting_payment' AND o.hold_reason IS NULL AND o.expires_at < $1 ORDER BY o.expires_at LIMIT $2`,
+      `SELECT o.id FROM orders o WHERE o.status='awaiting_payment' AND o.hold_reason IS NULL AND o.provider_env <> 'attested' AND o.expires_at < $1 ORDER BY o.expires_at LIMIT $2`,
       [new Date(ctx.now().getTime() - cfg.expiryGraceMs), cfg.batch])).rows
     for (const r of due) await enqueueOnce(tx, 'expire_order', r.id)
     const watch = (await tx.query(
@@ -61,8 +61,8 @@ export async function sweep(ctx: Ctx, cfg: SweepConfig = defaultSweep): Promise<
  * observação, registra falha de vida do webhook (alerta em /internal/diagnostics).
  */
 export async function observeCharge(ctx: Ctx, chargeId: string) {
-  const c = (await ctx.db.query(`SELECT id, provider_payment_id, observed_state, last_observed_at, updated_at, created_at FROM pix_charges WHERE id=$1`, [chargeId])).rows[0]
-  if (!c?.provider_payment_id) return
+  const c = (await ctx.db.query(`SELECT id, provider, provider_payment_id, observed_state, last_observed_at, updated_at, created_at FROM pix_charges WHERE id=$1`, [chargeId])).rows[0]
+  if (!c?.provider_payment_id || c.provider === 'attested') return // atestada: o operador afirma, ninguém consulta
   let p
   try { p = await ctx.provider.getPayment(c.provider_payment_id) } catch (e) {
     if (e instanceof ProviderError && e.status === 404) return holdMissing(ctx, chargeId, e.message)
@@ -94,8 +94,8 @@ async function holdMissing(ctx: Ctx, chargeId: string, detail: string) {
  * Se o provedor recusar porque já foi paga (corrida no limite do prazo), observa e aplica a regra de prazo.
  */
 export async function expireOrder(ctx: Ctx, orderId: string) {
-  const o = (await ctx.db.query(`SELECT o.status, o.hold_reason, o.expires_at, c.id AS charge_id, c.provider_payment_id FROM orders o JOIN pix_charges c ON c.order_id=o.id WHERE o.id=$1`, [orderId])).rows[0]
-  if (!o || o.status !== 'awaiting_payment' || o.hold_reason) return
+  const o = (await ctx.db.query(`SELECT o.status, o.hold_reason, o.expires_at, o.provider_env, c.id AS charge_id, c.provider_payment_id FROM orders o JOIN pix_charges c ON c.order_id=o.id WHERE o.id=$1`, [orderId])).rows[0]
+  if (!o || o.status !== 'awaiting_payment' || o.hold_reason || o.provider_env === 'attested') return
   if (new Date(o.expires_at).getTime() > ctx.now().getTime()) return
   let deleteError: string | null = null
   try { await ctx.provider.deleteCharge(o.provider_payment_id) } catch (e) {

@@ -2,7 +2,7 @@
 
 This file maps the failure scenarios that matter for a payment settlement system to the automated tests that cover them, and says plainly what is still open. Test names are quoted exactly as they appear in the code (in Portuguese), so each one can be found with a search.
 
-The evidence is the test run for the same commit as this file: GitHub Actions runs every suite on every push (`.github/workflows/tests.yml`). Last local run of the same steps, on 2026-09-28: **146 passed, 1 skipped** (the testnet integration test, see below), and the Python vector check passed.
+The evidence is the test run for the same commit as this file: GitHub Actions runs every suite on every push (`.github/workflows/tests.yml`). Last local run of the same steps, on 2026-10-06: **167 passed, 1 skipped** (core 114, settlement 24, web 29; the skipped one is the testnet integration test, see below), and the Python vector check passed.
 
 ## How the tests run
 
@@ -155,6 +155,32 @@ Status: **Covered.** Measured with `core/scripts/measure-idle.ts` on an empty da
 - `worker.test.ts` › `criação com resposta perdida + pagamento sem webhook + reinício: só o worker, sem wake, liquida uma vez` and `mesma situação sem pagamento: depois de recuperar a cobrança o worker fica esperando a varredura, não ocioso`. Found in review (ITEM2-01): the worker decided whether a sweep was needed before draining the queue, so a job that turned an order into "awaiting payment" left it asleep with nothing watching that order. It now re-checks after draining.
 - Known limit, stated in `src/worker.ts`: the wake-up is in-process. With more than one process writing to the outbox, set `WORKER_MAX_IDLE_MS` to cap the sleep. The demo runs one core process.
 - With the simulated Pix provider nothing changes outside without one of our own requests, so already received charges are not re-observed (`SWEEP_RECENT_RECEIVED_MS` defaults to 0 there; with Asaas it keeps the 2-day window).
+
+## Live pilot and exception copilot (`core/test/pilot.test.ts`)
+
+| Scenario | Test |
+| --- | --- |
+| A line with a personal-looking key, an unknown key, an e-mail, a CPF or a long digit run is refused with the reason; ids must be letters only; amounts need two decimals | "recusa chave proibida, chave desconhecida, e-mail, CPF e sequência longa de dígitos, com o motivo" |
+| Order + charge + Pix received settles on the fake chain with a signed receipt; the same batch twice is all duplicates; the sweep has no work with attested orders | "pedido + cobrança + Pix recebido: pago, liquidado na cadeia falsa e com recibo; dedupe do lote" |
+| Payment arrives before its order (out of order): deferred and applied in the same call | "evento fora de ordem (pagamento antes do pedido) é adiado e aplicado na mesma chamada" |
+| `PILOT_SETTLE=0`: paid and reconciled, no settlement, reason recorded | "PILOT_SETTLE=0: pedido pago fica conciliado sem liquidação, com o motivo no histórico" |
+| Three charges, one paid: `duplicate_charge` reopened at each change and closed by rules as a benign retry; informational exceptions closed by rules | "3 cobranças, 1 paga: exceção duplicate_charge fechada pelas regras (close_benign_retry), sem modelo" |
+| Expired without payment, then paid through a new charge | "cobrança expirada sem pagamento: exceção expired_unpaid fechada pelas regras; pagamento depois reabre e encerra como superada" |
+| One cent short: order on hold, `hold_request_balance` applied automatically (reversible), no settlement | "valor pago 1 centavo a menos: retenção amount_mismatch e hold_request_balance aplicado sozinho (reversível)" |
+| Large shortfall: model called, valid verdict stored with hash, irreversible action waits for a human; verdict row cannot be updated | "diferença grande vai ao modelo: veredito válido gravado com hash; ação irreversível espera humano" |
+| Model answers garbage: two tries, then `model_error` with the reason, no verdict stored | "modelo responde lixo: duas tentativas, depois model_error com o motivo, exceção aguardando humano" |
+| No model configured: residue goes to the human with the reason; the first payment still settles | "sem modelo configurado: resíduo vai direto para o humano com o motivo (nunca silencioso)" |
+| Store-attested refund: case requested, no provider call, confirmed on completion, `refund_notice` receipt, exception closed by the system | "devolução pedida e concluída pela loja: caso confirmado, recibo refund_notice, exceção encerrada pelo sistema" |
+| Real MED: `med_attested` case (not simulated), high-severity exception, closed when handled | "MED atestado: caso med_attested aberto (real, não simulado), exceção alta; handled encerra" |
+| Attested late payment: `late_paid`, `late_payment_refund` case, exception for the human | "pagamento depois do prazo: late_paid, caso late_payment_refund e exceção late_payment para o humano" |
+| Charge without expiry and `late=0`: a payment hours later is not late | "cobrança sem vencimento + operador atesta no prazo (late=0): pagamento horas depois NÃO é atrasado" |
+| Withdrawal reversal closed by rules; failed withdrawal to the human; wallet events only counted | "saque estornado: close_reversed pelas regras; saque falho vai ao humano; eventos de carteira só contam" |
+| Operator decision recorded as a verdict with agreement; second decision refused; action outside the list refused | "decisão do operador: veredito operator, concordância medida, exceção encerrada; segunda decisão recusada" |
+| Replay: a recorded answer is reproduced without the network; a new input is a `replay_miss` with the reason | "replay: resposta gravada ao vivo é reproduzida sem rede; entrada diferente = replay_miss com motivo" |
+| Verdict validation and policy (action list, confidence range, unknown evidence, irreversible forces human; reversible only, floor 0.85, disagreement) | "ação fora da lista, confiança fora de [0,1], referência desconhecida", "política: só reversível com confiança e sem desacordo" |
+| Routes: signature over the raw body, wrong content type, public summary and list without merchant ids or fingerprints, decision needs the operator token, personal data in a batch line refused per line | "ingestão exige assinatura do corpo bruto; resumo e lista são públicos e sem dado pessoal; decisão exige token" |
+
+Not proved by tests: the model's judgement quality on the residue (measured on the pilot page as the operator's agreement rate), and a live provider call (the HTTP clients are exercised only through the scripted and replay models).
 
 ## What these tests do not prove
 

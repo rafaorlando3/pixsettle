@@ -18,3 +18,12 @@ services:
         generateValue: true
       - key: SWEEP_INTERVAL_MS
         value: "60000"
+      # Piloto (eventos atestados da plataforma multiloja) e copiloto de exceções. Ver docs/pilot.md e docs/ai-copilot.md.
+      - key: PILOT_HMAC_SECRET   # segredo compartilhado com o exportador da loja; sem ele a ingestão recusa tudo (o painel continua)
+        generateValue: true
+      - key: PILOT_OPERATOR_TOKEN  # token das decisões do operador na fila de exceções
+        generateValue: true
+      - key: PILOT_SETTLE        # "1" liquida cada pedido real pago na testnet (tesouraria precisa de pathUSD); "0" só concilia
+        value: "1"
+      - key: COPILOT_MODE        # off | replay | live | live_record (chave só em COPILOT_API_KEY, nunca aqui)
+        value: "off"

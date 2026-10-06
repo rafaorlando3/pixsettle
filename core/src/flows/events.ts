@@ -132,6 +132,11 @@ async function onReceived(tx: Tx, ctx: Ctx, order: any, p: ProviderPayment, sour
 
   await tx.query(`UPDATE orders SET status='paid', paid_at=$2, updated_at=now() WHERE id=$1`, [order.id, p.paidAt])
   await recordTransition(tx, 'order', order.id, order.status, 'paid', source)
+  if (order.provider_env === 'attested' && !ctx.cfg.pilotSettle) {
+    // Piloto sombra sem liquidação na testnet (PILOT_SETTLE=0): o pedido fica pago e conciliado, com o motivo no histórico.
+    await recordTransition(tx, 'settlement_skipped', order.id, null, 'pilot_settlement_disabled', source, 'PILOT_SETTLE=0: pedido atestado conciliado sem transferência na testnet')
+    return 'applied'
+  }
   await createSettlementIntent(tx, ctx, order, q, source)
   return 'applied'
 }

@@ -10,6 +10,8 @@ PixSettle is a reconciliation and exception-handling prototype for merchants who
 
 Built for the Colosseum Crypto World's Fair, Tempo track.
 
+**Live pilot and exception copilot.** Since October 2026 PixSettle reconciles a signed, pseudonymized copy of the events of our own multi-store Pix operation on the Brazil-Paraguay border (Equilibrium and partner stores): 1,195 orders and 586 Pix payments in the first 90 days, with every exception (repeated charges, amounts off, MED claims, refunds, failed withdrawals) opened as a case and judged by the copilot: deterministic rules first (479 of 493 closed with no human), a model only for the residue, a human for anything that moves money. Page `/pilot`; details in [`docs/pilot.md`](docs/pilot.md) and [`docs/ai-copilot.md`](docs/ai-copilot.md).
+
 > **Demo status, stated plainly.** The Tempo side is real: settlements are `transferWithMemo` transactions on Tempo testnet (Moderato, chain id 42431) in pathUSD. The Pix side runs on a **simulated provider** in the public demo (an Asaas sandbox adapter is in progress). The FX quote and the merchant reserve are **simulated accounting**, labeled as such on every screen and receipt. No real money moves. In production, BRL to stablecoin conversion must go through a partner licensed by the Central Bank of Brazil; PixSettle is software on top of that partner and does not hold customer funds.
 
 ## How it works
@@ -52,6 +54,7 @@ Pages:
 - `/demo` operator console: create an order through the real merchant API, pay it with the simulated provider (the webhook is delivered 3 times on purpose), watch the settlement timeline, refund, open a simulated MED claim.
 - `/pay/:token` payer checkout: QR code, copy and paste code, expiry.
 - `/receipt/:id` receipt verified in your browser. Add `?issuer=0x...` to pin the issuer you trust.
+- `/pilot` live pilot: real orders reconciled in shadow mode, exception queue with the copilot's verdicts and the operator's decisions.
 
 In production the signer and the core run as two processes: `settlement/src/server.ts` (keys, localhost only, HMAC with replay protection) and `core/src/server.ts` (API, pages, worker; no keys).
 
@@ -61,7 +64,7 @@ In production the signer and the core run as two processes: `settlement/src/serv
 | --- | --- |
 | `contract/` | Core contract (in Portuguese), receipt test vectors, independent Python verifier |
 | `settlement/` | Signer: sign, broadcast and observe `transferWithMemo` on Tempo (TypeScript, viem) |
-| `core/` | Orders, Pix charges, provider events, send journal, refunds, ledger, receipts, API, pages, demo |
+| `core/` | Orders, Pix charges, provider events, send journal, refunds, ledger, receipts, API, pages, demo, pilot ingestion (`src/pilot/`) and exception copilot (`src/copilot/`) |
 | `web/` | Operator console, payer checkout, receipt page and in-browser verifier |
 
 ## Tests
@@ -73,10 +76,11 @@ cd web && npx vitest run          # in-browser receipt verifier against a local 
 python3 contract/tools/verify_receipt_vectors.py
 ```
 
-The core suite covers duplicate webhooks, two workers racing for the same settlement, a crash at every step of the send journal, lost RPC responses, reverted transactions, amount mismatch and rounding, stale provider events, late payments, refunds racing settlements, external refunds, and expired checkout links. The core suite also covers a process restart with the simulated Pix provider persisted in the database, and a worker that makes no database queries at all when there is nothing to do. The web suite checks that the receipt page reports a receipt that contradicts the chain as failed, and anything the chain did not answer conclusively (RPC unreachable, transaction not found yet, incomplete answer) as unavailable, with the reason. Several cases were written by an independent reviewer and are kept unchanged. The full failure matrix, with the test that covers each scenario and what is still open, is in [`docs/coverage.md`](docs/coverage.md). Every push runs the suites in GitHub Actions (`.github/workflows/tests.yml`).
+The core suite also covers the pilot and the copilot: the ingestion guard (personal data and unknown keys refused with the reason), batch signature and dedupe, out-of-order events, repeated charges, amount mismatch, late and duplicate payments, store-attested refunds and MED claims, rules, policy (reversible only, confidence floor, disagreement), a model that answers garbage, a model that is off, replay without a key, and the operator's decision. The core suite covers duplicate webhooks, two workers racing for the same settlement, a crash at every step of the send journal, lost RPC responses, reverted transactions, amount mismatch and rounding, stale provider events, late payments, refunds racing settlements, external refunds, and expired checkout links. The core suite also covers a process restart with the simulated Pix provider persisted in the database, and a worker that makes no database queries at all when there is nothing to do. The web suite checks that the receipt page reports a receipt that contradicts the chain as failed, and anything the chain did not answer conclusively (RPC unreachable, transaction not found yet, incomplete answer) as unavailable, with the reason. Several cases were written by an independent reviewer and are kept unchanged. The full failure matrix, with the test that covers each scenario and what is still open, is in [`docs/coverage.md`](docs/coverage.md). Every push runs the suites in GitHub Actions (`.github/workflows/tests.yml`).
 
 ## Roadmap
 
+- Verifiable receipt links in the partners' wallet statements of the pilot stores; verdict hash referenced from the receipt.
 - Asaas sandbox adapter (real Pix in sandbox), periodic reconciliation with the provider and webhook liveness alerts.
 - Licensed FX partner integration and real quotes.
 - On-chain reserve with an explicit release policy (today the reserve is accounting only).

@@ -36,6 +36,7 @@ export function registerWeb(app: FastifyInstance, ctx: Ctx, opts: WebOptions) {
     return reply.type(a.type).header('cache-control', 'no-cache').send(a.body)
   })
   app.get('/pay/:token', page('pay.html'))
+  app.get('/pilot', page('pilot.html'))
   app.get('/receipt/:id', page('receipt.html'))
   if (opts.demo) {
     app.get('/', async (_req, reply) => reply.redirect('/demo'))
