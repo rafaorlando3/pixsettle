@@ -120,7 +120,11 @@ export function startWorker(ctx: Ctx, opts: WorkerOptions): Worker {
   }
 }
 
-/** Acorda o worker depois de cada requisição que pode gravar (o handler já fez commit antes de responder). */
-export function wakeOnWrites(app: { addHook: (name: 'onResponse', fn: (req: { method: string }) => Promise<void>) => unknown }, worker: Pick<Worker, 'wake'>) {
-  app.addHook('onResponse', async req => { if (req.method !== 'GET' && req.method !== 'HEAD') worker.wake() })
+/** Only successful ordinary writes wake the payment worker. Shadow entry never schedules core work. */
+export function wakeOnWrites(app: { addHook: (name: 'onResponse', fn: (req: { method: string; url?: string; routeOptions?: { url?: string } }, reply: { statusCode: number }) => Promise<void>) => unknown }, worker: Pick<Worker, 'wake'>) {
+  app.addHook('onResponse', async (req, reply) => {
+    const route = req.routeOptions?.url ?? req.url ?? ''
+    if (route.startsWith('/pilot/v2/') || reply.statusCode >= 400 || req.method === 'GET' || req.method === 'HEAD') return
+    worker.wake()
+  })
 }

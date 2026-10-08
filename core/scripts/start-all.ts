@@ -20,10 +20,13 @@ const CORE_PASSTHROUGH = ['DATABASE_URL', 'ASAAS_WEBHOOK_TOKEN', 'DIAGNOSTICS_TO
     // piloto e copiloto (docs/pilot.md, docs/ai-copilot.md); a chave do modelo só vai ao core, nunca ao assinante
     'PILOT_HMAC_SECRET', 'PILOT_OPERATOR_TOKEN', 'PILOT_SOURCE', 'PILOT_SETTLE', 'PILOT_RATE_NUM', 'PILOT_RATE_DEN', 'PILOT_MERCHANT_ADDRESS',
     'COPILOT_MODE', 'COPILOT_PROVIDER', 'COPILOT_MODEL', 'COPILOT_API_KEY', 'COPILOT_BASE_URL',
-    'COPILOT_BUDGET_CALLS_PER_DAY', 'PUBLIC_REPLAY_READ_ONLY', 'PILOT_V1_DISABLED', 'RENDER_GIT_COMMIT']
+    'COPILOT_BUDGET_CALLS_PER_DAY', 'PUBLIC_REPLAY_READ_ONLY', 'PILOT_V1_DISABLED', 'RENDER_GIT_COMMIT',
+    'PILOT_SHADOW_KEYRING_JSON', 'PILOT_SHADOW_TOKENS_JSON',
+    'COPILOT_BUDGET_MICROS', 'COPILOT_CALL_RESERVE_MICROS', 'COPILOT_MAX_CALLS']
 
 export function corePassthroughEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
-  return Object.fromEntries(CORE_PASSTHROUGH.map(k => [k, env[k]]))
+  const shadowNames = Object.keys(env).filter(k => /^PILOT_SHADOW_KEY_[A-Z0-9_]{1,47}$/.test(k) || /^PILOT_SHADOW_TOKEN_[A-Z0-9_]{1,45}$/.test(k))
+  return Object.fromEntries([...CORE_PASSTHROUGH, ...shadowNames].map(k => [k, env[k]]))
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

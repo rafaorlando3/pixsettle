@@ -14,6 +14,7 @@ import { defaultSweep } from './flows/sweep.js'
 import { startWorker, wakeOnWrites } from './worker.js'
 import { registerPilot } from './pilot/routes.js'
 import { copilotFromEnv } from './copilot/model.js'
+import { registerShadow } from './pilot-shadow/routes.js'
 
 export type CoreEnv = Record<string, string | undefined>
 
@@ -59,6 +60,7 @@ export async function startCore(env: CoreEnv = process.env) {
   if (demo) await registerDemo(app, ctx, { webhookToken, merchantAddress: need('DEMO_MERCHANT_ADDRESS'), explorer, bench })
   // Piloto: ingestão só com PILOT_HMAC_SECRET; sem ele a rota recusa tudo com motivo (leitura do painel continua).
   registerPilot(app, ctx, { hmacSecret: env.PILOT_HMAC_SECRET ?? '', operatorToken: env.PILOT_OPERATOR_TOKEN ?? '', sourceId: env.PILOT_SOURCE ?? 'odin', v1Disabled: env.PILOT_V1_DISABLED === '1', readOnly: ctx.cfg.publicReplayReadOnly })
+  registerShadow(app, db, env)
 
   // Worker da outbox com estado ocioso de zero consultas (src/worker.ts). Erro de um job fica gravado
   // no próprio job (last_error); erro do banco vira espera crescente com motivo, nunca "fila vazia".
