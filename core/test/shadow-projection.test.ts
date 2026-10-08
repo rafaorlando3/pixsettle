@@ -109,6 +109,18 @@ describe('typed shadow public projection',()=>{
   const zero=review(c,{created_at:'2026-10-08T00:00:00.000Z'})
   expect(validateShadowReview(zero,c)?.created_at).toBe('2026-10-08T00:00:00Z')
  })
+ it('sorts second and millisecond reviews chronologically when selecting the latest advisory',()=>{
+  const events=[event(1,'order_created'),event(2,'pix_received',{amount_minor:'900'})],c=projection(events).cases[0]!
+  const first=review(c,{created_at:'2026-10-08T00:00:00Z'}),latest=review(c,{engine:'operator',actor:'codex',model:null,created_at:'2026-10-08T00:00:00.123Z'})
+  const p=projection(events,[latest,first]),pub=publicShadowCase(p.cases[0]!)
+  expect(p.cases[0]!.reviews.map(r=>r.review_id)).toEqual([first.review_id,latest.review_id])
+  expect(pub.verdict?.id).toBe(latest.review_id);expect(pub.verdict?.engine_label).toBe('Codex-assisted operator advisory')
+ })
+ it('refuses duplicate evidence refs rather than accepting a verdict hash for a different DTO',()=>{
+  const c=projection([event(1,'order_created'),event(2,'pix_received',{amount_minor:'900'})]).cases[0]!,r=review(c)
+  const {review_id:_,...body}={...r,evidence_refs:[r.evidence_refs[0]!,r.evidence_refs[0]!]}
+  expect(validateShadowReview({...body,review_id:reviewId(body)},c)).toBeNull()
+ })
  it('BigInt aggregation remains exact beyond safe-number cents',()=>{
   const events:Record<string,unknown>[]=[]
   for(let i=1;i<=10000;i++){const common={order_ref:'ord_'+hex(i),amount_minor:'999999999999'};events.push(event(i*2-1,'order_created',common),event(i*2,'pix_received',common))}

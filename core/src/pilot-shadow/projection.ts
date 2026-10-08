@@ -73,7 +73,7 @@ export function validateShadowReview(raw:unknown,c:ShadowCase):ShadowReview|null
    r.case_id!==c.case_id||r.origin!==c.origin||r.store!==c.store||r.input_hash!==c.model_input_hash||r.projection_hash!==c.projection_hash||
    r.requires_human!==true||r.advisory!==true||!safeHash(r.review_id)||!safeHash(r.verdict_hash)||!iso(r.created_at)||
    r.latency_ms!==null&&(typeof r.latency_ms!=='number'||!Number.isInteger(r.latency_ms)||r.latency_ms<0||r.latency_ms>3600000)||
-   !Array.isArray(r.evidence_refs)||r.evidence_refs.length>50)return null
+   !Array.isArray(r.evidence_refs)||r.evidence_refs.length>50||new Set(r.evidence_refs).size!==r.evidence_refs.length)return null
   const engine=r.engine,actor=r.actor,model=r.model
   if(!(engine==='rules'&&actor==='rules'&&model===null||engine==='model'&&actor==='model'&&['openai/gpt-4.1-mini','openai/gpt-4o-mini'].includes(String(model))&&safeHash(r.capture_receipt_sha256)&&safeHash(r.private_verdict_hash)||engine==='operator'&&['codex','human_operator'].includes(String(actor))&&model===null))return null
   if(r.capture_receipt_sha256!==null&&!safeHash(r.capture_receipt_sha256)||r.private_verdict_hash!==null&&!safeHash(r.private_verdict_hash))return null
@@ -90,7 +90,7 @@ export function validateShadowReview(raw:unknown,c:ShadowCase):ShadowReview|null
 
 export function buildShadowProjection(rawEvents:Record<string,unknown>[],rawBatches:Record<string,unknown>[],rawReviews:unknown[],nowISO:string):ShadowProjection{
  if(rawEvents.length>100000||rawBatches.length>10000||rawReviews.length>100000||!iso(nowISO))throw new Error('shadow_projection_bounds')
- const events=rawEvents.map(typedEvent).sort((a,b)=>a.event_at.localeCompare(b.event_at)||key(a.origin,a.store,a.event_id).localeCompare(key(b.origin,b.store,b.event_id)))
+ const events=rawEvents.map(typedEvent).sort((a,b)=>Date.parse(a.event_at)-Date.parse(b.event_at)||key(a.origin,a.store,a.event_id).localeCompare(key(b.origin,b.store,b.event_id)))
  const batches=rawBatches.map(typedBatch).sort((a,b)=>key(a.origin,a.store,a.lote_sha256).localeCompare(key(b.origin,b.store,b.lote_sha256)))
  const batchMap=new Map(batches.map(b=>[key(b.origin,b.store,b.lote_sha256),b]));const eventIds=new Set<string>()
  for(const e of events){const id=key(e.origin,e.store,e.event_id);if(eventIds.has(id)||!batchMap.has(key(e.origin,e.store,e.first_batch)))throw new Error('shadow_projection_event_binding');eventIds.add(id)}
@@ -113,7 +113,7 @@ export function buildShadowProjection(rawEvents:Record<string,unknown>[],rawBatc
   const bindings=new Map<string,ShadowCase['source_bindings'][number]>()
   for(const e of sorted){const b=batchMap.get(key(e.origin,e.store,e.first_batch))!;let entry=bindings.get(b.lote_sha256);if(!entry){entry={lote_sha256:b.lote_sha256,trio_sha256:b.trio_sha256,atestado_sha256:b.atestado_sha256,pronto_sha256:b.pronto_sha256,event_ids:[]};bindings.set(b.lote_sha256,entry)}entry.event_ids.push(e.event_id)}
   const out=applyRules(facts,evidence);const validation='verdict'in out?validateVerdict(kind,{...out.verdict,requires_human:true},evidence):null
-  cases.push({case_id,origin:first.origin,store:first.store,kind,reason_code:reason,facts,evidence,model_input_hash,projection_hash,detected_at:sorted.map(e=>e.event_at).sort().at(-1)!,order_ref:order?.order_ref??payment?.order_ref??first.order_ref,
+  cases.push({case_id,origin:first.origin,store:first.store,kind,reason_code:reason,facts,evidence,model_input_hash,projection_hash,detected_at:sorted.map(e=>e.event_at).sort((a,b)=>Date.parse(a)-Date.parse(b)).at(-1)!,order_ref:order?.order_ref??payment?.order_ref??first.order_ref,
    source_bindings:[...bindings.values()].sort((a,b)=>a.lote_sha256.localeCompare(b.lote_sha256)),advisory_rules:validation?.ok?{...validation.verdict,rationale:ADVISORY_RATIONALE}:null,reviews:[]})
  }
  for(const k of conflictingPayments){const related=payments.get(k)!;makeCase('payment_conflict',related,null,related[0]!)}
@@ -124,13 +124,13 @@ export function buildShadowProjection(rawEvents:Record<string,unknown>[],rawBatc
   const canonicalPayments=[...new Map(received.filter(e=>!conflictingPayments.has(key(e.origin,e.store,e.payment_ref!))).map(e=>[e.payment_ref!,e])).values()]
   if(!created.length)for(const p of canonicalPayments)makeCase('orphan_payment',[p],null,p)
   if(order&&canonicalPayments.length>1)makeCase('duplicate_payment',[order,...canonicalPayments],order,canonicalPayments[0]!)
-  if(order)for(const p of canonicalPayments){if(p.amount_minor!==order.amount_minor)makeCase('amount_mismatch',[order,p],order,p);if(order.expires_at&&p.event_at>order.expires_at)makeCase('late_payment',[order,p],order,p)}
+  if(order)for(const p of canonicalPayments){if(p.amount_minor!==order.amount_minor)makeCase('amount_mismatch',[order,p],order,p);if(order.expires_at&&Date.parse(p.event_at)>Date.parse(order.expires_at))makeCase('late_payment',[order,p],order,p)}
   for(const e of related.filter(e=>['refund','med'].includes(e.event_type))){const observed=payments.get(key(e.origin,e.store,e.refers_to!));const p=observed&&!conflictingPayments.has(key(e.origin,e.store,e.refers_to!))&&observed[0]?.order_ref===e.order_ref?observed[0]:null;
    makeCase(e.event_type==='refund'?(order&&p?'refund_observed':'orphan_refund'):(order&&p?'med_observed':'orphan_med'),[e,...(order?[order]:[]),...(p?[p]:[])],order,p)}
   if(created.length){const base=created[0]!,one=canonicalPayments.length===1?canonicalPayments[0]!:null;const exact=created.length===1&&one?.amount_minor===base.amount_minor&&!received.some(e=>conflictingPayments.has(key(e.origin,e.store,e.payment_ref!)))
    orders.push({origin:base.origin,store:base.store,order_ref:base.order_ref!,amount_minor:base.amount_minor,paid_exact:exact,paid_minor:exact?one!.amount_minor:'0',hold:created.length!==1||canonicalPayments.length>1||received.some(p=>p.amount_minor!==base.amount_minor||conflictingPayments.has(key(p.origin,p.store,p.payment_ref!))),created_at:base.event_at,expires_at:base.expires_at,paid_at:exact?one!.event_at:null,status:created.length!==1?'conflicting':exact?'paid_exact_observed':'awaiting_payment'})}
  }
- const caseIds=new Set<string>();for(const c of cases){if(caseIds.has(c.case_id))throw new Error('shadow_projection_duplicate_case');caseIds.add(c.case_id);c.reviews=rawReviews.map(r=>validateShadowReview(r,c)).filter((r):r is ShadowReview=>r!==null).sort((a,b)=>a.created_at.localeCompare(b.created_at)||a.review_id.localeCompare(b.review_id))}
+ const caseIds=new Set<string>();for(const c of cases){if(caseIds.has(c.case_id))throw new Error('shadow_projection_duplicate_case');caseIds.add(c.case_id);c.reviews=rawReviews.map(r=>validateShadowReview(r,c)).filter((r):r is ShadowReview=>r!==null).sort((a,b)=>Date.parse(a.created_at)-Date.parse(b.created_at)||a.review_id.localeCompare(b.review_id))}
  const reviews=cases.flatMap(c=>c.reviews)
  return {events,batches,cases:cases.sort((a,b)=>a.case_id.localeCompare(b.case_id)),reviews,orders,payment_stats:{events:events.filter(e=>e.event_type==='pix_received').length,observed_minor:events.filter(e=>e.event_type==='pix_received').reduce((n,e)=>n+BigInt(e.amount_minor),0n).toString(),unique_payment_refs:payments.size,unambiguous_minor:unambiguousMinor.toString(),semantic_duplicate_events:semanticDuplicates,conflicting_payment_refs:conflictingPayments.size},
  all_streams:new Set(events.map(e=>key(e.origin,e.store,''))).size,active_order_streams:new Set(orders.map(o=>key(o.origin,o.store,''))).size,active_order_stores:new Set(orders.map(o=>key(o.origin,o.store,''))).size,generated_at:iso(nowISO)!}
