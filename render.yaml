@@ -23,7 +23,27 @@ services:
         generateValue: true
       - key: PILOT_OPERATOR_TOKEN  # token das decisões do operador na fila de exceções
         generateValue: true
-      - key: PILOT_SETTLE        # "1" liquida cada pedido real pago na testnet (tesouraria precisa de pathUSD); "0" só concilia
-        value: "1"
+      - key: PILOT_SETTLE        # Piloto histórico: nenhuma liquidação de fundos.
+        value: "0"
       - key: COPILOT_MODE        # off | replay | live | live_record (chave só em COPILOT_API_KEY, nunca aqui)
-        value: "off"
+        value: "replay"
+      - key: COPILOT_MODEL
+        value: "openai/gpt-4.1-mini"
+      - key: COPILOT_PROVIDER
+        value: "openai"
+      - key: COPILOT_BASE_URL
+        value: "https://openrouter.ai/api/v1"
+      - key: COPILOT_API_KEY
+        sync: false
+      - key: COPILOT_BUDGET_CALLS_PER_DAY
+        value: "0"
+      - key: COPILOT_BUDGET_MICROS
+        value: "0"
+      - key: PUBLIC_REPLAY_READ_ONLY
+        value: "1"
+      - key: PILOT_V1_DISABLED
+        value: "1"
+      - key: PILOT_SHADOW_KEYRING_JSON
+        sync: false
+      - key: PILOT_SHADOW_TOKENS_JSON
+        sync: false
