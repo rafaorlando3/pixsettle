@@ -10,6 +10,7 @@ const ENGINE_LABEL = { rules: 'rules', model: 'model', replay: 'model (replay)',
 const ago = (iso) => { if (!iso) return 'never'; const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000); return s < 90 ? `${Math.round(s)} s ago` : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 172800 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago` }
 const fmtTs = (iso) => iso ? new Date(iso).toISOString().replace('T', ' ').slice(0, 16) + 'Z' : '-'
 let token = ''
+let publicReadOnly = true
 try { token = localStorage.getItem('pixsettle.pilot.operator') ?? '' } catch { token = '' }
 
 async function getJson(path) {
@@ -28,9 +29,10 @@ function bar(label, n, total, cls = '') {
 async function refreshSummary() {
   let s
   try { s = await getJson('/pilot/api/summary') } catch (e) { setLive('down', `offline: ${e.message}`); return }
+  publicReadOnly = s.public_read_only !== false
   const last = s.events.last_received_at
   const staleMs = last ? Date.now() - new Date(last).getTime() : Infinity
-  setLive(staleMs < 15 * 60_000 ? 'ok' : 'stale', `last event ${ago(last)}`)
+  setLive(staleMs < 15 * 60_000 ? 'ok' : 'stale', `historical export imported ${ago(last)}`)
   $('#k-orders').textContent = s.orders.orders.toLocaleString('en-US')
   $('#k-paid').textContent = brl(s.orders.paid_minor)
   $('#k-exc').textContent = String(s.exceptions.exceptions)
@@ -130,7 +132,7 @@ async function openDetail(id) {
     h('ul', { class: 'evid' }, ...(d.evidence ?? []).map(e => h('li', {}, h('span', { class: 'id' }, e.id), h('span', {}, e.fact)))),
     h('h2', {}, 'Verdicts'),
     ...(d.verdicts.length ? d.verdicts.map(v => h('div', {}, verdictBox(v), h('div', { class: 'hash' }, `${fmtTs(v.created_at)} · input ${v.input_hash.slice(0, 16)} · verdict ${v.verdict_hash.slice(0, 16)}${v.latency_ms != null ? ` · ${v.latency_ms} ms` : ''}`))) : [h('p', { class: 'muted small' }, 'No verdict recorded.')]),
-    d.status === 'awaiting_human' || d.status === 'open' || d.status === 'auto_applied' ? decideBox(d, close) : null,
+    publicReadOnly ? h('p', { class: 'muted small' }, 'Public replay is read-only. Operator decisions are recorded in the private shadow workspace.') : d.status === 'awaiting_human' || d.status === 'open' || d.status === 'auto_applied' ? decideBox(d, close) : null,
     h('h2', {}, 'Timeline'),
     h('ol', { class: 'timeline-pilot' }, ...d.timeline.map(t => h('li', {}, h('span', { class: 't' }, fmtTs(t.created_at)), `${t.from_state ?? '·'} → ${t.to_state}`, t.reason ? h('span', { class: 'muted' }, `: ${t.reason}`) : null))),
     d.receipts?.length ? h('p', { class: 'small' }, 'Receipts: ', ...d.receipts.map(r => h('a', { href: `/receipt/${r.id}`, target: '_blank' }, `${r.receipt_type} `))) : null,

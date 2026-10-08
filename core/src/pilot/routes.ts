@@ -128,6 +128,7 @@ export async function summary(ctx: Ctx) {
   const verdicts = await q(`SELECT engine, count(*)::int AS n FROM copilot_verdicts GROUP BY engine ORDER BY engine`)
   return {
     generated_at: ctx.now().toISOString(),
+    public_read_only: ctx.cfg.publicReplayReadOnly === true || ctx.copilot?.model?.mode === 'replay',
     copilot_model: ctx.copilot?.model ? { name: ctx.copilot.model.name, mode: ctx.copilot.model.mode } : { name: null, mode: 'off', reason: ctx.copilot?.offReason ?? 'não configurado' },
     pilot_settle: ctx.cfg.pilotSettle,
     events, stores, by_event: byEv, exceptions: { by_kind_status: exceptions, ...copilot, model_jobs_pending: pending?.n ?? 0 }, verdicts,

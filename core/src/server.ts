@@ -43,7 +43,7 @@ export async function startCore(env: CoreEnv = process.env) {
     cfg: defaultConfig({
       issuer: { id: env.ISSUER_ID ?? 'pixsettle-demo', address: need('ISSUER_ADDRESS') },
       // Piloto (eventos atestados): liquidar na testnet cada pedido real pago? Cotação SIMULADA em escala reduzida.
-      pilotSettle: (env.PILOT_SETTLE ?? '1') !== '0',
+      pilotSettle: env.PILOT_SETTLE === '1' && env.PUBLIC_REPLAY_READ_ONLY !== '1' && env.COPILOT_MODE !== 'replay',
       publicReplayReadOnly: env.PUBLIC_REPLAY_READ_ONLY === '1',
       pilotRateNum: BigInt(env.PILOT_RATE_NUM ?? '1'), pilotRateDen: BigInt(env.PILOT_RATE_DEN ?? '1'),
       pilotPayoutAddress: env.PILOT_MERCHANT_ADDRESS ?? need('DEMO_MERCHANT_ADDRESS'),
