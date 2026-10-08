@@ -30,7 +30,7 @@ export type Ctx = {
   /** Ganchos só para testes de queda (simulam o processo morrendo num ponto exato). */
   crashAt?: (point: string) => void
   /** Copiloto de exceções: modelo para o resíduo que as regras não decidem (ausente = model_off, com motivo). */
-  copilot?: { model: CopilotModel | null; offReason?: string }
+  copilot?: { model: CopilotModel | null; offReason?: string; /** teto de chamadas ao modelo por 24 h (modo vivo); esgotado = aguardando humano, com motivo */ budgetCallsPerDay?: number }
 }
 
 export class CrashError extends Error {

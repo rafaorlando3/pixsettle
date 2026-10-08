@@ -4,13 +4,13 @@
 // Cada linha vira um evento durável (attested_events) e é aplicada ao núcleo pelos MESMOS caminhos dos
 // provedores reais (applyObservation -> pedido pago -> liquidação -> recibo), com o provedor 'attested'.
 // As exceções nascem aqui e vão para o copiloto (copilot/judge.ts).
-import { randomBytes, createHash } from 'node:crypto'
-import { withTx, recordTransition, type Tx } from '../db.js'
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto'
+import { withTx, txLock, recordTransition, type Tx } from '../db.js'
 import { newId } from '../ids.js'
 import type { Ctx } from '../context.js'
 import { applyObservation } from '../flows/events.js'
 import type { ProviderPayment } from '../providers/types.js'
-import { guardLine, toMinor, type AttestedLine } from './guard.js'
+import { guardLine, toMinor, signBody, type AttestedLine } from './guard.js'
 import { openException } from '../copilot/judge.js'
 import type { Evidence, ExceptionKind } from '../copilot/verdict.js'
 import type { ExceptionFacts } from '../copilot/rules.js'
@@ -21,16 +21,35 @@ const PAID_STATES = ['paid', 'settling', 'settled', 'refunded', 'late_paid']
 const UNPAID_STATES = ['created', 'awaiting_payment', 'expired']
 export const DEFER_MAX = 5
 
-export type IngestResult = { accepted: number; duplicates: number; rejected: Array<{ index: number; reason: string }>; ids: number[] }
+export type BatchReceipt = { source: string; batch_id: string; body_sha256: string; accepted: number; duplicates: number; rejected: number; received_at: string; sig: string | null }
+export type IngestResult = { accepted: number; duplicates: number; rejected: Array<{ index: number; reason: string }>; ids: number[]; receipt: BatchReceipt | null; replayed: boolean }
+export type IngestOptions = { bodySha256?: string; secret?: string }
+
+/** Forma canônica do recibo (chaves em ordem fixa) e assinatura HMAC com o segredo do lote. Sem segredo: recibo sem assinatura. */
+export function receiptPayload(r: Omit<BatchReceipt, 'sig'>): string {
+  return JSON.stringify({ source: r.source, batch_id: r.batch_id, body_sha256: r.body_sha256, accepted: r.accepted, duplicates: r.duplicates, rejected: r.rejected, received_at: r.received_at })
+}
+export function signReceipt(secret: string, r: Omit<BatchReceipt, 'sig'>): string | null { return secret ? signBody(secret, receiptPayload(r)) : null }
+export function verifyReceipt(secret: string, r: BatchReceipt): boolean {
+  if (!secret || !r.sig) return false
+  const exp = signBody(secret, receiptPayload(r)); return exp.length === r.sig.length && timingSafeEqual(Buffer.from(exp), Buffer.from(r.sig))
+}
+export class BatchIdReused extends Error { constructor(readonly batchId: string) { super(`batch_id ${batchId} já usado com outro corpo`) } }
 
 /** Grava o lote (dedupe por chave canônica). Linha recusada pelo guarda não entra e volta com o motivo. */
-export async function ingestBatch(ctx: Ctx, sourceId: string, batchId: string, lines: unknown[]): Promise<IngestResult> {
-  const out: IngestResult = { accepted: 0, duplicates: 0, rejected: [], ids: [] }
+export async function ingestBatch(ctx: Ctx, sourceId: string, batchId: string, lines: unknown[], opts: IngestOptions = {}): Promise<IngestResult> {
+  const out: IngestResult = { accepted: 0, duplicates: 0, rejected: [], ids: [], receipt: null, replayed: false }
+  const bodySha256 = opts.bodySha256 ?? createHash('sha256').update(JSON.stringify(lines)).digest('hex')
   const good: Array<{ line: AttestedLine; key: string }> = []
   lines.forEach((raw, i) => { const g = guardLine(raw); if (g.ok) good.push(g); else out.rejected.push({ index: i, reason: g.reason }) })
-  if (!good.length) return out
   await withTx(ctx.db, async tx => {
     await tx.query(`INSERT INTO pilot_sources (id, label) VALUES ($1,$1) ON CONFLICT (id) DO NOTHING`, [sourceId])
+    await txLock(tx, `pilot:batch:${sourceId}:${batchId}`)
+    // Idempotência de ponta a ponta: o mesmo corpo já registrado devolve o mesmo recibo e não toca nos eventos.
+    const prev = (await tx.query(`SELECT batch_id, body_sha256, receipt FROM pilot_batches WHERE source_id=$1 AND (batch_id=$2 OR body_sha256=$3)`, [sourceId, batchId, bodySha256])).rows
+    const same = prev.find(r => r.body_sha256 === bodySha256)
+    if (same) { out.receipt = same.receipt as BatchReceipt; out.replayed = true; out.duplicates = good.length; out.rejected = []; return }
+    if (prev.length) throw new BatchIdReused(batchId)
     for (const g of good) {
       const r = await tx.query(
         `INSERT INTO attested_events (source_id, batch_id, event_key, ev, ts, store_code, ord, payload, processing_state)
@@ -38,13 +57,34 @@ export async function ingestBatch(ctx: Ctx, sourceId: string, batchId: string, l
         [sourceId, batchId, g.key, g.line.ev, g.line.ts ?? null, g.line.store, g.line.ord ?? null, JSON.stringify(g.line)])
       if (r.rows[0]) { out.accepted++; out.ids.push(Number(r.rows[0].id)) } else out.duplicates++
     }
+    const base = { source: sourceId, batch_id: batchId, body_sha256: bodySha256, accepted: out.accepted, duplicates: out.duplicates, rejected: out.rejected.length, received_at: ctx.now().toISOString() }
+    const receipt: BatchReceipt = { ...base, sig: signReceipt(opts.secret ?? '', base) }
+    await tx.query(`INSERT INTO pilot_batches (source_id, batch_id, body_sha256, accepted, duplicates, rejected, receipt, received_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [sourceId, batchId, bodySha256, out.accepted, out.duplicates, out.rejected.length, JSON.stringify(receipt), base.received_at])
+    out.receipt = receipt
   })
   return out
 }
 
 /** Processa eventos pendentes (received/deferred/error) em ordem de chegada; cada um na própria transação. */
-export async function processPending(ctx: Ctx, sourceId: string, limit = 1000): Promise<{ processed: number; deferred: number; unmapped: number; ignored: number; errors: number }> {
-  const tally = { processed: 0, deferred: 0, unmapped: 0, ignored: 0, errors: 0 }
+export type ProcessTally = { processed: number; deferred: number; unmapped: number; ignored: number; errors: number; busy: boolean }
+export const processLockKey = (sourceId: string) => createHash('sha256').update(`pilot:process:${sourceId}`).digest().readBigInt64BE(0).toString()
+
+/** Trava consultiva de sessão por fonte: dois processadores da mesma fonte nunca correm juntos. O segundo volta com busy=true, sem esperar. */
+export async function processPending(ctx: Ctx, sourceId: string, limit = 1000): Promise<ProcessTally> {
+  const tally: ProcessTally = { processed: 0, deferred: 0, unmapped: 0, ignored: 0, errors: 0, busy: false }
+  const holder = await ctx.db.connect()
+  const key = processLockKey(sourceId)
+  try {
+    const got = (await holder.query('SELECT pg_try_advisory_lock($1::bigint) AS ok', [key])).rows[0].ok as boolean
+    if (!got) { tally.busy = true; return tally }
+    try { await processLoop(ctx, sourceId, limit, tally) }
+    finally { await holder.query('SELECT pg_advisory_unlock($1::bigint)', [key]) }
+  } finally { holder.release() }
+  return tally
+}
+
+async function processLoop(ctx: Ctx, sourceId: string, limit: number, tally: ProcessTally): Promise<void> {
   for (let pass = 0; pass < 3; pass++) {
     const rows = (await ctx.db.query(
       `SELECT id FROM attested_events WHERE source_id=$1 AND processing_state IN ('received','deferred','error') ORDER BY id LIMIT $2`, [sourceId, limit])).rows
@@ -57,7 +97,6 @@ export async function processPending(ctx: Ctx, sourceId: string, limit = 1000): 
     }
     if (!progressed) break
   }
-  return tally
 }
 
 type Outcome = 'processed' | 'ignored' | 'deferred' | 'unmapped' | 'error'

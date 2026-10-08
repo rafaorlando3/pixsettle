@@ -117,7 +117,7 @@ export class ScriptedModel implements CopilotModel {
 }
 
 /** Fábrica a partir do ambiente. Sem chave: modelo nulo com o motivo (a tela mostra "model_off: ..."). */
-export function copilotFromEnv(env: Record<string, string | undefined>, db: Db): { model: CopilotModel | null; offReason?: string } {
+export function copilotFromEnv(env: Record<string, string | undefined>, db: Db): { model: CopilotModel | null; offReason?: string; budgetCallsPerDay?: number } {
   const mode = env.COPILOT_MODE ?? 'off'
   const name = env.COPILOT_MODEL ?? ''
   try {
@@ -128,7 +128,10 @@ export function copilotFromEnv(env: Record<string, string | undefined>, db: Db):
     const live = provider === 'anthropic'
       ? new AnthropicModel(env.COPILOT_API_KEY ?? '', name, env.COPILOT_BASE_URL || undefined)
       : new OpenAICompatibleModel(env.COPILOT_API_KEY ?? '', name, env.COPILOT_BASE_URL ?? '')
-    return { model: mode === 'live_record' ? new RecordingModel(live, db) : live }
+    // Orçamento: COPILOT_BUDGET_CALLS_PER_DAY (padrão 200). Inválido ou <= 0 = modelo desligado com motivo, nunca sem teto.
+    const budget = Number(env.COPILOT_BUDGET_CALLS_PER_DAY ?? '200')
+    if (!Number.isInteger(budget) || budget <= 0) return { model: null, offReason: `COPILOT_BUDGET_CALLS_PER_DAY inválido: ${env.COPILOT_BUDGET_CALLS_PER_DAY}` }
+    return { model: mode === 'live_record' ? new RecordingModel(live, db) : live, budgetCallsPerDay: budget }
   } catch (e) {
     return { model: null, offReason: (e as Error).message }
   }

@@ -1,9 +1,9 @@
 // Rotas do piloto: ingestão assinada (operador), leitura pública pseudonimizada (painel) e decisão do operador.
 import type { FastifyInstance } from 'fastify'
-import { timingSafeEqual } from 'node:crypto'
+import { timingSafeEqual, createHash } from 'node:crypto'
 import type { Ctx } from '../context.js'
 import { verifySignature } from './guard.js'
-import { ingestBatch, processPending } from './ingest.js'
+import { ingestBatch, processPending, BatchIdReused } from './ingest.js'
 import { decideByOperator } from '../copilot/judge.js'
 import { ACTIONS, ACTION_LABEL, type ExceptionKind } from '../copilot/verdict.js'
 
@@ -27,9 +27,12 @@ export function registerPilot(app: FastifyInstance, ctx: Ctx, opts: PilotOptions
     const batchId = String(body?.batch_id ?? '')
     if (!/^[A-Za-z0-9._:-]{1,80}$/.test(batchId)) return err(reply, 422, 'invalid_batch_id', 'batch_id inválido')
     if (!Array.isArray(body?.events) || body.events.length === 0 || body.events.length > 2000) return err(reply, 422, 'invalid_events', 'events: lista de 1 a 2000 linhas')
-    const ing = await ingestBatch(ctx, source, batchId, body.events)
+    // Recibo por lote: hash do corpo bruto (o que foi assinado) + assinatura do servidor com o mesmo segredo.
+    let ing
+    try { ing = await ingestBatch(ctx, source, batchId, body.events, { bodySha256: createHash('sha256').update(raw).digest('hex'), secret: opts.hmacSecret }) }
+    catch (e) { if (e instanceof BatchIdReused) return err(reply, 409, 'batch_id_reused', e.message, { batch_id: batchId }); throw e }
     const proc = body.process === false ? null : await processPending(ctx, source)
-    return { accepted: ing.accepted, duplicates: ing.duplicates, rejected: ing.rejected, processed: proc }
+    return { accepted: ing.accepted, duplicates: ing.duplicates, rejected: ing.rejected, processed: proc, receipt: ing.receipt, replayed: ing.replayed }
   })
 
   // Reprocessa pendentes (adiados por dependência, erros): o operador chama depois de um lote fora de ordem.

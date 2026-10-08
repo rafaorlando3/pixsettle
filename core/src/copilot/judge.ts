@@ -147,6 +147,12 @@ export async function judgeWithModel(ctx: Ctx, exceptionId: string, tryNo: numbe
     })
   }
   if (!model) { await fail(ctx.copilot?.offReason ?? 'modelo não configurado', true); return 'done' }
+  // Orçamento diário (só modo vivo): chamadas = vereditos do modelo + falhas finais nas últimas 24 h. Esgotado = humano, com motivo.
+  const budget = ctx.copilot?.budgetCallsPerDay
+  if (budget !== undefined && model.mode === 'live') {
+    const used = await modelCallsLast24h(ctx)
+    if (used >= budget) { await fail(`orçamento diário do modelo esgotado (${used}/${budget} chamadas em 24 h)`, true); return 'done' }
+  }
   const facts = e.facts as ExceptionFacts, evidence = e.evidence as Evidence[]
   const input = buildModelInput(e.kind, facts, evidence)
   let out
@@ -169,6 +175,13 @@ export async function judgeWithModel(ctx: Ctx, exceptionId: string, tryNo: numbe
     await applyPolicy(tx, ctx, exceptionId, v.verdict, rules ? { ...rules, confidence: Number(rules.confidence) } : null, 'copilot_model')
   })
   return 'done'
+}
+
+export async function modelCallsLast24h(ctx: Ctx): Promise<number> {
+  const r = (await ctx.db.query(
+    `SELECT (SELECT count(*) FROM copilot_verdicts WHERE engine='model' AND created_at > $1::timestamptz - interval '24 hours')
+          + (SELECT count(*) FROM exceptions WHERE copilot_state='model_error' AND updated_at > $1::timestamptz - interval '24 hours') AS n`, [ctx.now().toISOString()])).rows[0]
+  return Number(r.n)
 }
 
 /** Decisão do operador: gravada como veredito 'operator', encerra a exceção. Não move dinheiro aqui (piloto sombra). */
