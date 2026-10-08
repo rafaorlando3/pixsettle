@@ -1,5 +1,6 @@
 // Fronteira com o processo de assinatura (settlement/). O core NUNCA tem a chave.
 import { createHmac, createHash, randomUUID } from 'node:crypto'
+import { recordChainAttempt } from '../release-runtime.js'
 
 export type Intent = { chainId: number; token: string; from: string; to: string; amount: bigint; memo: string }
 export type Signed = { raw: string; hash: string; feeParams: Record<string, string> }
@@ -31,6 +32,7 @@ export class HttpChainGateway implements ChainGateway {
     const nonce = randomUUID()
     const bodyHash = createHash('sha256').update(text).digest('hex')
     const sig = createHmac('sha256', this.secret).update(`${method}\n${path}\n${ts}\n${nonce}\n${bodyHash}`).digest('hex')
+    recordChainAttempt()
     const res = await fetch(this.base + path, {
       method, body: body === undefined ? undefined : text,
       headers: { 'content-type': 'application/json', 'x-ps-ts': ts, 'x-ps-nonce': nonce, 'x-ps-sig': sig },

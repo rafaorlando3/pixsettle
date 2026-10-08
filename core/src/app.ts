@@ -6,6 +6,7 @@ import { createOrder, DomainError } from './flows/orders.js'
 import { ingestProviderEvent } from './flows/events.js'
 import { requestRefund } from './flows/refunds.js'
 import { newId } from './ids.js'
+import { runtimeReport } from './release-runtime.js'
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex')
 const err = (reply: FastifyReply, status: number, code: string, message: string, details: Record<string, unknown> = {}) =>
@@ -161,7 +162,8 @@ export function buildApp(ctx: Ctx, opts: AppOptions) {
   })
 
   app.get('/health', async () => {
-    try { await ctx.db.query('SELECT 1'); return { status: 'ok' } } catch { return { status: 'degraded' } }
+    try { await ctx.db.query('SELECT 1'); return { status: 'ok', runtime: await runtimeReport(ctx.db) } }
+    catch { return { status: 'degraded' } }
   })
 
   app.get('/internal/diagnostics', async (req, reply) => {
