@@ -2,10 +2,12 @@
 
 Every exception PixSettle finds (a second charge for the same order, a payment under the amount, a payment after the window, a second payment, a refund request, a MED claim, a divergent manual Pix, a failed or reversed withdrawal) gets a **verdict**: an action from a closed list, a confidence, a rationale, and the evidence lines it used. The verdict is immutable, hashed, and shown next to the exception on `/pilot`.
 
+The historical shadow release uses a separate typed projection and append-only advisory review ledger. Its public reads never run the financial policy or write a decision. A model or Codex-assisted operator review remains advisory and does not count as a human authorization or resolved financial exception. The action guard below describes the core's policy; release measurements report the shadow statuses actually observed.
+
 The copilot exists to decide, not to chat. Four tests, applied to every piece of it:
 
 1. **It decides with evidence.** The verdict cites evidence ids (`e1`, `e2`...) that PixSettle itself assembled from the ledger; a verdict that cites an id that does not exist is rejected.
-2. **It is measured against the same task without a model.** Deterministic rules run first and close everything they can with confidence 0.9 or more. On the first 90 days of the live pilot the rules closed 479 of 493 exceptions; the model is only called for the 14 that need judgement. The page shows both counts, and the operator's agreement rate with the copilot on decided cases.
+2. **It is measured against the same task without a model.** Deterministic rules run first and close everything they can with confidence 0.9 or more. The current historical replay reports only decisions measured from its approved shadow projection. A recorded verdict does not settle funds or prove bank settlement. Legacy local counts are not release metrics.
 3. **It has a guard.** Only *reversible* actions can be applied without a human (`hold_request_balance`, `close_benign_retry`, `close_expired`, `close_superseded`, `close_reversed`, `flag_review`), and only with confidence of at least 0.85 and no disagreement between rules and model. Anything that moves money (`refund_*`, `credit_customer`, `accept_as_paid`, `accept_late`, `approve_refund`, `contest_with_evidence`...) always waits for the operator, whatever the model says. If the model is off, fails, returns something that is not JSON, or an action outside the list, the exception goes to the human with that reason on screen; nothing is retried silently.
 4. **It is visible.** The exception queue, the verdict, the confidence meter and the reason a case is waiting are the first thing on the pilot page.
 
@@ -48,17 +50,9 @@ A model failure is terminal on its first attempt: a controlled reason is recorde
 
 `copilot_verdicts` is append-only (database trigger). Each row carries `input_hash` (SHA-256 of the canonical input), `verdict_hash` (SHA-256 of the canonical verdict), engine (`rules`, `model`, `replay`, `operator`), model name, latency and the provider's usage when reported. The operator's decision is a verdict too, with `agreed_with_copilot` recorded on the exception, which is what the agreement rate on the page is computed from. Every status change of an exception is a `state_transitions` row.
 
-## Measured so far (live pilot, 90 days to 06/10/2026)
+## Release measurements
 
-| | Count |
-| --- | --- |
-| Exceptions | 493 |
-| Closed by rules, no human | 479 (97%) |
-| Residue for judgement | 14: 4 amount mismatches (R$ 151 to R$ 800 short), 2 MED claims (12 and 13 days after payment), 8 failed withdrawals |
-| Operator decisions recorded | 0 (the queue opens to the operator with this release) |
-
-The next number to publish is the operator's agreement rate with the model on the residue, as decisions accumulate.
-
+Read the deployed `/pilot/api/summary` and save it with the exact Render deploy id, commit, database revision and source export hash. Record observed payments separately from matched orders; an exact monetary match is not a bank settlement. Count resolved advisory cases from their actual status and explain their scope. The old v1 local results (493 exceptions, 479 resolved statuses and 469 automatic dispositions) describe a different pipeline and must not be reused as current shadow results.
 
 ## Private USD reservation (212, C0663 integration)
 

@@ -10,7 +10,7 @@ PixSettle is a reconciliation and exception-handling prototype for merchants who
 
 Built for the Colosseum Crypto World's Fair, Tempo track.
 
-**Live pilot and exception copilot.** Since October 2026 PixSettle reconciles a signed, pseudonymized copy of the events of our own multi-store Pix operation on the Brazil-Paraguay border (Equilibrium and partner stores): 1,195 orders and 586 Pix payments in the first 90 days, with every exception (repeated charges, amounts off, MED claims, refunds, failed withdrawals) opened as a case and judged by the copilot: deterministic rules first (479 of 493 closed with no human), a model only for the residue, a human for anything that moves money. Page `/pilot`; details in [`docs/pilot.md`](docs/pilot.md) and [`docs/ai-copilot.md`](docs/ai-copilot.md).
+**Historical pilot and exception copilot.** PixSettle replays a signed, pseudonymized export from our own multi-store Pix operation on the Brazil-Paraguay border (Equilibrium and partner stores). The public pilot is read-only: deterministic evidence, recorded copilot verdicts and advisory review, with no paid model calls or financial settlement. Current counts must be measured from the deployed shadow projection. Page `/pilot`; details in [`docs/pilot.md`](docs/pilot.md) and [`docs/ai-copilot.md`](docs/ai-copilot.md).
 
 > **Demo status, stated plainly.** The Tempo side is real: settlements are `transferWithMemo` transactions on Tempo testnet (Moderato, chain id 42431) in pathUSD. The Pix side runs on a **simulated provider** in the public demo (an Asaas sandbox adapter is in progress). The FX quote and the merchant reserve are **simulated accounting**, labeled as such on every screen and receipt. No real money moves. In production, BRL to stablecoin conversion must go through a partner licensed by the Central Bank of Brazil; PixSettle is software on top of that partner and does not hold customer funds.
 
@@ -54,7 +54,7 @@ Pages:
 - `/demo` operator console: create an order through the real merchant API, pay it with the simulated provider (the webhook is delivered 3 times on purpose), watch the settlement timeline, refund, open a simulated MED claim.
 - `/pay/:token` payer checkout: QR code, copy and paste code, expiry.
 - `/receipt/:id` receipt verified in your browser. Add `?issuer=0x...` to pin the issuer you trust.
-- `/pilot` live pilot: real orders reconciled in shadow mode, exception queue with the copilot's verdicts and the operator's decisions.
+- `/pilot` historical shadow replay: observed events, scoped reconciliation and recorded advisory reviews.
 
 In production the signer and the core run as two processes: `settlement/src/server.ts` (keys, localhost only, HMAC with replay protection) and `core/src/server.ts` (API, pages, worker; no keys).
 
