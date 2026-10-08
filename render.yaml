@@ -41,6 +41,8 @@ services:
         value: "0"
       - key: PUBLIC_REPLAY_READ_ONLY
         value: "1"
+      - key: PILOT_SHADOW_PUBLIC
+        value: "1"
       - key: PILOT_V1_DISABLED
         value: "1"
       - key: PILOT_SHADOW_KEYRING_JSON

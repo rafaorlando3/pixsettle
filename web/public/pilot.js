@@ -1,4 +1,4 @@
-// Painel do piloto: resumo ao vivo, fila de exceções com veredito e decisão do operador (com token).
+// Historical shadow projection: measured observations and recorded advisory reviews.
 import { $, h, brl, toast } from '/assets/common.js'
 
 const KIND_LABEL = {
@@ -36,30 +36,27 @@ async function refreshSummary() {
   $('#k-orders').textContent = s.orders.orders.toLocaleString('en-US')
   $('#k-paid').textContent = brl(s.orders.paid_minor)
   $('#k-exc').textContent = String(s.exceptions.exceptions)
-  $('#k-auto').textContent = String(s.exceptions.auto_applied)
+  $('#k-auto').textContent = String(s.exceptions.resolved ?? s.exceptions.auto_applied)
   $('#k-human').textContent = String(s.exceptions.awaiting_human)
   $('#k-receipts').textContent = String(s.orders.receipts)
 
   const mb = $('#model-badge')
-  mb.textContent = s.copilot_model.name ? `${s.copilot_model.name} (${s.copilot_model.mode})` : 'model off'
+  mb.textContent = s.exceptions.model_advisories > 0 ? `${s.copilot_model.name ?? 'Recorded model'} (replay)` : 'Replay • no recorded model verdict'
   mb.className = 'badge ' + (s.copilot_model.name ? 'model' : 'muted')
   const ex = s.exceptions
   const bars = $('#copilot-bars'); bars.replaceChildren(
-    bar('Closed by rules', ex.by_rules, ex.exceptions, 'ok'),
-    bar('Judged by model', ex.by_model, ex.exceptions, 'sim'),
+    bar('Rules advisory', ex.by_rules, ex.exceptions, 'ok'),
+    bar('Recorded model advisory', ex.by_model, ex.exceptions, 'sim'),
     bar('Waiting for model', ex.model_pending + ex.model_jobs_pending, ex.exceptions, 'warn'),
     bar('Model unavailable', ex.model_off + ex.model_error, ex.exceptions, 'bad'),
-    bar('Decided by operator', ex.decided_by_operator, ex.exceptions, 'ok'),
+    bar('Operator advisory records', ex.operator_advisories ?? ex.decided_by_operator, ex.exceptions, 'ok'),
   )
-  const agree = ex.operator_agreed + ex.operator_disagreed
-  $('#copilot-note').textContent = s.copilot_model.name
-    ? `Operator agreed with the copilot in ${ex.operator_agreed} of ${agree} decided cases.`
-    : `No model configured (${s.copilot_model.reason}); the residue the rules cannot decide waits for a human with the reason shown.`
+  $('#copilot-note').textContent = `${ex.awaiting_human} cases await human confirmation. Recorded reviews are advisory; the public replay makes no model calls.`
   $('#copilot-facts').replaceChildren(
     ...kv('Rule: money never moves on the copilot\'s word', 'refunds, credits and releases are proposals; a human confirms'),
-    ...kv('Auto-apply', 'reversible actions only, confidence >= 0.85, rules and model in agreement'),
-    ...kv('Verdicts', s.verdicts.map(v => `${ENGINE_LABEL[v.engine] ?? v.engine} ${v.n}`).join(', ') || 'none yet'),
-    ...kv('Testnet settlement', s.pilot_settle ? 'on: each real paid order settles on Tempo testnet with a receipt' : 'off: reconciliation only (PILOT_SETTLE=0)'),
+    ...kv('Advisory review', 'recorded proposals never count as human approval or move funds'),
+    ...kv('Verdicts', s.verdicts.map(v => `${v.engine_label ?? ENGINE_LABEL[v.engine] ?? v.engine} ${v.n}`).join(', ') || 'none yet'),
+    ...kv('Historical pilot settlement', 'off: observed events and advisory reconciliation only'),
   )
   const tb = $('#stores tbody'); tb.replaceChildren(...s.stores.map(st => h('tr', {}, h('td', {}, st.code, st.store_type === 'partner' ? h('span', { class: 'muted small' }, ' partner') : null), h('td', { class: 'n' }, String(st.orders)), h('td', { class: 'n' }, String(st.paid)), h('td', { class: 'n' }, String(st.exceptions)))))
   const byKind = {}
@@ -68,6 +65,8 @@ async function refreshSummary() {
   const fk = $('#f-kind'); if (fk.options.length <= 1) for (const k of Object.keys(KIND_LABEL)) fk.append(h('option', { value: k }, KIND_LABEL[k]))
   const fs = $('#f-store'); if (fs.options.length <= 1) for (const st of s.stores) fs.append(h('option', { value: st.code }, st.code))
   $('#stream').replaceChildren(
+    ...kv('Pix observed', `${s.orders.pix_observed ?? '-'} observations; ${s.orders.pix_observed_minor != null ? brl(s.orders.pix_observed_minor) : '-'} (not bank settlement)`),
+    ...kv('Streams', `${s.all_streams ?? '-'} accepted origin/store streams; ${s.active_order_streams ?? '-'} with orders. Stream counts do not prove physical store counts.`),
     ...kv('Events received', `${s.events.total.toLocaleString('en-US')} (${s.events.processed} applied, ${s.events.ignored} statistical, ${s.events.unmapped} unmapped, ${s.events.errors} errors)`),
     ...kv('Period', `${fmtTs(s.events.first_ts)} to ${fmtTs(s.events.last_ts)}`),
     ...kv('Last event', s.last_event ? `${s.last_event.ev} at ${fmtTs(s.last_event.ts)} (${s.last_event.store_code}), received ${ago(s.last_event.received_at)}` : 'none'),
@@ -111,7 +110,7 @@ function verdictBox(v) {
   const pct = Math.round(Number(v.confidence) * 100)
   const meter = h('i'); meter.style.width = `${pct}%`
   return h('div', { class: 'verdict' },
-    h('div', {}, h('span', { class: `badge ${v.engine}` }, ENGINE_LABEL[v.engine] ?? v.engine), ' ', h('span', { class: 'act' }, v.action_label ?? v.action),
+    h('div', {}, h('span', { class: `badge ${v.engine}` }, v.engine_label ?? ENGINE_LABEL[v.engine] ?? v.engine), ' ', h('span', { class: 'act' }, v.action_label ?? v.action),
       v.engine !== 'operator' ? h('span', { class: 'muted small' }, ` confidence ${pct}%`, h('span', { class: 'conf' }, meter)) : null,
       v.requires_human ? h('span', { class: 'badge st-awaiting_human ml6' }, 'needs human') : null),
     h('div', { class: 'muted mt4' }, v.rationale),
@@ -132,7 +131,7 @@ async function openDetail(id) {
     h('ul', { class: 'evid' }, ...(d.evidence ?? []).map(e => h('li', {}, h('span', { class: 'id' }, e.id), h('span', {}, e.fact)))),
     h('h2', {}, 'Verdicts'),
     ...(d.verdicts.length ? d.verdicts.map(v => h('div', {}, verdictBox(v), h('div', { class: 'hash' }, `${fmtTs(v.created_at)} · input ${v.input_hash.slice(0, 16)} · verdict ${v.verdict_hash.slice(0, 16)}${v.latency_ms != null ? ` · ${v.latency_ms} ms` : ''}`))) : [h('p', { class: 'muted small' }, 'No verdict recorded.')]),
-    publicReadOnly ? h('p', { class: 'muted small' }, 'Public replay is read-only. Operator decisions are recorded in the private shadow workspace.') : d.status === 'awaiting_human' || d.status === 'open' || d.status === 'auto_applied' ? decideBox(d, close) : null,
+    publicReadOnly ? h('p', { class: 'muted small' }, 'Public replay is read-only. Recorded reviews are advisory; Codex-assisted records are labeled and do not represent human financial approval.') : d.status === 'awaiting_human' || d.status === 'open' || d.status === 'auto_applied' ? decideBox(d, close) : null,
     h('h2', {}, 'Timeline'),
     h('ol', { class: 'timeline-pilot' }, ...d.timeline.map(t => h('li', {}, h('span', { class: 't' }, fmtTs(t.created_at)), `${t.from_state ?? '·'} → ${t.to_state}`, t.reason ? h('span', { class: 'muted' }, `: ${t.reason}`) : null))),
     d.receipts?.length ? h('p', { class: 'small' }, 'Receipts: ', ...d.receipts.map(r => h('a', { href: `/receipt/${r.id}`, target: '_blank' }, `${r.receipt_type} `))) : null,

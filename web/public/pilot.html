@@ -24,11 +24,11 @@
     </div>
     <div class="kpis hero-kpis">
       <div class="kpi"><div class="v" id="k-orders">-</div><div class="l">Orders in the pilot</div></div>
-      <div class="kpi"><div class="v" id="k-paid">-</div><div class="l">Paid, reconciled (BRL)</div></div>
+      <div class="kpi"><div class="v" id="k-paid">-</div><div class="l">Exact amount matches (BRL)</div></div>
       <div class="kpi"><div class="v" id="k-exc">-</div><div class="l">Exceptions found</div></div>
-      <div class="kpi"><div class="v ok" id="k-auto">-</div><div class="l">Closed by rules, no human</div></div>
+      <div class="kpi"><div class="v ok" id="k-auto">-</div><div class="l">Resolved advisory cases</div></div>
       <div class="kpi"><div class="v warn" id="k-human">-</div><div class="l">Need a human decision</div></div>
-      <div class="kpi"><div class="v" id="k-receipts">-</div><div class="l">Verifiable receipts</div></div>
+      <div class="kpi"><div class="v" id="k-receipts">-</div><div class="l">Historical settlement receipts</div></div>
     </div>
   </section>
 
@@ -41,8 +41,8 @@
         <dl class="kv" id="copilot-facts"></dl>
       </section>
       <section class="card">
-        <h2>Stores</h2>
-        <table class="tbl" id="stores"><thead><tr><th>Store</th><th>Orders</th><th>Paid</th><th>Exceptions</th></tr></thead><tbody></tbody></table>
+        <h2>Scoped order streams</h2>
+        <table class="tbl" id="stores"><thead><tr><th>Public stream</th><th>Orders</th><th>Paid</th><th>Exceptions</th></tr></thead><tbody></tbody></table>
       </section>
       <section class="card">
         <h2>Exceptions by kind</h2>
@@ -60,7 +60,7 @@
           <div class="row">
             <select id="f-status"><option value="">all statuses</option><option value="awaiting_human" selected>awaiting human</option><option value="open">open</option><option value="auto_applied">auto-applied</option><option value="resolved">resolved</option><option value="dismissed">dismissed</option></select>
             <select id="f-kind"><option value="">all kinds</option></select>
-            <select id="f-store"><option value="">all stores</option></select>
+            <select id="f-store"><option value="">all streams</option></select>
           </div>
         </div>
         <ul class="queue" id="queue"><li class="muted">Loading</li></ul>
