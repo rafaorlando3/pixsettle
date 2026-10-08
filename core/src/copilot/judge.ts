@@ -1,5 +1,8 @@
 // Orquestração do copiloto: abrir/mesclar exceção -> regras -> (modelo no resíduo) -> política -> aplicar.
 // Veredito é imutável e com hash; a aplicação fica no estado da exceção e no histórico (state_transitions).
+import canonicalizeLib from 'canonicalize'
+const canonicalize = canonicalizeLib as unknown as (v: unknown) => string | undefined
+
 import { withTx, recordTransition, enqueue, type Tx } from '../db.js'
 import { newId } from '../ids.js'
 import type { Ctx } from '../context.js'
@@ -117,7 +120,7 @@ export function buildModelInput(kind: ExceptionKind, facts: ExceptionFacts, evid
     `Exception kind: ${kind}`,
     `Allowed actions: ${ACTIONS[kind].join(', ')}`,
     `Reversible (may be auto-applied): ${ACTIONS[kind].filter(a => REVERSIBLE.has(a)).join(', ') || 'none'}`,
-    '', 'Facts (JSON):', JSON.stringify(facts, null, 1),
+    '', 'Facts (JSON):', JSON.stringify(JSON.parse(canonicalize(facts) ?? '{}'), null, 1),
     '', 'Evidence:', ...evidence.map(e => `${e.id}: ${e.fact}`),
   ].join('\n')
   return { system: SYSTEM, user }
