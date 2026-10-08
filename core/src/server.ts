@@ -21,6 +21,8 @@ export type CoreEnv = Record<string, string | undefined>
 export async function startCore(env: CoreEnv = process.env) {
   const need = (k: string) => { const v = env[k]; if (!v) throw new Error(`variável ${k} ausente`); return v }
   const demo = env.DEMO_MODE === '1'
+  const shadowPublic = env.PILOT_SHADOW_PUBLIC === '1'
+  if (shadowPublic && (env.PUBLIC_REPLAY_READ_ONLY !== '1' || env.COPILOT_MODE !== 'replay' || env.PILOT_SETTLE !== '0')) throw new Error('shadow public requires read-only replay and settlement off')
   if (!demo) throw new Error('esta versão só roda como demo (DEMO_MODE=1): Pix simulado ou Asaas sandbox, Tempo testnet')
   const tempoRpc = env.TEMPO_RPC ?? 'https://rpc.moderato.tempo.xyz'
   const explorer = env.EXPLORER ?? 'https://explore.testnet.tempo.xyz'
@@ -59,7 +61,7 @@ export async function startCore(env: CoreEnv = process.env) {
   registerWeb(app, ctx, { tempoRpc, explorer, demo })
   if (demo) await registerDemo(app, ctx, { webhookToken, merchantAddress: need('DEMO_MERCHANT_ADDRESS'), explorer, bench })
   // Piloto: ingestão só com PILOT_HMAC_SECRET; sem ele a rota recusa tudo com motivo (leitura do painel continua).
-  registerPilot(app, ctx, { hmacSecret: env.PILOT_HMAC_SECRET ?? '', operatorToken: env.PILOT_OPERATOR_TOKEN ?? '', sourceId: env.PILOT_SOURCE ?? 'odin', v1Disabled: env.PILOT_V1_DISABLED === '1', readOnly: ctx.cfg.publicReplayReadOnly })
+  registerPilot(app, ctx, { hmacSecret: env.PILOT_HMAC_SECRET ?? '', operatorToken: env.PILOT_OPERATOR_TOKEN ?? '', sourceId: env.PILOT_SOURCE ?? 'odin', v1Disabled: env.PILOT_V1_DISABLED === '1', readOnly: ctx.cfg.publicReplayReadOnly, shadowPublic })
   registerShadow(app, db, env)
 
   // Worker da outbox com estado ocioso de zero consultas (src/worker.ts). Erro de um job fica gravado

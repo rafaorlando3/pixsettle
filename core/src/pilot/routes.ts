@@ -7,8 +7,9 @@ import { ingestBatch, processPending, BatchIdReused } from './ingest.js'
 import { decideByOperator } from '../copilot/judge.js'
 import { ACTIONS, ACTION_LABEL, type ExceptionKind } from '../copilot/verdict.js'
 import { publicException, publicVerdict, publicTimeline } from './public.js'
+import { registerShadowPublic } from '../pilot-shadow/public-api.js'
 
-export type PilotOptions = { hmacSecret: string; operatorToken: string; sourceId?: string; v1Disabled?: boolean; readOnly?: boolean }
+export type PilotOptions = { hmacSecret: string; operatorToken: string; sourceId?: string; v1Disabled?: boolean; readOnly?: boolean; shadowPublic?: boolean }
 export const BATCH_CONTENT_TYPE = 'application/x-pixsettle-batch+json'
 const err = (reply: any, status: number, code: string, message: string, details: Record<string, unknown> = {}) => reply.code(status).send({ error: { code, message, details } })
 
@@ -17,7 +18,7 @@ export function registerPilot(app: FastifyInstance, ctx: Ctx, opts: PilotOptions
   app.addContentTypeParser(BATCH_CONTENT_TYPE, { parseAs: 'string', bodyLimit: 4 * 1024 * 1024 }, (_req, body, done) => done(null, body))
 
   app.post('/pilot/v1/events', async (req, reply) => {
-    if (opts.v1Disabled || opts.readOnly || ctx.copilot?.model?.mode === 'replay') return err(reply, 409, 'pilot_v1_disabled', 'pilot v1 ingestion is disabled')
+    if (opts.shadowPublic || opts.v1Disabled || opts.readOnly || ctx.copilot?.model?.mode === 'replay') return err(reply, 409, 'pilot_v1_disabled', 'pilot v1 ingestion is disabled')
     if (req.headers['content-type'] !== BATCH_CONTENT_TYPE) return err(reply, 415, 'content_type', `envie ${BATCH_CONTENT_TYPE}`)
     const raw = String(req.body ?? '')
     const sig = verifySignature(opts.hmacSecret, raw, req.headers['x-pilot-signature'] as string | undefined)
@@ -39,12 +40,14 @@ export function registerPilot(app: FastifyInstance, ctx: Ctx, opts: PilotOptions
 
   // Reprocessa pendentes (adiados por dependência, erros): o operador chama depois de um lote fora de ordem.
   app.post('/pilot/v1/process', async (req, reply) => {
-    if (opts.v1Disabled || opts.readOnly || ctx.copilot?.model?.mode === 'replay') return err(reply, 409, 'pilot_v1_disabled', 'pilot v1 processing is disabled')
+    if (opts.shadowPublic || opts.v1Disabled || opts.readOnly || ctx.copilot?.model?.mode === 'replay') return err(reply, 409, 'pilot_v1_disabled', 'pilot v1 processing is disabled')
     if (!bearerOk(req, opts.operatorToken)) return err(reply, 401, 'unauthorized', 'token do operador inválido')
     const source = String((req.query as any)?.source ?? opts.sourceId ?? '')
     return processPending(ctx, source)
   })
 
+  if (opts.shadowPublic) registerShadowPublic(app, ctx.db, { now: ctx.now, configuredModel: ctx.copilot?.model?.name })
+  else {
   app.get('/pilot/api/summary', async () => summary(ctx))
 
   app.get('/pilot/api/exceptions', async (req) => {
@@ -77,8 +80,9 @@ export function registerPilot(app: FastifyInstance, ctx: Ctx, opts: PilotOptions
     return { ...publicException(pub), allowed_actions: ACTIONS[e.kind as ExceptionKind].map(a => ({ action: a, label: ACTION_LABEL[a] ?? a })), verdicts: verdicts.map(publicVerdict), timeline: timeline.map(publicTimeline), receipts }
   })
 
+  }
   app.post('/pilot/api/exceptions/:id/decide', async (req, reply) => {
-    if (opts.readOnly || ctx.copilot?.model?.mode === 'replay') return err(reply, 409, 'replay_readonly', 'public replay permits read access only')
+    if (opts.shadowPublic || opts.readOnly || ctx.copilot?.model?.mode === 'replay') return err(reply, 409, 'replay_readonly', 'public replay permits read access only')
     if (!bearerOk(req, opts.operatorToken)) return err(reply, 401, 'unauthorized', 'token do operador inválido')
     const b = (req.body ?? {}) as any
     const action = String(b.action ?? '')
