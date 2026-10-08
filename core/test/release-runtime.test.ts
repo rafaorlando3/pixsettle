@@ -12,6 +12,9 @@ describe('release runtime evidence', () => {
     expect(sql).toHaveLength(1)
     expect(sql[0]).toContain('FROM pilot_release_identity')
     expect(JSON.stringify(r)).not.toContain('private-test-secret')
+    expect(r.instance_id).toMatch(/^[a-f0-9-]{36}$/)
+    expect((await runtimeReport(db, {})).instance_id).toBe(r.instance_id)
+    expect(r.started_at).toMatch(/^\d{4}-\d\d-\d\dT/)
   })
   it('does not substitute environment values for a missing database marker', async () => {
     const db = { query: async () => ({ rows: [] }) } as unknown as Db
