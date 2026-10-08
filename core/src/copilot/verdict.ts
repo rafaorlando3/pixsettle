@@ -47,10 +47,13 @@ export const hashOf = (obj: unknown) => sha256(canonicalize(obj) ?? '')
 export function validateVerdict(kind: ExceptionKind, raw: unknown, evidence: Evidence[]): ValidationResult {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, reason: 'verdict_not_object' }
   const v = raw as Record<string, unknown>
+  const fields = new Set(['action', 'confidence', 'requires_human', 'rationale', 'evidence_refs'])
+  if (Object.keys(v).some(k => !fields.has(k))) return { ok: false, reason: 'verdict_extra_fields' }
   const allowed = ACTIONS[kind]
   if (typeof v.action !== 'string' || !allowed.includes(v.action)) return { ok: false, reason: 'action_not_allowed' }
-  const conf = typeof v.confidence === 'number' ? v.confidence : (typeof v.confidence === 'string' && /^\d*\.?\d+$/.test(v.confidence) ? Number(v.confidence) : NaN)
+  const conf = typeof v.confidence === 'number' ? v.confidence : NaN
   if (!Number.isFinite(conf) || conf < 0 || conf > 1) return { ok: false, reason: 'confidence_out_of_range' }
+  if (typeof v.requires_human !== 'boolean') return { ok: false, reason: 'requires_human_not_boolean' }
   if (typeof v.rationale !== 'string' || v.rationale.trim().length < 8) return { ok: false, reason: 'rationale_missing' }
   if (v.rationale.length > 800) return { ok: false, reason: 'rationale_too_long' }
   const refs = Array.isArray(v.evidence_refs) ? v.evidence_refs : null
@@ -61,7 +64,7 @@ export function validateVerdict(kind: ExceptionKind, raw: unknown, evidence: Evi
   if (refs.length === 0) return { ok: false, reason: 'evidence_refs_empty' }
   // Guarda: ação irreversível nunca dispensa humano, diga o modelo o que disser.
   const requiresHuman = !REVERSIBLE.has(v.action) || v.requires_human === true
-  return { ok: true, verdict: { action: v.action, confidence: Math.round(conf * 1000) / 1000, requires_human: requiresHuman, rationale: v.rationale.trim(), evidence_refs: Array.from(new Set(refs as string[])) } }
+  return { ok: true, verdict: { action: v.action, confidence: conf, requires_human: requiresHuman, rationale: v.rationale.trim(), evidence_refs: Array.from(new Set(refs as string[])) } }
 }
 
 /** Política de aplicação: só reversível, com confiança mínima, e sem conflito entre regras e modelo. */

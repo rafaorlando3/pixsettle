@@ -155,12 +155,12 @@ describe('ingestão e conciliação de pedidos atestados', () => {
     await expect(db.query(`UPDATE copilot_verdicts SET action='accept_as_paid' WHERE id=$1`, [v.id])).rejects.toThrow(/append_only/)
   })
 
-  it('modelo responde lixo: duas tentativas, depois model_error com o motivo, exceção aguardando humano', async () => {
+  it('modelo responde lixo: primeira falha é terminal com motivo, sem nova chamada', async () => {
     const model = new ScriptedModel('scripted-bad', () => 'I think you should refund. {"action": "refund_everything"}')
     const { ctx, db } = await env(model)
     await load(ctx, [order('o_hhhhhhhhhh', '100.00'), charge('o_hhhhhhhhhh', 'i_hhhhhhhhhh', '100.00'), received('o_hhhhhhhhhh', 'i_hhhhhhhhhh', '60.00')])
     const id = (await exceptionsOf(db, 'amount_mismatch'))[0].id
-    expect(await judgeWithModel(ctx, id, 0)).toBe('retry')
+    expect(await judgeWithModel(ctx, id, 0)).toBe('done')
     expect(await judgeWithModel(ctx, id, 1)).toBe('done')
     const ex = (await exceptionsOf(db, 'amount_mismatch'))[0]
     expect(ex).toMatchObject({ status: 'awaiting_human', copilot_state: 'model_error' })
@@ -275,8 +275,8 @@ describe('validação do veredito e política', () => {
   it('ação fora da lista, confiança fora de [0,1], referência desconhecida', () => {
     expect(validateVerdict('amount_mismatch', { action: 'close_benign_retry', confidence: 0.9, rationale: 'xxxxxxxxxx', evidence_refs: ['e1'] }, ev)).toMatchObject({ ok: false, reason: 'action_not_allowed' })
     expect(validateVerdict('amount_mismatch', { action: 'escalate', confidence: 1.2, rationale: 'xxxxxxxxxx', evidence_refs: ['e1'] }, ev)).toMatchObject({ ok: false, reason: 'confidence_out_of_range' })
-    expect(validateVerdict('amount_mismatch', { action: 'escalate', confidence: 0.2, rationale: 'xxxxxxxxxx', evidence_refs: ['e9'] }, ev)).toMatchObject({ ok: false, reason: 'evidence_ref_unknown' })
-    const ok = validateVerdict('amount_mismatch', { action: 'refund_partial', confidence: '0.95', requires_human: false, rationale: 'the model says so, confidently', evidence_refs: ['e1', 'e1'] }, ev)
+    expect(validateVerdict('amount_mismatch', { action: 'escalate', confidence: 0.2, requires_human: true, rationale: 'xxxxxxxxxx', evidence_refs: ['e9'] }, ev)).toMatchObject({ ok: false, reason: 'evidence_ref_unknown' })
+    const ok = validateVerdict('amount_mismatch', { action: 'refund_partial', confidence: 0.95, requires_human: false, rationale: 'the model says so, confidently', evidence_refs: ['e1', 'e1'] }, ev)
     expect(ok).toMatchObject({ ok: true, verdict: { action: 'refund_partial', confidence: 0.95, requires_human: true, evidence_refs: ['e1'] } }) // irreversível: humano sempre
   })
   it('política: só reversível com confiança e sem desacordo', () => {

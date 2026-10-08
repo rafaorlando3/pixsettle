@@ -1,7 +1,8 @@
 // Modelo do copiloto: interface única, dois provedores HTTP (Anthropic Messages e OpenAI-compatible),
 // replay gravado (demo pública sem chave) e gravação. Toda falha sai com motivo; nada é inventado.
-import type { Db } from '../db.js'
-import { hashOf } from './verdict.js'
+import type { Db, Tx } from '../db.js'
+import { recordModelAttempt } from '../release-runtime.js'
+import { hashOf, type Verdict } from './verdict.js'
 
 export type ModelInput = {
   system: string
@@ -23,12 +24,63 @@ export interface CopilotModel {
   complete(input: ModelInput): Promise<ModelOutput>
 }
 
-const timeoutFetch = async (url: string, init: RequestInit, ms: number) => {
+export function safeUsage(raw: unknown): Record<string, number> | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const safe: Record<string, number> = {}
+  for (const k of ['prompt_tokens', 'completion_tokens', 'total_tokens', 'input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens', 'cost']) {
+    const value = (raw as Record<string, unknown>)[k]
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100_000_000) safe[k] = value
+  }
+  return Object.keys(safe).length ? safe : undefined
+}
+
+export const MAX_MODEL_RESPONSE_BYTES = 128 * 1024
+async function responseBody(response: Response, signal: AbortSignal): Promise<string> {
+  if (!response.body) {
+    const body = await response.text()
+    if (Buffer.byteLength(body, 'utf8') > MAX_MODEL_RESPONSE_BYTES) throw new ModelError('invalid_response', 'response_too_large', response.status)
+    return body
+  }
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  const cancel = () => { void reader.cancel().catch(() => {}) }
+  signal.addEventListener('abort', cancel, { once: true })
+  try {
+    if (signal.aborted) { cancel(); throw new ModelError('timeout', 'response_deadline') }
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > MAX_MODEL_RESPONSE_BYTES) { cancel(); throw new ModelError('invalid_response', 'response_too_large', response.status) }
+      chunks.push(value)
+    }
+    try { return new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)) }
+    catch { throw new ModelError('invalid_response', 'response_invalid_utf8', response.status) }
+  } finally { signal.removeEventListener('abort', cancel); reader.releaseLock() }
+}
+
+const timeoutFetch = async (url: string, init: RequestInit, ms: number): Promise<{ response: Response; body: string }> => {
   const ac = new AbortController()
-  const t = setTimeout(() => ac.abort(), ms)
-  try { return await fetch(url, { ...init, signal: ac.signal }) }
-  catch (e) { if ((e as Error).name === 'AbortError') throw new ModelError('timeout', `modelo não respondeu em ${ms} ms`); throw new ModelError('http', 'network_error') }
-  finally { clearTimeout(t) }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => { ac.abort(); reject(new ModelError('timeout', `modelo não respondeu em ${ms} ms`)) }, ms)
+  })
+  const request = (async () => {
+    recordModelAttempt()
+    const response = await fetch(url, { ...init, signal: ac.signal })
+    // Failed HTTP bodies are unnecessary and may contain private provider material.
+    if (!response.ok) { void response.body?.cancel().catch(() => {}); return { response, body: '' } }
+    const body = await responseBody(response, ac.signal)
+    return { response, body }
+  })()
+  try { return await Promise.race([request, deadline]) }
+  catch (e) {
+    if (e instanceof ModelError) throw e
+    if ((e as Error).name === 'AbortError') throw new ModelError('timeout', `modelo não respondeu em ${ms} ms`)
+    throw new ModelError('http', 'network_error')
+  }
+  finally { if (timer) clearTimeout(timer) }
 }
 
 /** Anthropic Messages API. Chave só na memória do processo; nunca em log. */
@@ -40,18 +92,17 @@ export class AnthropicModel implements CopilotModel {
   }
   async complete(input: ModelInput): Promise<ModelOutput> {
     const t0 = Date.now()
-    const r = await timeoutFetch(`${this.baseUrl}/v1/messages`, {
+    const { response: r, body } = await timeoutFetch(`${this.baseUrl}/v1/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': this.apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({ model: this.name, max_tokens: 700, temperature: 0, system: input.system, messages: [{ role: 'user', content: input.user }] }),
     }, this.timeoutMs)
-    const body = await r.text()
     if (!r.ok) throw new ModelError('http', 'provider_http_error', r.status)
     let j: any
     try { j = JSON.parse(body) } catch { throw new ModelError('invalid_response', 'anthropic: corpo não é JSON', r.status) }
     const text = (j.content ?? []).filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
     if (!text) throw new ModelError('invalid_response', 'provider_response_without_text', r.status)
-    return { text, usage: j.usage ?? undefined, latencyMs: Date.now() - t0 }
+    return { text, usage: safeUsage(j.usage), latencyMs: Date.now() - t0 }
   }
 }
 
@@ -64,18 +115,17 @@ export class OpenAICompatibleModel implements CopilotModel {
   }
   async complete(input: ModelInput): Promise<ModelOutput> {
     const t0 = Date.now()
-    const r = await timeoutFetch(`${this.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+    const { response: r, body } = await timeoutFetch(`${this.baseUrl.replace(/\/$/, '')}/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...(this.apiKey ? { authorization: `Bearer ${this.apiKey}` } : {}) },
       body: JSON.stringify({ model: this.name, temperature: 0, max_tokens: 700, messages: [{ role: 'system', content: input.system }, { role: 'user', content: input.user }] }),
     }, this.timeoutMs)
-    const body = await r.text()
     if (!r.ok) throw new ModelError('http', 'provider_http_error', r.status)
     let j: any
     try { j = JSON.parse(body) } catch { throw new ModelError('invalid_response', 'openai-compat: corpo não é JSON', r.status) }
     const text = j.choices?.[0]?.message?.content
     if (typeof text !== 'string' || !text) throw new ModelError('invalid_response', 'provider_response_without_text', r.status)
-    return { text, usage: j.usage ?? undefined, latencyMs: Date.now() - t0 }
+    return { text, usage: safeUsage(j.usage), latencyMs: Date.now() - t0 }
   }
 }
 
@@ -87,20 +137,20 @@ export class ReplayModel implements CopilotModel {
     const key = hashOf(input)
     const r = (await this.db.query(`SELECT response FROM copilot_replay WHERE input_hash=$1 AND model=$2`, [key, this.name])).rows[0]
     if (!r) throw new ModelError('replay_miss', `sem resposta gravada para esta entrada (modelo ${this.name}, hash ${key.slice(0, 12)})`)
-    return { text: String(r.response.text ?? ''), usage: r.response.usage ?? undefined, latencyMs: 0 }
+    return { text: String(r.response.text ?? ''), usage: safeUsage(r.response.usage), latencyMs: 0 }
   }
 }
 
-/** Grava cada resposta ao vivo na tabela de replay (para a demo pública reproduzir depois sem chave). */
+/** Recording is explicit and only occurs after verdict validation and the context CAS. */
 export class RecordingModel implements CopilotModel {
   readonly mode = 'live' as const
   readonly name: string
   constructor(private readonly inner: CopilotModel, private readonly db: Db) { this.name = inner.name }
-  async complete(input: ModelInput): Promise<ModelOutput> {
-    const out = await this.inner.complete(input)
-    await this.db.query(`INSERT INTO copilot_replay (input_hash, model, response) VALUES ($1,$2,$3) ON CONFLICT (input_hash, model) DO NOTHING`,
-      [hashOf(input), this.name, JSON.stringify({ text: out.text, usage: out.usage ?? null })])
-    return out
+  async complete(input: ModelInput): Promise<ModelOutput> { return this.inner.complete(input) }
+  async recordValidated(input: ModelInput, verdict: Verdict, out: ModelOutput, db: Db | Tx = this.db): Promise<void> {
+    const stored = { ...verdict, rationale: 'Decision recorded; inspect action and evidence references.' }
+    await db.query(`INSERT INTO copilot_replay (input_hash, model, response) VALUES ($1,$2,$3) ON CONFLICT (input_hash, model) DO NOTHING`,
+      [hashOf(input), this.name, JSON.stringify({ text: JSON.stringify(stored), usage: safeUsage(out.usage) ?? null })])
   }
 }
 

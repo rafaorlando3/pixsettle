@@ -5,13 +5,13 @@ import { newId } from '../ids.js'
 import type { Ctx } from '../context.js'
 import { ACTIONS, REVERSIBLE, canAutoApply, hashOf, validateVerdict, type Evidence, type ExceptionKind, type Verdict } from './verdict.js'
 import { applyRules, type ExceptionFacts } from './rules.js'
-import { ModelError, type ModelInput } from './model.js'
+import { ModelError, RecordingModel, type ModelInput } from './model.js'
 
 export const SEVERITY: Record<ExceptionKind, 'info' | 'low' | 'medium' | 'high'> = {
   duplicate_charge: 'low', duplicate_payment: 'high', amount_mismatch: 'high', late_payment: 'medium', expired_unpaid: 'info',
   charge_failed: 'info', refund_requested: 'medium', med_reported: 'high', manual_divergent: 'high', withdrawal_failed: 'medium', withdrawal_reversal: 'low',
 }
-export const MODEL_MAX_TRIES = 6
+export const MODEL_MAX_TRIES = 1
 
 export type OpenExceptionInput = {
   merchantId: string; orderId: string | null; kind: ExceptionKind; fingerprint: string; summary: string
@@ -161,18 +161,26 @@ export async function judgeWithModel(ctx: Ctx, exceptionId: string, tryNo: numbe
   const input = buildModelInput(e.kind, facts, evidence)
   let out
   try { out = await model.complete(input) } catch (err) {
-    const msg = err instanceof ModelError ? `model_${err.code}${err.status === null ? '' : `:${err.status}`}` : 'model_internal_error'
-    const final = tryNo + 1 >= MODEL_MAX_TRIES || (err instanceof ModelError && (err.code === 'config' || err.code === 'replay_miss'))
-    await fail(msg, final)
-    return final ? 'done' : 'retry'
+    const code = err instanceof ModelError && ['config', 'http', 'timeout', 'invalid_response', 'replay_miss'].includes(err.code) ? err.code : 'internal_error'
+    const status = err instanceof ModelError && Number.isInteger(err.status) && err.status! >= 100 && err.status! <= 599 ? `:${err.status}` : ''
+    const msg = `model_${code}${status}`
+    await fail(msg, true)
+    return 'done'
   }
   let parsed: unknown
-  try { parsed = parseModelJson(out.text) } catch (err) { await fail((err as Error).message, tryNo + 1 >= 2); return tryNo + 1 >= 2 ? 'done' : 'retry' }
+  try { parsed = parseModelJson(out.text) } catch { await fail('model_invalid_json', true); return 'done' }
   const v = validateVerdict(e.kind, parsed, evidence)
-  if (!v.ok) { await fail(`veredito recusado: ${v.reason}`, tryNo + 1 >= 2); return tryNo + 1 >= 2 ? 'done' : 'retry' }
+  if (!v.ok) { await fail(`veredito recusado: ${v.reason}`, true); return 'done' }
   await withTx(ctx.db, async tx => {
-    const cur = (await tx.query(`SELECT copilot_state, status FROM exceptions WHERE id=$1 FOR UPDATE`, [exceptionId])).rows[0]
-    if (cur.copilot_state !== 'pending_model') return
+    const cur = (await tx.query(`SELECT copilot_state, status, kind, facts, evidence FROM exceptions WHERE id=$1 FOR UPDATE`, [exceptionId])).rows[0]
+    if (!cur || cur.copilot_state !== 'pending_model' || cur.status !== 'open') return
+    if (hashOf(buildModelInput(cur.kind, cur.facts, cur.evidence)) !== hashOf(input)) {
+      await tx.query(`UPDATE exceptions SET copilot_state='model_error', status='awaiting_human', last_error=$2, updated_at=now() WHERE id=$1`,
+        [exceptionId, JSON.stringify({ reason: 'context_changed', at: ctx.now().toISOString() })])
+      await recordTransition(tx, 'exception', exceptionId, 'open', 'awaiting_human', 'copilot_model', 'context_changed')
+      return
+    }
+    if (model instanceof RecordingModel) await model.recordValidated(input, v.verdict, out, tx)
     await recordVerdict(tx, exceptionId, 'model', model.name, v.verdict, hashOf(input), out.latencyMs, out.usage ?? null)
     await tx.query(`UPDATE exceptions SET copilot_state='model_done', last_error=NULL, updated_at=now() WHERE id=$1`, [exceptionId])
     const rules = (await tx.query(`SELECT action, confidence, requires_human, rationale, evidence_refs FROM copilot_verdicts WHERE exception_id=$1 AND engine='rules' ORDER BY created_at DESC LIMIT 1`, [exceptionId])).rows[0]

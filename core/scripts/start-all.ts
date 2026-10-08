@@ -15,6 +15,17 @@ export function deriveKey(seed: string, role: 'treasury' | 'issuer' | 'merchant'
   return keccak256(stringToBytes(`pixsettle-testnet-v1:${role}:${seed}`))
 }
 
+const CORE_PASSTHROUGH = ['DATABASE_URL', 'ASAAS_WEBHOOK_TOKEN', 'DIAGNOSTICS_TOKEN', 'TEMPO_RPC', 'EXPLORER', 'PIX_PROVIDER', 'ASAAS_API_KEY', 'ASAAS_CUSTOMER_ID',
+    'ASAAS_BASE_URL', 'ASAAS_USER_AGENT', 'ASAAS_PAYER_API_KEY', 'SWEEP_INTERVAL_MS', 'TRUST_PROXY', 'ISSUER_ID',
+    // piloto e copiloto (docs/pilot.md, docs/ai-copilot.md); a chave do modelo só vai ao core, nunca ao assinante
+    'PILOT_HMAC_SECRET', 'PILOT_OPERATOR_TOKEN', 'PILOT_SOURCE', 'PILOT_SETTLE', 'PILOT_RATE_NUM', 'PILOT_RATE_DEN', 'PILOT_MERCHANT_ADDRESS',
+    'COPILOT_MODE', 'COPILOT_PROVIDER', 'COPILOT_MODEL', 'COPILOT_API_KEY', 'COPILOT_BASE_URL',
+    'COPILOT_BUDGET_CALLS_PER_DAY', 'PUBLIC_REPLAY_READ_ONLY', 'PILOT_V1_DISABLED', 'RENDER_GIT_COMMIT']
+
+export function corePassthroughEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
+  return Object.fromEntries(CORE_PASSTHROUGH.map(k => [k, env[k]]))
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const seed = need('PIXSETTLE_SEED')
   const treasuryKey = (process.env.TREASURY_KEY as Hex | undefined) ?? deriveKey(seed, 'treasury')
@@ -45,13 +56,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (ok) break
     await new Promise(r => setTimeout(r, 500))
   }
-  const passthrough = ['DATABASE_URL', 'ASAAS_WEBHOOK_TOKEN', 'DIAGNOSTICS_TOKEN', 'TEMPO_RPC', 'EXPLORER', 'PIX_PROVIDER', 'ASAAS_API_KEY', 'ASAAS_CUSTOMER_ID',
-    'ASAAS_BASE_URL', 'ASAAS_USER_AGENT', 'ASAAS_PAYER_API_KEY', 'SWEEP_INTERVAL_MS', 'TRUST_PROXY', 'ISSUER_ID',
-    // piloto e copiloto (docs/pilot.md, docs/ai-copilot.md); a chave do modelo só vai ao core, nunca ao assinante
-    'PILOT_HMAC_SECRET', 'PILOT_OPERATOR_TOKEN', 'PILOT_SOURCE', 'PILOT_SETTLE', 'PILOT_RATE_NUM', 'PILOT_RATE_DEN', 'PILOT_MERCHANT_ADDRESS',
-    'COPILOT_MODE', 'COPILOT_PROVIDER', 'COPILOT_MODEL', 'COPILOT_API_KEY', 'COPILOT_BASE_URL']
   run('core', 'core', 'src/server.ts', {
-    ...Object.fromEntries(passthrough.map(k => [k, process.env[k]])),
+    ...corePassthroughEnv(process.env),
     DEMO_MODE: '1', PORT: process.env.PORT ?? '8080', HOST: process.env.HOST ?? '0.0.0.0',
     SETTLEMENT_URL: `http://127.0.0.1:${settlementPort}`, SETTLEMENT_HMAC_SECRET: hmac,
     TREASURY_ADDRESS: privateKeyToAccount(treasuryKey).address, ISSUER_ADDRESS: privateKeyToAccount(issuerKey).address,

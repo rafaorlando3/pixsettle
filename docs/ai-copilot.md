@@ -31,16 +31,18 @@ The copilot exists to decide, not to chat. Four tests, applied to every piece of
 
 ## Model
 
-`core/src/copilot/model.ts`. One interface, two HTTP providers (Anthropic Messages, OpenAI-compatible chat completions), a **replay** store and a recording wrapper. The prompt (`core/src/copilot/judge.ts`) gives the model the exception kind, the allowed actions, which of them are reversible, the structured facts (amounts in cents, UTC timestamps, no personal data: the facts are the same pseudonymized facts the pilot stores) and the numbered evidence, and demands exactly one JSON object. The answer is validated strictly (`validateVerdict`): action in the list, confidence in [0, 1], rationale 8 to 800 characters, evidence refs known and non-empty. An irreversible action is forced to `requires_human: true`.
+`core/src/copilot/model.ts`. One interface, two HTTP providers (Anthropic Messages, OpenAI-compatible chat completions), a **replay** store and a recording wrapper. The prompt (`core/src/copilot/judge.ts`) gives the model the exception kind, the allowed actions, which of them are reversible, the structured facts (amounts in cents, UTC timestamps, no personal data: the facts are the same pseudonymized facts the pilot stores) and the numbered evidence, and demands exactly one JSON object. The answer is validated strictly (`validateVerdict`): closed fields, action in the list, numeric confidence in [0, 1] without rounding or coercion, a required boolean requires_human, rationale 8 to 800 characters, and known non-empty evidence refs. An irreversible action is forced to `requires_human: true`.
 
 | `COPILOT_MODE` | Behaviour |
 | --- | --- |
 | `off` (default) | no model; residue waits for the human with "model off" on screen |
 | `live` | calls the provider; `COPILOT_PROVIDER` (`anthropic` or `openai`), `COPILOT_MODEL`, `COPILOT_API_KEY`, `COPILOT_BASE_URL` |
-| `live_record` | same, and records every answer in `copilot_replay` keyed by the hash of the exact input |
-| `replay` | answers only from `copilot_replay`; an input never seen is a `replay_miss` error, shown on the exception. This is how the public demo shows real verdicts without a key and without cost |
+| `live_record` | same, and records only validated answers after the locked facts/evidence check, keyed by the exact input hash |
+| `replay` | reads only `copilot_replay`; an unseen input is `replay_miss`. Public replay displays stored decisions without executing model jobs, policies or operator decisions |
 
-Model calls run as outbox jobs (`copilot_judge`) with exponential retry; after 6 failures, or 2 invalid answers, the exception is marked `model_error` with the last reason and goes to the human.
+A model failure is terminal on its first attempt: a controlled reason is recorded and the exception goes to the human, with no automatic paid retry. After a response, the locked facts and evidence must still match the exact input hash; changed context goes to the human without a stale verdict or replay record. Public responses use a closed projection and controlled text, including historical rows.
+
+`COPILOT_BUDGET_CALLS_PER_DAY` limits calls, not dollars. Monetary reservation and the shared provider cap must be checked separately before a private sequential live stage. `PUBLIC_REPLAY_READ_ONLY=1` blocks pilot/model writes and jobs for attested orders while preserving the isolated simulated demo; `PILOT_V1_DISABLED=1` also disables legacy pilot ingestion independently of model mode. These flags and the configured budget are passed through the container launcher.
 
 ## Audit
 
