@@ -2,7 +2,7 @@
 
 Every exception PixSettle finds (a second charge for the same order, a payment under the amount, a payment after the window, a second payment, a refund request, a MED claim, a divergent manual Pix, a failed or reversed withdrawal) gets a **verdict**: an action from a closed list, a confidence, a rationale, and the evidence lines it used. The verdict is immutable, hashed, and shown next to the exception on `/pilot`.
 
-The historical shadow release uses a separate typed projection and append-only advisory review ledger. Its public reads never run the financial policy or write a decision. A model or Codex-assisted operator review remains advisory and does not count as a human authorization or resolved financial exception. The action guard below describes the core's policy; release measurements report the shadow statuses actually observed.
+The historical shadow release uses a separate typed projection and append-only advisory review ledger. Its public reads never run the financial policy or write a decision. A model-assisted operator review remains advisory and does not count as a human authorization or resolved financial exception. The action guard below describes the core's policy; release measurements report the shadow statuses actually observed.
 
 The copilot exists to decide, not to chat. Four tests, applied to every piece of it:
 
@@ -54,10 +54,10 @@ A model failure is terminal on its first attempt: a controlled reason is recorde
 
 Read the deployed `/pilot/api/summary` and save it with the exact Render deploy id, commit, database revision and source export hash. Record observed payments separately from matched orders; an exact monetary match is not a bank settlement. Count resolved advisory cases from their actual status and explain their scope. The old v1 local results (493 exceptions, 479 resolved statuses and 469 automatic dispositions) describe a different pipeline and must not be reused as current shadow results.
 
-## Private USD reservation (212, C0663 integration)
+## Private USD reservation
 
 Live/live_record require `COPILOT_BUDGET_MICROS`. `COPILOT_CALL_RESERVE_MICROS` defaults to 20000 and `COPILOT_MAX_CALLS` to 200; cap above US$20 is refused. The daily calls setting is an additional admission rule, not monetary evidence. Replay/off do not open the spend ledger.
 
 Migration 010 stores an immutable policy and `copilot_spend`, unique by model/input hash. A reservation commits before inference. HTTP admission uses a DB session lock; another in-flight call is refused before network activity. A crash, failed call, missing cost, settlement-write failure or cost above its reservation stops the envelope. Failed/unknown rows retain the reservation; reported low cost never releases it. Restart cannot enlarge the existing DB policy or automatically resend an input. The first model error remains terminal at the human fallback.
 
-Budgeted input is limited to 16 KiB UTF8 and the provider output to 700 tokens. The reserve must cover the configured route price; this class alone does not prove the external provider price. For the private gpt-4.1-mini capture, the separate executor verifies the Models API, limits provider price to US$0.40/1M prompt and US$1.60/1M completion, reserves US$0.0082 per context (minimum enforced for that model), and limits its envelope to US$0.25 / 24 calls. It verifies the shared K3a+PixSettle provider hard cap US$20 before each call. K3a is not modified. A deliberate new stage requires a separately marked private/quarantine DB and a new ledger scope.
+Budgeted input is limited to 16 KiB UTF8 and the provider output to 700 tokens. The reserve must cover the configured route price; this class alone does not prove the external provider price. A separate private executor must verify current provider pricing and that each reservation covers the configured route, then enforce its authorized call and dollar envelope and any shared provider cap before every call. These checks describe the admission contract; they do not attest that a live stage has run. A deliberate new stage requires a separately marked private/quarantine DB and a new ledger scope.

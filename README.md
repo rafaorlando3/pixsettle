@@ -2,17 +2,21 @@
 
 **Reconcile Pix payments, handle exceptions, verify every settlement.**
 
-PixSettle is a reconciliation and exception-handling prototype for merchants who receive Pix (the instant payment system used by about 148 million people in Brazil at the end of 2025, per the Central Bank). It links each order to the provider's payment status, a controlled settlement in a dollar stablecoin on [Tempo](https://tempo.xyz) and a receipt anyone can verify. Duplicate webhooks, interrupted processing, refunds and uncertain RPC responses are explicit states that must be reconciled before another action is allowed. The starting market is Paraguay's border shops, where Brazilian shoppers already pay with Pix; merchant demand is still being validated in interviews. Three guarantees that payment rails usually leave to trust:
+[![tests](https://github.com/rafaorlando3/pixsettle/actions/workflows/tests.yml/badge.svg)](https://github.com/rafaorlando3/pixsettle/actions/workflows/tests.yml) **[Live demo](https://pixsettle-demo.onrender.com/demo)** · **[Historical pilot](https://pixsettle-demo.onrender.com/pilot)** · [Release demo video](https://github.com/rafaorlando3/pixsettle/releases/download/v1.1.0/PixSettle-v1.1.0-demo-120s.mp4) · [Pitch](https://youtu.be/StmbEOT7iHM) · [Failure matrix](docs/coverage.md)
 
-1. **The merchant is never paid twice**, even when the Pix provider sends the same webhook five times, a worker crashes mid-send, or the RPC times out after accepting the transaction.
-2. **Refunds and fraud claims are controlled.** In Brazil a payer can ask their bank to claw back a Pix through MED (the special return mechanism) for up to 80 days. PixSettle keeps a rolling reserve per merchant, blocks refunds while a settlement is in flight, and never signs a settlement while a refund is open.
+**Explore the demo.** Open the live demo and click **Create Pix charge**, then **Payer pays, webhook delivered 3 times**. This exercises duplicate delivery with a simulated Pix provider and settlement on Tempo testnet. Open the receipt to check its on-chain fields against the public Tempo RPC. **Payer sends R$ 0,01 less**, **Merchant refunds R$ 10,00** and **Payer opens a MED claim** exercise exception paths. Then open the historical pilot to inspect pseudonymized, merchant-attested events in read-only shadow mode, with recorded advisory verdicts. The policy permits eligible reversible actions; irreversible actions require human confirmation. The first visit can take longer after an idle period.
+
+PixSettle is a reconciliation and exception-handling prototype for merchants who receive Pix, Brazil's instant payment system. It links each order to the provider's payment status, a controlled settlement in a dollar stablecoin on [Tempo](https://tempo.xyz) and a receipt anyone can verify. Duplicate webhooks, interrupted processing, refunds and uncertain RPC responses are explicit states that must be reconciled before another action is allowed. The starting market is Paraguay's border shops, where Brazilian shoppers already pay with Pix; merchant demand is still being validated in interviews. The prototype makes three safeguards explicit:
+
+1. **Duplicate settlement is prevented by the send journal.** Repeated webhooks and interrupted processing reuse the existing attempt. An uncertain RPC result requires reconciliation and does not authorize another payment.
+2. **Refunds and fraud claims are controlled.** The demo models refunds and MED fraud-return cases as explicit states. PixSettle keeps a rolling reserve per merchant, blocks refunds while a settlement is in flight, and never signs a settlement while a refund is open.
 3. **Every settlement has a receipt anyone can verify** in their own browser. The on-chain part (network, token, sender, recipient, amount and memo) is read straight from the public Tempo RPC. The Pix part is the issuer's signed statement, and the page labels it that way: a valid signature does not prove on its own that the Pix was received. If the RPC cannot be reached, the page says the check is unavailable instead of calling the receipt valid or invalid.
 
 Built for the Colosseum Crypto World's Fair, Tempo track.
 
-**Historical pilot and exception copilot.** PixSettle replays a signed, pseudonymized export from our own multi-store Pix operation on the Brazil-Paraguay border (Equilibrium and partner stores). The public pilot is read-only: deterministic evidence, recorded copilot verdicts and advisory review, with no paid model calls or financial settlement. Current counts must be measured from the deployed shadow projection. Page `/pilot`; details in [`docs/pilot.md`](docs/pilot.md) and [`docs/ai-copilot.md`](docs/ai-copilot.md).
+**Historical pilot and exception copilot.** PixSettle replays a signed, pseudonymized export from a multi-store merchant operation. The public pilot is read-only: deterministic evidence, recorded copilot verdicts and advisory review, with no paid model calls or financial settlement. Current counts must be measured from the deployed shadow projection. Page `/pilot`; details in [`docs/pilot.md`](docs/pilot.md) and [`docs/ai-copilot.md`](docs/ai-copilot.md).
 
-> **Demo status, stated plainly.** The Tempo side is real: settlements are `transferWithMemo` transactions on Tempo testnet (Moderato, chain id 42431) in pathUSD. The Pix side runs on a **simulated provider** in the public demo (an Asaas sandbox adapter is in progress). The FX quote and the merchant reserve are **simulated accounting**, labeled as such on every screen and receipt. No real money moves. In production, BRL to stablecoin conversion must go through a partner licensed by the Central Bank of Brazil; PixSettle is software on top of that partner and does not hold customer funds.
+> **Demo status, stated plainly.** The Tempo side is real: settlements are `transferWithMemo` transactions on Tempo testnet (Moderato, chain id 42431) in pathUSD. The Pix side runs on a **simulated provider** in the public demo (an Asaas sandbox adapter is in progress). The FX quote and the merchant reserve are **simulated accounting**, labeled as such on every screen and receipt. No real money moves. Production use would require separately validated provider and FX integrations, operational controls and applicable regulatory arrangements. This prototype does not hold customer funds.
 
 ## How it works
 
@@ -62,7 +66,7 @@ In production the signer and the core run as two processes: `settlement/src/serv
 
 | Folder | What |
 | --- | --- |
-| `contract/` | Core contract (in Portuguese), receipt test vectors, independent Python verifier |
+| `contract/` | Historical core design (Portuguese), pilot contract (English), receipt test vectors, independent Python verifier |
 | `settlement/` | Signer: sign, broadcast and observe `transferWithMemo` on Tempo (TypeScript, viem) |
 | `core/` | Orders, Pix charges, provider events, send journal, refunds, ledger, receipts, API, pages, demo, pilot ingestion (`src/pilot/`) and exception copilot (`src/copilot/`) |
 | `web/` | Operator console, payer checkout, receipt page and in-browser verifier |
@@ -80,12 +84,12 @@ The core suite also covers the pilot and the copilot: the ingestion guard (perso
 
 ## Roadmap
 
-- Verifiable receipt links in the partners' wallet statements of the pilot stores; verdict hash referenced from the receipt.
+- Verifiable receipt links in merchant wallet statements, subject to merchant agreement; verdict hash referenced from the receipt.
 - Asaas sandbox adapter (real Pix in sandbox), periodic reconciliation with the provider and webhook liveness alerts.
 - Licensed FX partner integration and real quotes.
 - On-chain reserve with an explicit release policy (today the reserve is accounting only).
 
 ## Deploy and license
 
-- One-container deploy on a free host with testnet keys derived from a host-generated seed: see `Dockerfile`, `render.yaml` and `docs/deploy.md` (Portuguese).
+- Container deployment with testnet keys derived from a host-generated seed: see `Dockerfile`, `render.yaml` and [`docs/deploy.md`](docs/deploy.md). Verify current hosting terms, capacity and costs before provisioning.
 - MIT license (see `LICENSE`).

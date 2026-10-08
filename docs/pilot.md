@@ -1,6 +1,6 @@
 # Historical shadow pilot
 
-`/pilot` presents a historical, pseudonymized export from Equilibrium and partner stores on the Brazil-Paraguay border. The public replay makes no paid model calls and settles no funds. The separate `/demo` uses simulated Pix and Tempo testnet; its financial receipts are never described as receipts of the historical pilot.
+`/pilot` is a read-only replay of a pseudonymized historical export from a multi-store merchant operation. No paid inference runs and no funds move on this public surface. `/demo` separately simulates the Pix and Tempo testnet flow.
 
 Public reads are `GET /pilot/api/summary`, `GET /pilot/api/exceptions` and `GET /pilot/api/exceptions/:id`. In the public shadow release these reads are projected from `pilot_shadow_*` and approved advisory review records. They do not query or mutate the financial core's orders, charges, outbox, refunds, settlements or receipts.
 
@@ -44,4 +44,4 @@ The independently verified historical source has 9,144 lines and 7,849 canonical
 
 Source stream codes and metadata are different denominators. Five codes appear in both; two metadata codes have no source events, and one source code has no metadata row. The projection must declare their disposition rather than claim seven active stores or guess the role of the unmatched account.
 
-Final release numbers come from the actual deployed summary, stored beside task 236 with commit, deploy, database revision and source hash. Observed payment value, matched payment value, advisory exceptions and resolved advisory cases remain separate measurements. No legacy local count is copied into the release merely because it appeared in an earlier demo or script.
+Final release numbers come from the actual deployed summary, stored in the release evidence with commit, deploy, database revision and source hash. Observed payment value, matched payment value, advisory exceptions and resolved advisory cases remain separate measurements. No legacy local count is copied into the release merely because it appeared in an earlier demo or script.

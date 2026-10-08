@@ -1,55 +1,57 @@
-# Adendo v1: piloto com eventos atestados e copiloto de exceções
+# Pilot contract: attested events and exception advisory
 
-Claude, 06/10/2026. Complementa o contrato v0.3 (núcleo Pix e liquidação). Decisões do Rafael no chat de 06/10: IA com propósito em todo sistema (não "usar por usar"); piloto sombra com a plataforma multiloja inteira; loja Equilibrium nomeada em público, parceiras como `loja-N`.
+This document supplements the historical core design in [CONTRATO.md](CONTRATO.md). The public pilot uses pseudonymized, merchant-attested historical events in read-only shadow mode. Recorded advisory verdicts do not prove independent verification of Pix receipt and do not authorize financial execution.
 
-## 1. Regra de IA com propósito (vale para qualquer função de IA no produto)
+## 1. Purpose and safeguards
 
-1. Decide ou dá veredito com evidência; não resume nem "explica" o que a tela já mostra.
-2. É medida contra a mesma tarefa sem IA: regras determinísticas primeiro, número no README e na demo (`/pilot`).
-3. Tem guarda: limiar de confiança, confirmação humana para o irreversível, fallback com motivo visível. Nada de falha silenciosa.
-4. Aparece nos primeiros 30 segundos da demo e no slogan.
+1. An advisory verdict must cite evidence and suggest an action, rather than simply restating the screen.
+2. Compare the model against deterministic rules on the same task. Report measured results with their source and scope; do not substitute a historical test count for current CI.
+3. Enforce confidence thresholds, human confirmation for irreversible actions, and visible fallback reasons. No silent failure.
+4. Make the advisory behavior and demo limits clear in the walkthrough.
 
-## 2. Provedor `attested`
+## 2. The `attested` provider
 
-- `orders.provider_env = 'attested'` e `pix_charges.provider = 'attested'`: o fato do Pix é afirmado pelo operador da loja em lote assinado (HMAC-SHA256 do corpo bruto, `x-pilot-signature`), nunca consultado num provedor.
-- A varredura periódica, a expiração ativa e a execução de devolução não tocam cobranças atestadas (`flows/sweep.ts`, `flows/refunds.ts`); devoluções esperam o atestado do desfecho (`order.refund.completed` ou `.rejected`).
-- O caminho de aplicação é o MESMO dos provedores reais: `applyObservation` -> pago -> intenção de liquidação -> diário de envio -> recibo. Com `PILOT_SETTLE=0`, o pedido fica `paid` com a transição `settlement_skipped` e o motivo.
-- Cotação do piloto: simulada e em escala reduzida (`pilotRateNum/Den`, padrão 1 unidade por centavo) para caber na tesouraria de testnet; `quotes.source` continua `simulated`.
-- Janela de pagamento do pedido = maior vencimento entre as cobranças; cobrança sem vencimento usa horizonte de 30 dias; o atestado `late` (0/1) do operador prevalece sobre a estimativa, com transição `order_window` registrada.
-- Várias cobranças por pedido vivem em `pilot_charges`; `pix_charges` guarda a paga (ou a última) para recibos e devoluções.
-- MED real da loja: `refund_cases.refund_type = 'med_attested'`, `requested` até o desfecho; bloqueia liquidação nova como qualquer caso aberto.
+- `orders.provider_env = 'attested'` and `pix_charges.provider = 'attested'`: the merchant operator attests to the Pix event in a signed batch (HMAC-SHA256 over the raw body, `x-pilot-signature`). This is not a query to an independent payment provider.
+- Periodic sweeping, active expiry and refund execution do not touch attested charges (`flows/sweep.ts`, `flows/refunds.ts`). Refunds wait for an attested outcome (`order.refund.completed` or `.rejected`).
+- Application uses the same observation path as other providers: `applyObservation` -> paid -> settlement intent -> send journal -> receipt. With `PILOT_SETTLE=0`, the order stays `paid` and records `settlement_skipped` with a reason. Keep this boundary for the public shadow pilot.
+- The pilot FX quote is simulated and scaled down (`pilotRateNum/Den`, default one unit per cent) to fit testnet funding; `quotes.source` remains `simulated`.
+- The order's payment window uses the latest charge expiry. A charge without an expiry uses a 30-day horizon. The operator's `late` attestation (0/1) takes precedence over the estimate, with an `order_window` transition recorded.
+- Multiple charges per order live in `pilot_charges`. `pix_charges` keeps the paid charge, or the latest charge, for receipts and refunds.
+- A merchant-attested MED case uses `refund_cases.refund_type = 'med_attested'` and remains `requested` until its outcome is attested. It blocks new settlement like any other open refund case.
 
-## 3. Guarda de ingestão (sem dado pessoal, forma fechada)
+## 3. Ingestion guard
 
-`core/src/pilot/guard.ts`: lista fechada de chaves; chave com cara de dado pessoal recusada (`name`, `payer`, `document`, `email`, `phone`, `address`, `product`, `key`, `token`...); valor com e-mail, CPF ou 10+ dígitos recusado; ids só de letras (`o_`, `i_`, `w_` + 20 letras); valores `d+.dd`; `ts` ISO UTC. Linha recusada volta com o motivo e nunca é gravada. Dedupe por SHA-256 do JSON canônico (RFC 8785).
+`core/src/pilot/guard.ts` accepts a closed list of keys. Personal-data-like keys (`name`, `payer`, `document`, `email`, `phone`, `address`, `product`, `key`, `token`, etc.) are rejected. Values containing an email, a CPF or ten or more digits are rejected. IDs use letters only (`o_`, `i_`, `w_` followed by 20 letters), amounts use `d+.dd`, and `ts` is ISO UTC. A rejected row returns a reason and is not stored. Deduplication uses SHA-256 of canonical JSON (RFC 8785).
 
-## 4. Exceções
+## 4. Exceptions
 
-Tabela `exceptions`: um caso por impressão digital (`pedido:tipo:chave`), com `severity`, `status` (`open`, `auto_applied`, `awaiting_human`, `resolved`, `dismissed`), `copilot_state` (`pending_rules`, `rules_only`, `pending_model`, `model_done`, `model_error`, `model_off`), `evidence` (`[{id, fact}]`), `facts` (entrada estruturada, sem dado pessoal), `last_error` (motivo visível), `resolution` (`{action, by, note, at}`). Evidência nova numa exceção aberta sem decisão humana reabre e julga de novo pelas regras.
+The `exceptions` table stores one case per fingerprint (`order:type:key`) with `severity`, `status` (`open`, `auto_applied`, `awaiting_human`, `resolved`, `dismissed`), `copilot_state` (`pending_rules`, `rules_only`, `pending_model`, `model_done`, `model_error`, `model_off`), `evidence` (`[{id, fact}]`), structured non-personal `facts`, a visible `last_error`, and `resolution` (`{action, by, note, at}`). New evidence on an open exception without a human decision triggers another rules assessment.
 
-Tipos: `duplicate_charge`, `duplicate_payment`, `amount_mismatch`, `late_payment`, `expired_unpaid`, `charge_failed`, `refund_requested`, `med_reported`, `manual_divergent`, `withdrawal_failed`, `withdrawal_reversal`.
+Types: `duplicate_charge`, `duplicate_payment`, `amount_mismatch`, `late_payment`, `expired_unpaid`, `charge_failed`, `refund_requested`, `med_reported`, `manual_divergent`, `withdrawal_failed`, `withdrawal_reversal`.
 
-## 5. Veredito e política
+## 5. Verdict and policy
 
-- Veredito: `{action, confidence, requires_human, rationale, evidence_refs}`; ação de lista fechada por tipo (`copilot/verdict.ts`); validação estrita (ação, faixa, referências só às evidências dadas); ação irreversível força `requires_human`.
-- Aplicação sozinha: só ação REVERSÍVEL (`close_*`, `hold_request_balance`, `flag_review`), confiança >= 0,85 e sem desacordo entre regras e modelo. O resto espera o operador.
-- `copilot_verdicts` é só inserção (gatilho `append_only`), com `input_hash`, `verdict_hash` (SHA-256 do JSON canônico), `engine` (`rules`, `model`, `replay`, `operator`), latência e uso.
-- Modelo: `COPILOT_MODE` `off` | `replay` | `live` | `live_record`; provedores Anthropic Messages e OpenAI-compatible; primeira falha do job `copilot_judge` = `model_error` com código controlado e exceção para o humano, sem retentativa automática paga. Resposta só é gravada após guarda estrita e CAS de fatos/evidências dentro do lock; contexto alterado não recebe veredito nem replay. Replay é leitura de entrada/modelo exatos, sem job/política/decisão; ausência = `replay_miss`. Orçamento em chamadas não substitui a reserva monetária privada nem o teto compartilhado no fornecedor.
-- Decisão do operador: `POST /pilot/api/exceptions/:id/decide` com `PILOT_OPERATOR_TOKEN`; vira veredito `operator`; `agreed_with_copilot` registrado (métrica da página).
+- A verdict has `{action, confidence, requires_human, rationale, evidence_refs}`. Actions are restricted by exception type (`copilot/verdict.ts`); validation checks action, range and references against the supplied evidence. Irreversible actions force `requires_human`.
+- Automatic application is limited to reversible actions (`close_*`, `hold_request_balance`, `flag_review`) with confidence at least 0.85 and no disagreement between rules and model. Other actions wait for the operator. The public shadow projection does not execute financial actions.
+- `copilot_verdicts` is append-only (`append_only` trigger), with `input_hash`, `verdict_hash` (SHA-256 of canonical JSON), `engine` (`rules`, `model`, `replay`, `operator`), latency and usage. Preserve existing records; display-copy changes must not rewrite audit history.
+- `COPILOT_MODE` supports `off`, `replay`, `live` and `live_record`. Providers include Anthropic Messages and OpenAI-compatible APIs. The first failure of a `copilot_judge` job becomes `model_error` with a controlled code and visible human fallback, without an automatic paid retry. A response is stored only after strict validation and a facts/evidence CAS under the lock. Changed context receives neither a verdict nor a replay. Replay reads an exact input/model match without jobs, policy or decisions; absence is `replay_miss`. A call budget does not replace the private monetary reservation or provider spending limit.
+- An operator decision uses `POST /pilot/api/exceptions/:id/decide`, authenticated by `PILOT_OPERATOR_TOKEN`. It becomes an `operator` verdict and records `agreed_with_copilot` for the page metric. Never place the token value in documentation or public evidence.
 
-## 6. Critérios de aceite (todos cobertos em `core/test/pilot.test.ts`, 21 testes)
+## 6. Acceptance scenarios
 
-1. Linha com dado pessoal ou chave desconhecida: recusada com motivo, as demais entram.
-2. Lote repetido: 0 aceitas, N duplicadas, nada reprocessado.
-3. Evento fora de ordem: adiado e aplicado na mesma chamada.
-4. Pedido atestado pago: liquidação na cadeia e recibo `settlement` (com assinante real nos testes).
-5. Três cobranças, uma paga: `duplicate_charge` fechada pelas regras; `expired_unpaid` e `charge_failed` informativas fechadas.
-6. Valor 1 centavo a menos: retenção + `hold_request_balance` automático; diferença grande: modelo; sem modelo: humano com motivo.
-7. Modelo com resposta inválida: `model_error` com motivo, sem veredito gravado; veredito gravado é imutável.
-8. Devolução atestada: caso sem chamada a provedor, confirmado no `completed`, recibo `refund_notice`.
-9. MED atestado real; pagamento atrasado atestado; cobrança sem vencimento no prazo.
-10. Rotas: assinatura do corpo bruto, tipo de conteúdo, leitura pública sem ids internos, decisão só com token.
+These scenarios describe the contract to verify against `core/test/pilot.test.ts` and current CI. No test execution or count is asserted by this document.
 
-## 7. Fora desta versão
+1. Reject personal data and unknown keys with a reason while accepting valid rows.
+2. A repeated batch accepts no new rows, counts duplicates and does not reprocess them.
+3. Defer an out-of-order event and apply it when its prerequisite becomes available.
+4. In a separately enabled testnet settlement test, an attested paid order produces a `settlement` receipt with the actual test signer. This is distinct from the public shadow pilot.
+5. For three charges with one paid, rules close `duplicate_charge` and informational `expired_unpaid` and `charge_failed` cases.
+6. A one-cent underpayment produces a hold and reversible `hold_request_balance`; a larger mismatch may require model assessment. Without a model, fall back to the human with a reason.
+7. An invalid model response produces `model_error` without a stored verdict. A stored verdict remains immutable.
+8. An attested refund avoids a provider call, is confirmed by `completed`, and produces `refund_notice`.
+9. Preserve attested MED and late-payment facts and the window behavior of a charge without expiry.
+10. Check raw-body signature and content type. Public reads omit internal IDs; operator decisions require authentication.
 
-Hash do veredito dentro do recibo assinado (próximo passo, exige vetor novo); link do recibo no extrato das carteiras dos parceiros (E5); exportação incremental ao vivo da loja (comando agendado na Odin); avaliação do modelo no resíduo (métrica de concordância do operador, que a página já calcula).
+## 7. Separate work
+
+A verdict hash inside a signed receipt requires a new receipt vector and validation. Merchant wallet-statement receipt links (subject to merchant agreement), authorized incremental merchant exports and model evaluation on the unresolved residue are separate tasks. A display label or API actor change requires an explicit compatibility review and tests; it is not a documentation-only edit. Historical append-only verdicts must remain unchanged.

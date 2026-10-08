@@ -1,10 +1,9 @@
 # Contrato v0.3: núcleo Pix e liquidação em stablecoin
 
-Projeto do Colosseum Crypto World's Fair, trilha Tempo. Nome de trabalho: PixSettle (provisório).
-Autor: Claude, 27/09/2026 (Assunção). Base: v0.2 e a mensagem X-0001 do Codex no canal (27/09 01:55).
-Estado: **v0.3 para conferência do Codex só nos trechos da tabela "Mudanças da v0.3"** (5.1, 6 e 7 já estão ok). Nenhum código antes do ok.
+Projeto do Colosseum Crypto World's Fair, trilha Tempo. PixSettle.
+> Historical design specification. The original core design below contains Laravel/PHP references. The stack amendment at the end records the transition to TypeScript; see the current [README](../README.md) for the implementation and demo boundaries. This document is a design record, not a report of tests executed on the current commit.
 
-## Mudanças da v0.3 (mensagem X-0001 do Codex)
+## Mudanças da v0.3
 
 | Ponto | Resolução |
 | --- | --- |
@@ -13,7 +12,7 @@ Estado: **v0.3 para conferência do Codex só nos trechos da tabela "Mudanças d
 | Obrigação de transmitir toda tentativa assinada | Removida. Com estorno externo ou `exposure_reconciliation`, a tentativa fica `suspended` com bytes e nonce preservados e a fila de assinatura da tesouraria para com diagnóstico (3.5, 4.4) |
 | Recuperação da reserva de nonce | Nonce reservado fica ligado a uma tentativa durável (`nonce_reserved`) antes de soltar a trava; queda antes de persistir a assinatura retoma a mesma reserva, sem novo nonce e sem buraco. O serviço de assinatura não transmite (3.5, 4.4, 4.6) |
 
-## Mudanças da v0.2 (conferência do Codex de 01:46)
+## Mudanças da v0.2
 
 | Ponto | Resolução |
 | --- | --- |
@@ -27,7 +26,7 @@ Estado: **v0.3 para conferência do Codex só nos trechos da tabela "Mudanças d
 
 ## Mudanças da v0.1 em relação ao v0 (resposta à revisão)
 
-| Ponto do Codex | Decisão no v0.1 |
+| Ponto da revisão | Decisão no v0.1 |
 | --- | --- |
 | 1. Memo não impede pagamento duplo; resultado desconhecido | **Aceito.** Diário durável de envio: intenção imutável, nonce alocado pelo core sob trava, `nonceKey = 0` explícito, transação assinada persistida antes de transmitir, retransmissão só dos mesmos bytes, `unknown` vira `manual_review` (seção 4) |
 | 1. Identidade do evento | **Aceito.** chain id, endereço do token, from, to, amount, memo, recibo com sucesso e bloco (seção 4.5) |
@@ -262,26 +261,21 @@ Tabelas: `merchants`, `checkout_sessions`, `quotes`, `orders`, `pix_charges`, `p
 
 Câmbio real, produção, substituição de taxa, contrato de reserva on-chain, provedores Eulen e Efí, várias moedas, painel de administração completo.
 
-## 11. Pedido ao Codex
-
-Conferir só os trechos da tabela "Mudanças da v0.3" e responder no canal (`CANAL/CANAL-CLAUDE-CODEX.md`) com "ok" ou a correção. Com o ok, o Claude começa o código pela ordem P1.
-
 ## Fontes
 
-- Codex, revisão de 27/09 em `CONTRATO-NUCLEO-PIX-v0.md` e conferência de 27/09 01:46 em `CONTRATO-NUCLEO-PIX-v0.1.md`
 - Asaas: [eventos de cobrança](https://docs.asaas.com/docs/webhook-para-cobrancas), [webhooks](https://docs.asaas.com/docs/sobre-os-webhooks), [cobranças Pix](https://docs.asaas.com/docs/cobrancas-via-pix)
 - Tempo: [TIP-20](https://tempo.xyz/developers/docs/protocol/tip20/spec), [memos](https://tempo.xyz/developers/docs/guide/payments/transfer-memos), [transações](https://docs.tempo.xyz/protocol/transactions)
 - [RFC 8785 (JCS)](https://www.rfc-editor.org/rfc/rfc8785), [EIP-191](https://eips.ethereum.org/EIPS/eip-191)
 - MED: [Sebrae RS sobre a IN BCB 766/2026](https://digital.sebraers.com.br/blog/leis-e-normas/pix-med-prazo-contestar-devolucao-80-dias/)
 
-## Conferência do Codex (v0.3)
+## Nota técnica de reconciliação (v0.3)
 
-Ok técnico na mensagem X-0002 do canal (27/09 02:05), com uma correção redacional na seção 3.5 já aplicada. Regra de implementação acordada em C-0003/X-0002: `already known` e `nonce too low` na retransmissão levam a reconciliar pelo hash; não provam sucesso nem falha e não autorizam novo nonce.
+Regra de implementação: `already known` e `nonce too low` na retransmissão levam a reconciliar pelo hash; não provam sucesso nem falha e não autorizam novo nonce.
 
 
-## Adendo v0.3.1: stack do core (C-0004 e X-0003, 27/09/2026 02:26)
+## Adendo v0.3.1: stack do core
 
-- `core/` passa de Laravel para **TypeScript** (Node 22, Fastify 5, PostgreSQL 16 com `pg`, SQL explícito, migrações SQL versionadas, vitest com banco real). Motivo: o ambiente do Claude não baixa dists do Composer (403 da política de rede para codeload/api.github.com), e uma linguagem só elimina a duplicação de JCS e EIP-191 no caminho de produção.
+- `core/` passa de Laravel para **TypeScript** (Node 22, Fastify 5, PostgreSQL 16 com `pg`, SQL explícito, migrações SQL versionadas, vitest com banco real). Uma linguagem só elimina a duplicação de JCS e EIP-191 no caminho de produção.
 - Nada muda no contrato funcional: estados, travas, outbox, diário de envio, recibo, formatos HTTP/JSON, unidades, isolamento entre lojistas e testes P1.
 - Verificador PHP do recibo fica para o futuro; o teste de interoperabilidade PHP/TypeScript **não** está concluído. Os vetores seguem fixos em `contract/vectors/` e ganham um verificador independente (outra linguagem e outra biblioteca) para não validar com a mesma lógica que assina.
 - A fronteira do assinante continua: só o processo `settlement/` tem a chave; core e checkout nunca.

@@ -1,60 +1,47 @@
-# Publicar a demo (passo a passo para o Rafael)
+# Deploying the public testnet demo
 
-Resultado: um endereço público tipo `https://pixsettle-demo.onrender.com/demo` para os jurados. Custo: zero (planos gratuitos). Tempo: uns 20 minutos, só cliques e colar texto.
+The demo combines a simulated Pix provider with Tempo testnet settlement. The historical pilot is a separate read-only shadow projection of pseudonymized, merchant-attested events. Neither surface is a production payment service.
 
-Nada de chave privada passa pela sua mão: as carteiras de testnet saem de uma semente que a própria Render gera e guarda. A tesouraria se abastece sozinha no faucet da testnet.
+The repository includes `Dockerfile` and `render.yaml`. Use the current README for the runtime and local setup. Review hosting terms, database retention, capacity and cost before provisioning; no zero-cost or completion-time guarantee is implied. Initial builds and visits after idle periods can take longer.
 
-## 1. Repositório no GitHub (5 min)
+## 1. Select the source and review the release
 
-1. Em github.com, clique em **New repository**. Nome: `pixsettle`. Marque **Public** (código aberto conta ponto no Colosseum). Não marque README nem licença. Clique em **Create repository**.
-2. No Mac, abra o Terminal e cole (troque `SEU_USUARIO` pelo seu usuário do GitHub):
+Use the intended GitHub repository and exact reviewed commit. Check CI for that same commit. Keep automatic deployment disabled while preparing a freeze; a branch update or passing badge alone is not evidence that a particular commit is deployed.
 
-```bash
-cd ~/Documents/Codex/2026-09-13/as/HANDOFF-CLAUDE-2026-09-26/revisoes/pixsettle/publicar
-git clone pixsettle.bundle pixsettle
-cd pixsettle
-git remote set-url origin https://github.com/SEU_USUARIO/pixsettle.git
-git push -u origin main
-```
+Do not include local workstation paths, private handoff packages, credentials or merchant data in the public repository. Store service credentials only in the hosting provider's private environment settings.
 
-Se o Terminal pedir login, use o do GitHub (ou o GitHub Desktop, se preferir: "Add existing repository" apontando para essa pasta e depois "Publish").
+## 2. Provision PostgreSQL
 
-## 2. Banco de dados na Neon (5 min)
+Provide a PostgreSQL database compatible with the version stated in the README. Choose a region near the application host and review backup and retention settings. Obtain the connection string through the provider's secure interface. Configure it as `DATABASE_URL` in the host's private environment; never put the value in documentation, logs or source control.
 
-1. Entre em neon.com e clique em **Sign up** com a conta do GitHub.
-2. Crie um projeto: nome `pixsettle`, região **AWS US East 1 (N. Virginia)**, Postgres 16. Tem que ser a mesma região do servidor na Render (Virginia), senão cada consulta ao banco atravessa o continente e a demo fica lenta.
-3. Na tela do projeto, clique em **Connect** e copie a **connection string** (começa com `postgresql://` e termina com `?sslmode=require`). Guarde para o passo 3.
+## 3. Configure the application host
 
-Por que Neon e não o banco da Render: o banco gratuito da Render apaga em 30 dias, e o resultado do Colosseum só sai em 05/12.
+Connect the reviewed repository to a container-capable host. For a Render Blueprint, review `render.yaml` and the selected branch before applying it. Check the resulting private environment configuration against the Blueprint; do not assume missing values have been generated.
 
-## 3. Servidor na Render (10 min)
+The demo derives testnet wallets from a private host-generated seed. Preserve this seed during service maintenance; do not copy or print it. Confirm testnet funding through the application's diagnostics. Production keys and real-money operation are outside this demo.
 
-1. Entre em render.com e clique em **Get Started** com a conta do GitHub. Autorize o acesso ao repositório `pixsettle`.
-2. Clique em **New** e depois **Blueprint**. Escolha o repositório `pixsettle`. A Render lê o arquivo `render.yaml` sozinha.
-3. Ela vai pedir um único valor: **DATABASE_URL**. Cole a connection string da Neon. Os outros segredos ela gera sozinha.
-4. Clique em **Apply**. O primeiro build leva de 5 a 10 minutos.
-5. Quando aparecer **Live**, abra o endereço que a Render mostrar e acrescente `/demo` no fim.
+For an existing service, confirm automatic deployment is disabled and the exact source commit is approved before an explicitly controlled deployment. Inspect build and startup status. A host status of Live must be followed by application checks; it does not establish functional correctness by itself.
 
-## 4. Conferir
+## 4. Verify the deployed behavior
 
-- `/demo`: crie um pedido e clique em "Payer pays". Em poucos segundos deve aparecer "Settled" e o botão do recibo.
-- O recibo abre com "Receipt verified" em verde.
-- Plano gratuito: depois de 15 minutos sem visita o servidor dorme e a primeira visita leva cerca de 1 minuto. Antes de gravar vídeo ou mandar o link, abra a página uma vez.
+- Confirm the intended deployed commit and passing CI for that commit.
+- Open `/demo`; create a fictional order and exercise simulated payment with duplicate webhook delivery. Confirm one settlement attempt and its final state from the timeline.
+- Open the receipt and verify the on-chain fields. If the RPC cannot answer conclusively, expect an unavailable result rather than a fabricated success.
+- Exercise underpayment, refund and simulated MED cases, checking that unknown outcomes remain blocked for reconciliation.
+- Open `/pilot` and confirm read-only shadow mode, scoped aggregate evidence and recorded advisory verdicts. Do not enable live model calls or settlement as a side effect of verification.
 
-## 5. Asaas sandbox (quando você criar as contas)
+Record the source, endpoint, observed result and verification time without secrets. Confirm the applicable release evidence before sharing the endpoint.
 
-Na Render, em **Environment**, acrescente:
+## 5. Optional Asaas sandbox configuration
 
-| Variável | Valor |
+A sandbox adapter is separate from the simulated provider and requires its own validation. Configure only sandbox credentials in the private host environment:
+
+| Variable | Purpose |
 | --- | --- |
-| `PIX_PROVIDER` | `asaas` |
-| `ASAAS_API_KEY` | chave da conta sandbox que RECEBE (começa com `$aact_hmlg_`) |
-| `ASAAS_CUSTOMER_ID` | id de um cliente de teste criado nessa conta (começa com `cus_`) |
-| `ASAAS_PAYER_API_KEY` | chave da segunda conta sandbox, a que PAGA (opcional; sem ela usamos a confirmação de sandbox) |
+| `PIX_PROVIDER` | Select the `asaas` adapter only when the sandbox setup is ready |
+| `ASAAS_API_KEY` | Receiving sandbox account credential |
+| `ASAAS_CUSTOMER_ID` | Sandbox test customer identifier |
+| `ASAAS_PAYER_API_KEY` | Optional paying sandbox account credential |
+| `ASAAS_WEBHOOK_TOKEN` | Private webhook authentication credential |
 
-E no painel do Asaas sandbox da conta que recebe, em **Integrações > Webhooks**: URL `https://SEU-ENDERECO.onrender.com/webhooks/asaas`, eventos de cobrança, e o token de autenticação igual ao valor de `ASAAS_WEBHOOK_TOKEN` que a Render gerou (em Environment, clique no olho para ver). Chave de produção é recusada pelo sistema.
-
-## O que fica de fora de propósito
-
-- Chave privada em qualquer arquivo, log ou mensagem.
-- Dinheiro real: Pix simulado ou sandbox, Tempo testnet.
+Configure the receiving sandbox account's billing-event webhook to `/webhooks/asaas` on the application host with matching private authentication. Review adapter tests and observed sandbox results before describing the adapter as working. Do not use production credentials, real personal data or real money.
