@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto'
 import { withTx, type Db, type Tx } from '../db.js'
-import { authorizedMaterial, nextCheckpoint, signReceipt, verifyShadowReceipt } from './guard.js'
+import { authorizedMaterial, instantUtc, nextCheckpoint, signReceipt, verifyShadowReceipt } from './guard.js'
 import type { TrustedShadowContext, ValidatedTrio, ShadowBatchReceipt, ShadowIngestResult } from './types.js'
 export class ShadowEventConflict extends Error {
   constructor(readonly codes: string[] = ['l1:conflito'], public receipt: ShadowBatchReceipt | null = null) { super('shadow_event_conflict'); this.name = 'ShadowEventConflict' }
 }
+export class ShadowKeyPeriodClosed extends Error { constructor() { super('shadow_key_period_closed'); this.name = 'ShadowKeyPeriodClosed' } }
 export class ShadowReceiptInvalid extends Error { constructor() { super('shadow_receipt_invalid'); this.name = 'ShadowReceiptInvalid' } }
 export class ShadowBatchBindingConflict extends Error { constructor() { super('shadow_batch_binding_conflict'); this.name = 'ShadowBatchBindingConflict' } }
 export function shadowStreamLockKey(origin: string, store: string): string { return createHash('sha256').update('pilot-shadow-stream\0' + origin + '\0' + store).digest().readBigInt64BE(0).toString() }
@@ -18,6 +19,8 @@ async function priorReceipt(tx: Tx, v: ValidatedTrio, trusted: TrustedShadowCont
 async function buildReceipt(tx: Tx, v: ValidatedTrio, trusted: TrustedShadowContext, key: Buffer, accepted: number, duplicates: number, checkpoint: string | null, codes: string[]): Promise<ShadowBatchReceipt> {
   const a = v.attestation
   const now = (await tx.query("SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS at")).rows[0].at as string
+  const issuer = trusted.keyring[a.key_id], time = instantUtc(now), from = issuer && instantUtc(issuer.valid_from), until = issuer && instantUtc(issuer.valid_until)
+  if (time === null || from == null || until == null || !(from <= time && time < until)) throw new ShadowKeyPeriodClosed()
   const receipt: ShadowBatchReceipt = { ...v.binding, schema: 'pixsettle-shadow-receipt/1', mode: 'shadow', bank_settlement: false,
     origin: trusted.origin, store: trusted.store, key_id: a.key_id, count: a.count, result: codes.length ? 'rejected' : 'accepted', codes,
     accepted, duplicates, rejected: codes.length ? a.count : 0, first_cursor: a.first_cursor, last_cursor: a.last_cursor, checkpoint, committed_at: now, sig: '' }

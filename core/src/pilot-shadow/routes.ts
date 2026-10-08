@@ -4,7 +4,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { Db } from '../db.js'
 import { decodeTrio, SHADOW_CONTENT_TYPE, MAX_FRAME, ShadowFrameError } from './frame.js'
 import { canonicalJson, instantUtc, parseKeyring, sha256, signReceipt, validateTrio, MAX_KEYRING_BYTES } from './guard.js'
-import { ingestShadowBatch, ShadowEventConflict, ShadowBatchBindingConflict, ShadowReceiptInvalid } from './db.js'
+import { ingestShadowBatch, ShadowEventConflict, ShadowBatchBindingConflict, ShadowReceiptInvalid, ShadowKeyPeriodClosed } from './db.js'
 import type { ShadowBatchReceipt, ShadowKeyMetadata, TrustedShadowContext } from './types.js'
 const ORIGIN = /^src_[a-z0-9]{1,16}$/, STORE = /^store_[0-9]{1,3}$/, SHA = /^[0-9a-f]{64}$/, KID = /^k_[a-z0-9]{1,16}$/
 const KEY_ENV = /^PILOT_SHADOW_KEY_[A-Z0-9_]{1,47}$/, TOKEN_ENV = /^PILOT_SHADOW_TOKEN_[A-Z0-9_]{1,45}$/
@@ -105,6 +105,7 @@ export function registerShadow(app: FastifyInstance, db: Db, env: Readonly<Recor
       } catch (e) {
         if (e instanceof ShadowEventConflict) return fail(reply, 409, 'shadow_event_conflict', { receipt: e.receipt })
         if (e instanceof ShadowBatchBindingConflict) return fail(reply, 409, 'shadow_batch_binding_conflict')
+        if (e instanceof ShadowKeyPeriodClosed) return fail(reply, 422, 'shadow_key_period_closed')
         if (e instanceof ShadowReceiptInvalid) return fail(reply, 503, 'shadow_receipt_invalid')
         return fail(reply, 503, 'shadow_storage_unavailable')
       }

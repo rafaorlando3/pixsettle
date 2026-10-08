@@ -4,7 +4,7 @@ import { freshDb } from './helpers.js'
 import { event, trio, trusted, TEST_SECRET } from './pilot-shadow-fixtures.js'
 import { registerShadow } from '../src/pilot-shadow/routes.js'
 import { encodeTrio, SHADOW_CONTENT_TYPE, MAX_FRAME } from '../src/pilot-shadow/frame.js'
-import { sha256 } from '../src/pilot-shadow/guard.js'
+import { sha256, validateTrio } from '../src/pilot-shadow/guard.js'
 import { shadowStreamLockKey } from '../src/pilot-shadow/db.js'
 import { corePassthroughEnv } from '../scripts/start-all.js'
 import { wakeOnWrites } from '../src/worker.js'
@@ -70,6 +70,18 @@ describe('private authenticated shadow v2 routes', () => {
     const app = await appFor(db), bad = trio([{ ...event(1), cpf_12345678900: 'RECEIVED_PRIVATE_VALUE' } as any]); const r = await post(app,bad)
     expect(r.statusCode).toBe(422); expect(r.json().codes).toContain('l1:extra_field:n=1'); expect(r.body).not.toContain('cpf_12345678900'); expect(r.body).not.toContain('RECEIVED_PRIVATE_VALUE'); expect(await count(db)).toEqual({ batches: 0, events: 0, streams: 0 })
   })
+  it('authenticates an historical signed_at but rolls back if the key cannot authorize a new receipt now', async () => {
+    const { db } = await fresh(), env = config(), ring = JSON.parse(env.PILOT_SHADOW_KEYRING_JSON!), source = trusted()
+    source.keyring.k_test1!.valid_until = '2026-10-07T03:00:01Z'
+    const input = trio(); expect(validateTrio(input,source).ok).toBe(true)
+    env.PILOT_SHADOW_KEYRING_JSON = JSON.stringify({ k_test1:{ ...ring.k_test1,valid_until:source.keyring.k_test1!.valid_until } })
+    const app = await appFor(db,env), r = await post(app,input)
+    expect(r.statusCode).toBe(422); expect(r.json()).toEqual({ error:{code:'shadow_key_period_closed'} })
+    expect(await count(db)).toEqual({ batches:0,events:0,streams:0 })
+    expect((await get(app,sha256(input.lote))).statusCode).toBe(404)
+    for (const table of ['orders','pix_charges','outbox','receipts','settlements','attested_events']) expect((await db.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n).toBe(0)
+  })
+
   it('handles binary framing/content-type/body bounds with fixed responses before storage', async () => {
     const { db, app } = await fresh()
     const bad = await app.inject({ method: 'POST', url: '/pilot/v2/batches?store=store_1', headers: { authorization: 'Bearer ' + TOKEN, 'content-type': SHADOW_CONTENT_TYPE }, payload: Buffer.from('PRIVATE_BAD_FRAME') }); expect(bad.statusCode).toBe(422); expect(bad.body).not.toContain('PRIVATE_BAD_FRAME')
