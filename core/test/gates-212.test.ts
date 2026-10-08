@@ -98,9 +98,20 @@ describe('trava por fonte no processamento', () => {
   })
 })
 
+// Test the 006/007 contract in its own migration boundary, even when later layers exist.
+async function stripLaterMigrations(db: any) {
+  let last = await lastApplied(db)
+  while (last && last > '007_pilot_batches.sql') { await rollback(db, last); last = await lastApplied(db) }
+}
+async function migrateThrough007(db: any) {
+  const applied = await migrate(db); await stripLaterMigrations(db)
+  return applied.filter(name => name <= '007_pilot_batches.sql')
+}
+
 describe('retorno das migrações 006 e 007', () => {
   it('desfaz 007 e 006 em ordem, restaura as restrições da 005, e aplica de novo sem erro; fora de ordem é recusado', async () => {
     const { db, drop } = await freshDb(); drops.push(drop)
+    await stripLaterMigrations(db)
     expect(await lastApplied(db)).toBe('007_pilot_batches.sql')
     await expect(rollback(db, '006_pilot_copilot.sql')).rejects.toThrow(/só a última migração/)
     expect(await rollback(db, '007_pilot_batches.sql')).toEqual({ undone: '007_pilot_batches.sql' })
@@ -115,12 +126,13 @@ describe('retorno das migrações 006 e 007', () => {
     expect(await def('pix_charges_provider_check')).not.toContain('attested')
     expect(await def('refund_cases_refund_type_check')).not.toContain('med_attested'); expect(await def('refund_cases_refund_type_check')).toContain('med_simulated')
     // reaplicar: as duas voltam
-    expect(await migrate(db)).toEqual(['006_pilot_copilot.sql', '007_pilot_batches.sql'])
+    expect(await migrateThrough007(db)).toEqual(['006_pilot_copilot.sql', '007_pilot_batches.sql'])
     expect(await lastApplied(db)).toBe('007_pilot_batches.sql')
   })
 
   it('com dados do piloto no núcleo, o retorno da 006 falha inteiro com o motivo e nada muda', async () => {
     const { ctx, db } = await env()
+    await stripLaterMigrations(db)
     await ingestBatch(ctx, 'odin', 'b1', [order('o_gggggggggg', '100.00'), charge('o_gggggggggg', 'i_gggggggggg', '100.00'), received('o_gggggggggg', 'i_gggggggggg', '100.00')])
     await processPending(ctx, 'odin')
     expect((await db.query(`SELECT count(*)::int AS n FROM orders WHERE provider_env='attested'`)).rows[0].n).toBe(1)
@@ -129,7 +141,7 @@ describe('retorno das migrações 006 e 007', () => {
     // nada mudou: tabelas do piloto continuam, dados intactos, migração continua registrada
     expect((await db.query(`SELECT count(*)::int AS n FROM attested_events`)).rows[0].n).toBe(3)
     expect(await lastApplied(db)).toBe('006_pilot_copilot.sql')
-    expect(await migrate(db)).toEqual(['007_pilot_batches.sql'])
+    expect(await migrateThrough007(db)).toEqual(['007_pilot_batches.sql'])
   })
 })
 
