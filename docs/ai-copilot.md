@@ -58,3 +58,12 @@ A model failure is terminal on its first attempt: a controlled reason is recorde
 | Operator decisions recorded | 0 (the queue opens to the operator with this release) |
 
 The next number to publish is the operator's agreement rate with the model on the residue, as decisions accumulate.
+
+
+## Private USD reservation (212, C0663 integration)
+
+Live/live_record require `COPILOT_BUDGET_MICROS`. `COPILOT_CALL_RESERVE_MICROS` defaults to 20000 and `COPILOT_MAX_CALLS` to 200; cap above US$20 is refused. The daily calls setting is an additional admission rule, not monetary evidence. Replay/off do not open the spend ledger.
+
+Migration 010 stores an immutable policy and `copilot_spend`, unique by model/input hash. A reservation commits before inference. HTTP admission uses a DB session lock; another in-flight call is refused before network activity. A crash, failed call, missing cost, settlement-write failure or cost above its reservation stops the envelope. Failed/unknown rows retain the reservation; reported low cost never releases it. Restart cannot enlarge the existing DB policy or automatically resend an input. The first model error remains terminal at the human fallback.
+
+Budgeted input is limited to 16 KiB UTF8 and the provider output to 700 tokens. The reserve must cover the configured route price; this class alone does not prove the external provider price. For the private gpt-4.1-mini capture, the separate executor verifies the Models API, limits provider price to US$0.40/1M prompt and US$1.60/1M completion, reserves US$0.0082 per context (minimum enforced for that model), and limits its envelope to US$0.25 / 24 calls. It verifies the shared K3a+PixSettle provider hard cap US$20 before each call. K3a is not modified. A deliberate new stage requires a separately marked private/quarantine DB and a new ledger scope.

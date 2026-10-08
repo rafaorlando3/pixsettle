@@ -161,7 +161,7 @@ export async function judgeWithModel(ctx: Ctx, exceptionId: string, tryNo: numbe
   const input = buildModelInput(e.kind, facts, evidence)
   let out
   try { out = await model.complete(input) } catch (err) {
-    const code = err instanceof ModelError && ['config', 'http', 'timeout', 'invalid_response', 'replay_miss'].includes(err.code) ? err.code : 'internal_error'
+    const code = err instanceof ModelError && ['config', 'http', 'timeout', 'invalid_response', 'replay_miss', 'budget'].includes(err.code) ? err.code : 'internal_error'
     const status = err instanceof ModelError && Number.isInteger(err.status) && err.status! >= 100 && err.status! <= 599 ? `:${err.status}` : ''
     const msg = `model_${code}${status}`
     await fail(msg, true)

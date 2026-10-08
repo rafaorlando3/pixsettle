@@ -14,7 +14,7 @@ export type ModelOutput = {
   latencyMs: number
 }
 export class ModelError extends Error {
-  constructor(readonly code: 'config' | 'http' | 'timeout' | 'invalid_response' | 'replay_miss', message: string, readonly status: number | null = null, readonly body: unknown = null) { super(message) }
+  constructor(readonly code: 'config' | 'http' | 'timeout' | 'invalid_response' | 'replay_miss' | 'budget', message: string, readonly status: number | null = null, readonly body: unknown = null) { super(message) }
 }
 
 export interface CopilotModel {
@@ -154,6 +154,116 @@ export class RecordingModel implements CopilotModel {
   }
 }
 
+export type BudgetConfig = { capMicros: number; reserveMicros: number; maxCalls: number }
+export const MAX_BUDGETED_INPUT_BYTES = 16 * 1024
+export function budgetFromEnv(env: Record<string, string | undefined>): BudgetConfig {
+  const integer = (name: string, fallback?: number) => {
+    const value = env[name]
+    if (value === undefined || value === '') {
+      if (fallback !== undefined) return fallback
+      throw new ModelError('config', `${name} ausente`)
+    }
+    if (!/^[0-9]{1,12}$/.test(value)) throw new ModelError('config', `${name} inválido`)
+    const out = Number(value)
+    if (!Number.isSafeInteger(out) || out <= 0) throw new ModelError('config', `${name} inválido`)
+    return out
+  }
+  const capMicros = integer('COPILOT_BUDGET_MICROS')
+  const reserveMicros = integer('COPILOT_CALL_RESERVE_MICROS', 20_000)
+  const maxCalls = integer('COPILOT_MAX_CALLS', 200)
+  if (capMicros > 20_000_000) throw new ModelError('config', 'budget_cap_exceeds_shared20')
+  if (reserveMicros > capMicros) throw new ModelError('config', 'budget_reserve_exceeds_cap')
+  return { capMicros, reserveMicros, maxCalls }
+}
+
+/** Durable USD reservation. Unknown charge/crash stops admission; no automatic repeat of an input.
+ * The DB serializes inference across processes, not just reserve INSERTs. The pricing/input bound
+ * must be established for the configured provider/model before live capture; the private executor
+ * enforces its OpenRouter price cap. This ledger is PixSettle's envelope, not K3a's shared ledger.
+ */
+export class BudgetedModel implements CopilotModel {
+  readonly mode = 'live' as const
+  readonly name: string
+  constructor(private readonly inner: CopilotModel, private readonly db: Db, readonly budget: BudgetConfig) {
+    this.name = inner.name
+    for (const value of [budget.capMicros, budget.reserveMicros, budget.maxCalls]) {
+      if (!Number.isSafeInteger(value) || value <= 0) throw new ModelError('config', 'budget_config_invalid')
+    }
+    if (budget.reserveMicros > budget.capMicros) throw new ModelError('config', 'budget_reserve_exceeds_cap')
+    if (budget.capMicros > 20_000_000) throw new ModelError('config', 'budget_cap_exceeds_shared20')
+    if (this.name === 'openai/gpt-4.1-mini' && budget.reserveMicros < 8200) throw new ModelError('config', 'budget_known_model_reserve_too_small')
+  }
+  async complete(input: ModelInput): Promise<ModelOutput> {
+    if (Buffer.byteLength(input.system, 'utf8') + Buffer.byteLength(input.user, 'utf8') > MAX_BUDGETED_INPUT_BYTES) {
+      throw new ModelError('budget', 'budget_input_limit')
+    }
+    const client = await this.db.connect()
+    let locked = false, id: string | undefined
+    try {
+      // Nonblocking admission avoids holding every pool connection behind a slow HTTP call.
+      const acquired = (await client.query(`SELECT pg_try_advisory_lock(hashtext('pixsettle_copilot_budget')) AS acquired`)).rows[0]?.acquired
+      if (acquired !== true) throw new ModelError('budget', 'budget_in_flight')
+      locked = true
+      await client.query('BEGIN')
+      try {
+        const { capMicros, reserveMicros, maxCalls } = this.budget
+        await client.query(`INSERT INTO copilot_budget_policy(singleton,model,cap_micros,reserve_micros,max_calls)
+          VALUES(true,$1,$2,$3,$4) ON CONFLICT(singleton) DO NOTHING`, [this.name, capMicros, reserveMicros, maxCalls])
+        const policy = (await client.query(`SELECT model,cap_micros,reserve_micros,max_calls,halted FROM copilot_budget_policy WHERE singleton=true FOR UPDATE`)).rows[0]
+        if (policy.model !== this.name || BigInt(policy.cap_micros) !== BigInt(capMicros) || BigInt(policy.reserve_micros) !== BigInt(reserveMicros) || BigInt(policy.max_calls) !== BigInt(maxCalls)) {
+          throw new ModelError('config', 'budget_policy_changed')
+        }
+        const used = (await client.query(`SELECT count(*)::bigint AS calls,
+          coalesce(sum(greatest(reserved_micros,coalesce(cost_micros,0))),0)::text AS used,
+          count(*) FILTER(WHERE state IN ('reserved','failed') OR cost_micros IS NULL)::bigint AS unknown
+          FROM copilot_spend`)).rows[0]
+        if (policy.halted || BigInt(used.unknown) > 0n) throw new ModelError('budget', 'budget_charge_unknown')
+        if (BigInt(used.calls) >= BigInt(maxCalls) || BigInt(used.used) + BigInt(reserveMicros) > BigInt(capMicros)) throw new ModelError('budget', 'budget_exhausted')
+        const duplicate = (await client.query('SELECT id FROM copilot_spend WHERE model=$1 AND input_hash=$2', [this.name, hashOf(input)])).rows[0]
+        if (duplicate) throw new ModelError('budget', 'budget_input_already_attempted')
+        id = (await client.query(`INSERT INTO copilot_spend(model,input_hash,reserved_micros,state)
+          VALUES($1,$2,$3,'reserved') RETURNING id`, [this.name, hashOf(input), reserveMicros])).rows[0].id
+        await client.query('COMMIT') // survives process loss before/after the HTTP call
+      } catch (error) { await client.query('ROLLBACK').catch(() => {}); throw error }
+      let out: ModelOutput
+      try { out = await this.inner.complete(input) }
+      catch (error) {
+        const errorCode = error instanceof ModelError ? error.code : 'internal_error'
+        // Failure has no proof of zero charge. Keep the reservation and stop the whole envelope.
+        await client.query('BEGIN')
+        try {
+          await client.query(`UPDATE copilot_spend SET state='failed',error_code=$2,settled_at=now() WHERE id=$1`, [id, errorCode])
+          await client.query(`UPDATE copilot_budget_policy SET halted=true,halt_code='unknown_charge' WHERE singleton=true`)
+          await client.query('COMMIT')
+        } catch { await client.query('ROLLBACK').catch(() => {}); throw new ModelError('budget', 'budget_storage_failed') }
+        throw error
+      }
+      const rawCost = out.usage?.cost
+      const micros = typeof rawCost === 'number' && Number.isFinite(rawCost) && rawCost >= 0 ? Math.ceil(rawCost * 1_000_000) : null
+      const cost = micros !== null && Number.isSafeInteger(micros) ? micros : null
+      await client.query('BEGIN')
+      try {
+        await client.query(`UPDATE copilot_spend SET state='spent',cost_micros=$2,settled_at=now() WHERE id=$1`, [id, cost])
+        if (cost === null || cost > this.budget.reserveMicros) {
+          await client.query(`UPDATE copilot_budget_policy SET halted=true,halt_code=$1 WHERE singleton=true`, [cost === null ? 'unknown_charge' : 'cost_over_reserve'])
+        }
+        await client.query('COMMIT')
+      } catch { await client.query('ROLLBACK').catch(() => {}); throw new ModelError('budget', 'budget_storage_failed') }
+      return out
+    } catch (error) {
+      if (error instanceof ModelError) throw error
+      throw new ModelError('budget', 'budget_storage_failed')
+    } finally {
+      let destroyConnection = false
+      if (locked) {
+        try { if ((await client.query(`SELECT pg_advisory_unlock(hashtext('pixsettle_copilot_budget')) AS released`)).rows[0]?.released !== true) destroyConnection = true }
+        catch { destroyConnection = true }
+      }
+      client.release(destroyConnection)
+    }
+  }
+}
+
 /** Modelo de teste: respostas programadas por quem escreve o teste. */
 export class ScriptedModel implements CopilotModel {
   readonly mode = 'live' as const
@@ -175,9 +285,11 @@ export function copilotFromEnv(env: Record<string, string | undefined>, db: Db):
     if (mode === 'replay') { if (!name) return { model: null, offReason: 'COPILOT_MODEL ausente para replay' }; return { model: new ReplayModel(db, name) } }
     if (mode !== 'live' && mode !== 'live_record') return { model: null, offReason: 'COPILOT_MODE desconhecido' }
     const provider = env.COPILOT_PROVIDER ?? 'anthropic'
-    const live = provider === 'anthropic'
+    const usdBudget = budgetFromEnv(env)
+    const raw = provider === 'anthropic'
       ? new AnthropicModel(env.COPILOT_API_KEY ?? '', name, env.COPILOT_BASE_URL || undefined)
       : new OpenAICompatibleModel(env.COPILOT_API_KEY ?? '', name, env.COPILOT_BASE_URL ?? '')
+    const live = new BudgetedModel(raw, db, usdBudget)
     // Orçamento: COPILOT_BUDGET_CALLS_PER_DAY (padrão 200). Inválido ou <= 0 = modelo desligado com motivo, nunca sem teto.
     const budget = Number(env.COPILOT_BUDGET_CALLS_PER_DAY ?? '200')
     if (!Number.isInteger(budget) || budget <= 0) return { model: null, offReason: 'COPILOT_BUDGET_CALLS_PER_DAY inválido' }
