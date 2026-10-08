@@ -27,7 +27,7 @@ const timeoutFetch = async (url: string, init: RequestInit, ms: number) => {
   const ac = new AbortController()
   const t = setTimeout(() => ac.abort(), ms)
   try { return await fetch(url, { ...init, signal: ac.signal }) }
-  catch (e) { if ((e as Error).name === 'AbortError') throw new ModelError('timeout', `modelo não respondeu em ${ms} ms`); throw new ModelError('http', `rede: ${(e as Error).message}`) }
+  catch (e) { if ((e as Error).name === 'AbortError') throw new ModelError('timeout', `modelo não respondeu em ${ms} ms`); throw new ModelError('http', 'network_error') }
   finally { clearTimeout(t) }
 }
 
@@ -46,11 +46,11 @@ export class AnthropicModel implements CopilotModel {
       body: JSON.stringify({ model: this.name, max_tokens: 700, temperature: 0, system: input.system, messages: [{ role: 'user', content: input.user }] }),
     }, this.timeoutMs)
     const body = await r.text()
-    if (!r.ok) throw new ModelError('http', `anthropic ${r.status}: ${body.slice(0, 300)}`, r.status, body.slice(0, 2000))
+    if (!r.ok) throw new ModelError('http', 'provider_http_error', r.status)
     let j: any
-    try { j = JSON.parse(body) } catch { throw new ModelError('invalid_response', 'anthropic: corpo não é JSON', r.status, body.slice(0, 500)) }
+    try { j = JSON.parse(body) } catch { throw new ModelError('invalid_response', 'anthropic: corpo não é JSON', r.status) }
     const text = (j.content ?? []).filter((c: any) => c.type === 'text').map((c: any) => c.text).join('\n')
-    if (!text) throw new ModelError('invalid_response', `anthropic: resposta sem texto (stop_reason=${j.stop_reason ?? '?'})`, r.status, j)
+    if (!text) throw new ModelError('invalid_response', 'provider_response_without_text', r.status)
     return { text, usage: j.usage ?? undefined, latencyMs: Date.now() - t0 }
   }
 }
@@ -70,11 +70,11 @@ export class OpenAICompatibleModel implements CopilotModel {
       body: JSON.stringify({ model: this.name, temperature: 0, max_tokens: 700, messages: [{ role: 'system', content: input.system }, { role: 'user', content: input.user }] }),
     }, this.timeoutMs)
     const body = await r.text()
-    if (!r.ok) throw new ModelError('http', `openai-compat ${r.status}: ${body.slice(0, 300)}`, r.status, body.slice(0, 2000))
+    if (!r.ok) throw new ModelError('http', 'provider_http_error', r.status)
     let j: any
-    try { j = JSON.parse(body) } catch { throw new ModelError('invalid_response', 'openai-compat: corpo não é JSON', r.status, body.slice(0, 500)) }
+    try { j = JSON.parse(body) } catch { throw new ModelError('invalid_response', 'openai-compat: corpo não é JSON', r.status) }
     const text = j.choices?.[0]?.message?.content
-    if (typeof text !== 'string' || !text) throw new ModelError('invalid_response', 'openai-compat: resposta sem texto', r.status, j)
+    if (typeof text !== 'string' || !text) throw new ModelError('invalid_response', 'provider_response_without_text', r.status)
     return { text, usage: j.usage ?? undefined, latencyMs: Date.now() - t0 }
   }
 }
@@ -123,14 +123,14 @@ export function copilotFromEnv(env: Record<string, string | undefined>, db: Db):
   try {
     if (mode === 'off') return { model: null, offReason: 'COPILOT_MODE=off' }
     if (mode === 'replay') { if (!name) return { model: null, offReason: 'COPILOT_MODEL ausente para replay' }; return { model: new ReplayModel(db, name) } }
-    if (mode !== 'live' && mode !== 'live_record') return { model: null, offReason: `COPILOT_MODE desconhecido: ${mode}` }
+    if (mode !== 'live' && mode !== 'live_record') return { model: null, offReason: 'COPILOT_MODE desconhecido' }
     const provider = env.COPILOT_PROVIDER ?? 'anthropic'
     const live = provider === 'anthropic'
       ? new AnthropicModel(env.COPILOT_API_KEY ?? '', name, env.COPILOT_BASE_URL || undefined)
       : new OpenAICompatibleModel(env.COPILOT_API_KEY ?? '', name, env.COPILOT_BASE_URL ?? '')
     // Orçamento: COPILOT_BUDGET_CALLS_PER_DAY (padrão 200). Inválido ou <= 0 = modelo desligado com motivo, nunca sem teto.
     const budget = Number(env.COPILOT_BUDGET_CALLS_PER_DAY ?? '200')
-    if (!Number.isInteger(budget) || budget <= 0) return { model: null, offReason: `COPILOT_BUDGET_CALLS_PER_DAY inválido: ${env.COPILOT_BUDGET_CALLS_PER_DAY}` }
+    if (!Number.isInteger(budget) || budget <= 0) return { model: null, offReason: 'COPILOT_BUDGET_CALLS_PER_DAY inválido' }
     return { model: mode === 'live_record' ? new RecordingModel(live, db) : live, budgetCallsPerDay: budget }
   } catch (e) {
     return { model: null, offReason: (e as Error).message }

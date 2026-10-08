@@ -74,10 +74,12 @@ async function judgeByRules(tx: Tx, ctx: Ctx, exceptionId: string, source: strin
 
 async function recordVerdict(tx: Tx, exceptionId: string, engine: 'rules' | 'model' | 'replay' | 'operator', model: string | null, v: Verdict, inputHash: string, latencyMs: number | null, usage: Record<string, number> | null) {
   const id = newId('vrd')
+  const persistedVerdict = engine === 'model' || engine === 'operator'
+    ? { ...v, rationale: 'Decision recorded; inspect action and evidence references.' } : v
   await tx.query(
     `INSERT INTO copilot_verdicts (id, exception_id, engine, model, action, confidence, requires_human, rationale, evidence_refs, input_hash, verdict_hash, latency_ms, usage)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-    [id, exceptionId, engine, model, v.action, v.confidence, v.requires_human, v.rationale, JSON.stringify(v.evidence_refs), inputHash, hashOf(v), latencyMs, usage ? JSON.stringify(usage) : null])
+    [id, exceptionId, engine, model, v.action, v.confidence, v.requires_human, persistedVerdict.rationale, JSON.stringify(v.evidence_refs), inputHash, hashOf(persistedVerdict), latencyMs, usage ? JSON.stringify(usage) : null])
   return id
 }
 
@@ -134,6 +136,8 @@ export function parseModelJson(text: string): unknown {
 
 /** Job copilot_judge: chama o modelo, valida, grava o veredito e aplica a política. Erro = retry com motivo visível. */
 export async function judgeWithModel(ctx: Ctx, exceptionId: string, tryNo: number): Promise<'done' | 'retry'> {
+  // Public replay projects stored decisions. It never runs a mutating model job.
+  if (ctx.cfg?.publicReplayReadOnly || ctx.copilot?.model?.mode === 'replay') return 'done'
   const e = (await ctx.db.query(`SELECT * FROM exceptions WHERE id=$1`, [exceptionId])).rows[0]
   if (!e || e.copilot_state !== 'pending_model' || !['open'].includes(e.status)) return 'done'
   const model = ctx.copilot?.model
@@ -157,7 +161,7 @@ export async function judgeWithModel(ctx: Ctx, exceptionId: string, tryNo: numbe
   const input = buildModelInput(e.kind, facts, evidence)
   let out
   try { out = await model.complete(input) } catch (err) {
-    const msg = err instanceof ModelError ? `${err.code}: ${err.message}` : (err as Error).message
+    const msg = err instanceof ModelError ? `model_${err.code}${err.status === null ? '' : `:${err.status}`}` : 'model_internal_error'
     const final = tryNo + 1 >= MODEL_MAX_TRIES || (err instanceof ModelError && (err.code === 'config' || err.code === 'replay_miss'))
     await fail(msg, final)
     return final ? 'done' : 'retry'
@@ -169,7 +173,7 @@ export async function judgeWithModel(ctx: Ctx, exceptionId: string, tryNo: numbe
   await withTx(ctx.db, async tx => {
     const cur = (await tx.query(`SELECT copilot_state, status FROM exceptions WHERE id=$1 FOR UPDATE`, [exceptionId])).rows[0]
     if (cur.copilot_state !== 'pending_model') return
-    await recordVerdict(tx, exceptionId, model.mode === 'replay' ? 'replay' : 'model', model.name, v.verdict, hashOf(input), out.latencyMs, out.usage ?? null)
+    await recordVerdict(tx, exceptionId, 'model', model.name, v.verdict, hashOf(input), out.latencyMs, out.usage ?? null)
     await tx.query(`UPDATE exceptions SET copilot_state='model_done', last_error=NULL, updated_at=now() WHERE id=$1`, [exceptionId])
     const rules = (await tx.query(`SELECT action, confidence, requires_human, rationale, evidence_refs FROM copilot_verdicts WHERE exception_id=$1 AND engine='rules' ORDER BY created_at DESC LIMIT 1`, [exceptionId])).rows[0]
     await applyPolicy(tx, ctx, exceptionId, v.verdict, rules ? { ...rules, confidence: Number(rules.confidence) } : null, 'copilot_model')
@@ -186,6 +190,7 @@ export async function modelCallsLast24h(ctx: Ctx): Promise<number> {
 
 /** Decisão do operador: gravada como veredito 'operator', encerra a exceção. Não move dinheiro aqui (piloto sombra). */
 export async function decideByOperator(ctx: Ctx, exceptionId: string, action: string, note: string): Promise<{ ok: true; agreed: boolean | null } | { ok: false; code: string; message: string }> {
+  if (ctx.cfg?.publicReplayReadOnly || ctx.copilot?.model?.mode === 'replay') return { ok: false, code: 'replay_readonly', message: 'replay permits read access only' }
   return withTx(ctx.db, async tx => {
     const e = (await tx.query(`SELECT * FROM exceptions WHERE id=$1 FOR UPDATE`, [exceptionId])).rows[0]
     if (!e) return { ok: false as const, code: 'not_found', message: 'exceção não encontrada' }
@@ -193,11 +198,11 @@ export async function decideByOperator(ctx: Ctx, exceptionId: string, action: st
     if (!ACTIONS[e.kind as ExceptionKind].includes(action) && action !== 'dismiss') return { ok: false as const, code: 'action_not_allowed', message: `ação ${action} não vale para ${e.kind}` }
     const last = (await tx.query(`SELECT action FROM copilot_verdicts WHERE exception_id=$1 AND engine IN ('model','replay','rules') ORDER BY created_at DESC LIMIT 1`, [exceptionId])).rows[0]
     const agreed = last ? last.action === action : null
-    const v: Verdict = { action, confidence: 1, requires_human: false, rationale: note.trim() || 'operator decision', evidence_refs: (e.evidence as Evidence[]).map(x => x.id).slice(0, 1) }
+    const v: Verdict = { action, confidence: 1, requires_human: false, rationale: 'Operator decision recorded.', evidence_refs: (e.evidence as Evidence[]).map(x => x.id).slice(0, 1) }
     if (action !== 'dismiss') await recordVerdict(tx, exceptionId, 'operator', null, v, hashOf(e.facts), null, null)
     const to = action === 'dismiss' ? 'dismissed' : 'resolved'
     await tx.query(`UPDATE exceptions SET status=$2, resolution=$3, resolved_at=now(), updated_at=now() WHERE id=$1`,
-      [exceptionId, to, JSON.stringify({ action, by: 'operator', note: note.slice(0, 500), at: ctx.now().toISOString(), agreed_with_copilot: agreed })])
+      [exceptionId, to, JSON.stringify({ action, by: 'operator', note: 'Operator decision recorded.', at: ctx.now().toISOString(), agreed_with_copilot: agreed })])
     await recordTransition(tx, 'exception', exceptionId, e.status, to, 'operator', `${action}${agreed === null ? '' : agreed ? ' (concorda com o copiloto)' : ' (discorda do copiloto)'}`)
     return { ok: true as const, agreed }
   })

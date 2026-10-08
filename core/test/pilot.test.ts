@@ -164,7 +164,7 @@ describe('ingestão e conciliação de pedidos atestados', () => {
     expect(await judgeWithModel(ctx, id, 1)).toBe('done')
     const ex = (await exceptionsOf(db, 'amount_mismatch'))[0]
     expect(ex).toMatchObject({ status: 'awaiting_human', copilot_state: 'model_error' })
-    expect(ex.last_error.reason).toMatch(/action_not_allowed:refund_everything/)
+    expect(ex.last_error.reason).toMatch(/action_not_allowed/)
     expect(await verdictsOf(db, id)).toHaveLength(0)
   })
 
@@ -252,30 +252,30 @@ describe('ingestão e conciliação de pedidos atestados', () => {
     expect(await decideByOperator(ctx, id, 'close_benign_retry', '')).toMatchObject({ ok: false })
   })
 
-  it('replay: resposta gravada ao vivo é reproduzida sem rede; entrada diferente = replay_miss com motivo', async () => {
+  it('replay reads the exact recorded input without executing model jobs or writing decisions', async () => {
     const live = new ScriptedModel('m-x', () => '{"action":"escalate","confidence":0.5,"requires_human":true,"rationale":"Not enough context to decide; needs the operator.","evidence_refs":["e1"]}')
     const { ctx, db } = await env()
     ctx.copilot = { model: new RecordingModel(live, db) }
     await load(ctx, [order('o_nnnnnnnnnn', '100.00'), charge('o_nnnnnnnnnn', 'i_nnnnnnnnnn', '100.00'), received('o_nnnnnnnnnn', 'i_nnnnnnnnnn', '60.00')])
     await drain(ctx)
     expect((await db.query(`SELECT count(*)::int AS n FROM copilot_replay`)).rows[0].n).toBe(1)
-    ctx.copilot = { model: new ReplayModel(db, 'm-x') }
-    await load(ctx, [order('o_oooooooooo', '100.00'), charge('o_oooooooooo', 'i_oooooooooo', '100.00'), received('o_oooooooooo', 'i_oooooooooo', '60.00')], 'b2')
-    await drain(ctx)
-    const ex = (await exceptionsOf(db, 'amount_mismatch'))
-    expect(ex[0].copilot_state).toBe('model_done')
-    // a segunda tem fatos diferentes (outro pedido), logo não há gravação: erro final com motivo, sem inventar
-    expect(ex[1]).toMatchObject({ status: 'awaiting_human', copilot_state: 'model_error' })
-    expect(ex[1].last_error.reason).toContain('replay_miss')
+    const replay = new ReplayModel(db, 'm-x')
+    ctx.copilot = { model: replay }
+    expect(JSON.parse((await replay.complete(live.calls[0]!)).text).action).toBe('escalate')
+    await expect(replay.complete({ system: 'different', user: 'different' })).rejects.toMatchObject({ code: 'replay_miss' })
+    const before = (await db.query('SELECT * FROM exceptions ORDER BY id')).rows
+    expect(await judgeWithModel(ctx, before[0].id, 0)).toBe('done')
+    expect((await db.query('SELECT * FROM exceptions ORDER BY id')).rows).toEqual(before)
+    expect(live.calls).toHaveLength(1)
   })
 })
 
 describe('validação do veredito e política', () => {
   const ev = [{ id: 'e1', fact: 'a' }, { id: 'e2', fact: 'b' }]
   it('ação fora da lista, confiança fora de [0,1], referência desconhecida', () => {
-    expect(validateVerdict('amount_mismatch', { action: 'close_benign_retry', confidence: 0.9, rationale: 'xxxxxxxxxx', evidence_refs: ['e1'] }, ev)).toMatchObject({ ok: false, reason: 'action_not_allowed:close_benign_retry' })
+    expect(validateVerdict('amount_mismatch', { action: 'close_benign_retry', confidence: 0.9, rationale: 'xxxxxxxxxx', evidence_refs: ['e1'] }, ev)).toMatchObject({ ok: false, reason: 'action_not_allowed' })
     expect(validateVerdict('amount_mismatch', { action: 'escalate', confidence: 1.2, rationale: 'xxxxxxxxxx', evidence_refs: ['e1'] }, ev)).toMatchObject({ ok: false, reason: 'confidence_out_of_range' })
-    expect(validateVerdict('amount_mismatch', { action: 'escalate', confidence: 0.2, rationale: 'xxxxxxxxxx', evidence_refs: ['e9'] }, ev)).toMatchObject({ ok: false, reason: 'evidence_ref_unknown:e9' })
+    expect(validateVerdict('amount_mismatch', { action: 'escalate', confidence: 0.2, rationale: 'xxxxxxxxxx', evidence_refs: ['e9'] }, ev)).toMatchObject({ ok: false, reason: 'evidence_ref_unknown' })
     const ok = validateVerdict('amount_mismatch', { action: 'refund_partial', confidence: '0.95', requires_human: false, rationale: 'the model says so, confidently', evidence_refs: ['e1', 'e1'] }, ev)
     expect(ok).toMatchObject({ ok: true, verdict: { action: 'refund_partial', confidence: 0.95, requires_human: true, evidence_refs: ['e1'] } }) // irreversível: humano sempre
   })

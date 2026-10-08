@@ -48,7 +48,7 @@ export function validateVerdict(kind: ExceptionKind, raw: unknown, evidence: Evi
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ok: false, reason: 'verdict_not_object' }
   const v = raw as Record<string, unknown>
   const allowed = ACTIONS[kind]
-  if (typeof v.action !== 'string' || !allowed.includes(v.action)) return { ok: false, reason: `action_not_allowed:${String(v.action)}` }
+  if (typeof v.action !== 'string' || !allowed.includes(v.action)) return { ok: false, reason: 'action_not_allowed' }
   const conf = typeof v.confidence === 'number' ? v.confidence : (typeof v.confidence === 'string' && /^\d*\.?\d+$/.test(v.confidence) ? Number(v.confidence) : NaN)
   if (!Number.isFinite(conf) || conf < 0 || conf > 1) return { ok: false, reason: 'confidence_out_of_range' }
   if (typeof v.rationale !== 'string' || v.rationale.trim().length < 8) return { ok: false, reason: 'rationale_missing' }
@@ -57,7 +57,7 @@ export function validateVerdict(kind: ExceptionKind, raw: unknown, evidence: Evi
   if (!refs || refs.some(r => typeof r !== 'string')) return { ok: false, reason: 'evidence_refs_missing' }
   const known = new Set(evidence.map(e => e.id))
   const bad = (refs as string[]).filter(r => !known.has(r))
-  if (bad.length) return { ok: false, reason: `evidence_ref_unknown:${bad.join(',')}` }
+  if (bad.length) return { ok: false, reason: 'evidence_ref_unknown' }
   if (refs.length === 0) return { ok: false, reason: 'evidence_refs_empty' }
   // Guarda: ação irreversível nunca dispensa humano, diga o modelo o que disser.
   const requiresHuman = !REVERSIBLE.has(v.action) || v.requires_human === true

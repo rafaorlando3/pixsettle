@@ -4,6 +4,8 @@ import type { ChainGateway } from './chain/gateway.js'
 import type { CopilotModel } from './copilot/model.js'
 
 export type Config = {
+  /** Public pilot/replay is read-only; simulated demo remains available. */
+  publicReplayReadOnly?: boolean
   /** Cotação simulada: unidades do token (6 casas) por centavo = rateNum / rateDen. */
   simRateNum: bigint
   simRateDen: bigint

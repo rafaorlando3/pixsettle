@@ -6,8 +6,9 @@ import { verifySignature } from './guard.js'
 import { ingestBatch, processPending, BatchIdReused } from './ingest.js'
 import { decideByOperator } from '../copilot/judge.js'
 import { ACTIONS, ACTION_LABEL, type ExceptionKind } from '../copilot/verdict.js'
+import { publicException, publicVerdict, publicTimeline } from './public.js'
 
-export type PilotOptions = { hmacSecret: string; operatorToken: string; sourceId?: string }
+export type PilotOptions = { hmacSecret: string; operatorToken: string; sourceId?: string; v1Disabled?: boolean; readOnly?: boolean }
 export const BATCH_CONTENT_TYPE = 'application/x-pixsettle-batch+json'
 const err = (reply: any, status: number, code: string, message: string, details: Record<string, unknown> = {}) => reply.code(status).send({ error: { code, message, details } })
 
@@ -16,6 +17,7 @@ export function registerPilot(app: FastifyInstance, ctx: Ctx, opts: PilotOptions
   app.addContentTypeParser(BATCH_CONTENT_TYPE, { parseAs: 'string', bodyLimit: 4 * 1024 * 1024 }, (_req, body, done) => done(null, body))
 
   app.post('/pilot/v1/events', async (req, reply) => {
+    if (opts.v1Disabled || opts.readOnly || ctx.copilot?.model?.mode === 'replay') return err(reply, 409, 'pilot_v1_disabled', 'pilot v1 ingestion is disabled')
     if (req.headers['content-type'] !== BATCH_CONTENT_TYPE) return err(reply, 415, 'content_type', `envie ${BATCH_CONTENT_TYPE}`)
     const raw = String(req.body ?? '')
     const sig = verifySignature(opts.hmacSecret, raw, req.headers['x-pilot-signature'] as string | undefined)
@@ -37,6 +39,7 @@ export function registerPilot(app: FastifyInstance, ctx: Ctx, opts: PilotOptions
 
   // Reprocessa pendentes (adiados por dependência, erros): o operador chama depois de um lote fora de ordem.
   app.post('/pilot/v1/process', async (req, reply) => {
+    if (opts.v1Disabled || opts.readOnly || ctx.copilot?.model?.mode === 'replay') return err(reply, 409, 'pilot_v1_disabled', 'pilot v1 processing is disabled')
     if (!bearerOk(req, opts.operatorToken)) return err(reply, 401, 'unauthorized', 'token do operador inválido')
     const source = String((req.query as any)?.source ?? opts.sourceId ?? '')
     return processPending(ctx, source)
@@ -58,7 +61,7 @@ export function registerPilot(app: FastifyInstance, ctx: Ctx, opts: PilotOptions
         WHERE ($1::text IS NULL OR e.status=$1) AND ($2::text IS NULL OR e.kind=$2) AND ($3::text IS NULL OR ps.code=$3)
         ORDER BY CASE e.status WHEN 'awaiting_human' THEN 0 WHEN 'open' THEN 1 WHEN 'auto_applied' THEN 2 ELSE 3 END, e.detected_at DESC LIMIT $4`,
       [status, kind, store, limit])).rows
-    return { exceptions: rows.map(r => ({ ...r, verdict: r.verdict ? { ...r.verdict, action_label: ACTION_LABEL[r.verdict.action] ?? r.verdict.action } : null })) }
+    return { exceptions: rows.map(publicException) }
   })
 
   app.get('/pilot/api/exceptions/:id', async (req, reply) => {
@@ -71,10 +74,11 @@ export function registerPilot(app: FastifyInstance, ctx: Ctx, opts: PilotOptions
     const timeline = (await ctx.db.query(`SELECT from_state, to_state, reason, source, created_at FROM state_transitions WHERE entity='exception' AND entity_id=$1 ORDER BY id`, [id])).rows
     const receipts = e.order_id ? (await ctx.db.query(`SELECT id, receipt_type, created_at FROM receipts WHERE order_id=$1 ORDER BY created_at`, [e.order_id])).rows : []
     const { merchant_id: _m, fingerprint: _f, ...pub } = e
-    return { ...pub, allowed_actions: ACTIONS[e.kind as ExceptionKind].map(a => ({ action: a, label: ACTION_LABEL[a] ?? a })), verdicts: verdicts.map(v => ({ ...v, action_label: ACTION_LABEL[v.action] ?? v.action })), timeline, receipts }
+    return { ...publicException(pub), allowed_actions: ACTIONS[e.kind as ExceptionKind].map(a => ({ action: a, label: ACTION_LABEL[a] ?? a })), verdicts: verdicts.map(publicVerdict), timeline: timeline.map(publicTimeline), receipts }
   })
 
   app.post('/pilot/api/exceptions/:id/decide', async (req, reply) => {
+    if (opts.readOnly || ctx.copilot?.model?.mode === 'replay') return err(reply, 409, 'replay_readonly', 'public replay permits read access only')
     if (!bearerOk(req, opts.operatorToken)) return err(reply, 401, 'unauthorized', 'token do operador inválido')
     const b = (req.body ?? {}) as any
     const action = String(b.action ?? '')

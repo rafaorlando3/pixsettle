@@ -10,7 +10,7 @@
 // Limite conhecido: o wake() é do mesmo processo. Com mais de um processo gravando na outbox, configure
 // maxIdleMs (WORKER_MAX_IDLE_MS) para um teto de sono; a demo roda um processo só.
 import type { Ctx } from './context.js'
-import { runOnce } from './outbox.js'
+import { runOnce, eligibleJobWhere } from './outbox.js'
 import { sweep, sweepNeeded, defaultSweep, type SweepConfig } from './flows/sweep.js'
 
 export type WorkerState = 'starting' | 'busy' | 'waiting' | 'idle' | 'error' | 'stopped'
@@ -68,8 +68,8 @@ export function startWorker(ctx: Ctx, opts: WorkerOptions): Worker {
   async function nextDueMs(): Promise<number | null> {
     const r = (await ctx.db.query(
       `SELECT EXTRACT(EPOCH FROM (least(
-                (SELECT min(available_at) FROM outbox WHERE done_at IS NULL AND (locked_until IS NULL OR locked_until < now())),
-                (SELECT min(locked_until) FROM outbox WHERE done_at IS NULL AND locked_until >= now())
+                (SELECT min(available_at) FROM outbox WHERE done_at IS NULL AND (locked_until IS NULL OR locked_until < now()) AND ${eligibleJobWhere(ctx)}),
+                (SELECT min(locked_until) FROM outbox WHERE done_at IS NULL AND locked_until >= now() AND ${eligibleJobWhere(ctx)})
               ) - now())) * 1000 AS ms`)).rows[0]
     return r.ms === null ? null : Math.max(0, Number(r.ms))
   }

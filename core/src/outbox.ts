@@ -42,6 +42,19 @@ export const handlers: Record<string, Handler> = {
   },
 }
 
+/** Same eligibility filter is used by the worker sleep calculation, so blocked jobs do not spin. */
+export function eligibleJobWhere(ctx: Ctx): string {
+  if (!ctx.cfg.publicReplayReadOnly && ctx.copilot?.model?.mode !== 'replay') return 'TRUE'
+  return `topic <> 'copilot_judge'
+    AND NOT EXISTS (SELECT 1 FROM orders ao WHERE ao.provider_env='attested' AND (
+      ao.id=outbox.entity_id
+      OR EXISTS (SELECT 1 FROM pix_charges ac WHERE ac.order_id=ao.id AND ac.id=outbox.entity_id)
+      OR EXISTS (SELECT 1 FROM settlements ast WHERE ast.order_id=ao.id AND ast.id=outbox.entity_id)
+      OR EXISTS (SELECT 1 FROM settlement_attempts aa JOIN settlements ast ON ast.id=aa.settlement_id WHERE ast.order_id=ao.id AND aa.id=outbox.entity_id)
+      OR EXISTS (SELECT 1 FROM refund_cases ar WHERE ar.order_id=ao.id AND ar.id=outbox.entity_id)))
+    AND NOT EXISTS (SELECT 1 FROM provider_events ap WHERE ap.id::text=outbox.entity_id AND ap.provider='attested')`
+}
+
 /** Executa um job. Retorna o tópico executado ou null se a fila estava vazia. */
 export async function runOnce(ctx: Ctx, topics?: string[]): Promise<string | null> {
   const job = await withTx(ctx.db, async tx => {
@@ -49,6 +62,7 @@ export async function runOnce(ctx: Ctx, topics?: string[]): Promise<string | nul
       `SELECT id, topic, entity_id, payload, attempts FROM outbox
        WHERE done_at IS NULL AND available_at <= now() AND (locked_until IS NULL OR locked_until < now())
          AND ($1::text[] IS NULL OR topic = ANY($1))
+         AND ${eligibleJobWhere(ctx)}
        ORDER BY id FOR UPDATE SKIP LOCKED LIMIT 1`, [topics ?? null])
     const j = r.rows[0]
     if (!j) return null
