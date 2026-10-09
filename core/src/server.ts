@@ -17,7 +17,7 @@ import { copilotFromEnv } from './copilot/model.js'
 import { quoteSourceFromEnv } from './affiliates/quotes.js'
 import { registerAffiliates } from './affiliates/routes.js'
 import { configureAffiliateJournal } from './affiliates/journal.js'
-import { resumeAffiliateSettlements } from './affiliates/service.js'
+import { resumeAffiliateSettlements, settleOn } from './affiliates/service.js'
 import { registerCommissionBatches, streamMap } from './affiliates/batches/routes.js'
 import { registerShadow } from './pilot-shadow/routes.js'
 
@@ -67,8 +67,9 @@ export async function startCore(env: CoreEnv = process.env) {
       lockTtlMs: Number(env.AFFILIATE_LOCK_TTL_MS ?? 120_000), streams: streamMap(env),
     } : undefined,
   }
-  configureAffiliateJournal({ settle: ctx.affiliates?.settle === true }) // módulo desligado ou AFFILIATE_SETTLE != 1: nenhum job existente assina ou transmite comissão
-  if (ctx.affiliates?.settle) { const n = await resumeAffiliateSettlements(ctx); if (n) console.log(`comissões em dólar: ${n} liquidação(ões) retomada(s) com AFFILIATE_SETTLE=1`) }
+  // Uma só autorização para liquidar comissões (rotas, apply, resume, advance, sign e broadcast): AFFILIATE_SETTLE=1 E escritas aceitas.
+  configureAffiliateJournal({ settle: ctx.affiliates?.settle === true, writes: ctx.affiliates?.writes !== false })
+  if (settleOn(ctx.affiliates)) { const n = await resumeAffiliateSettlements(ctx); if (n) console.log(`comissões em dólar: ${n} liquidação(ões) retomada(s) com AFFILIATE_SETTLE=1`) }
   if (!ctx.copilot?.model) console.log(`copiloto: modelo desligado (${ctx.copilot?.offReason})`)
   else console.log(`copiloto: ${ctx.copilot.model.name} em modo ${ctx.copilot.model.mode}`)
   if (ctx.cfg.publicReplayReadOnly && !(provider instanceof SimulatedPixProvider)) throw new Error('public replay requires the simulated Pix provider')
@@ -78,7 +79,7 @@ export async function startCore(env: CoreEnv = process.env) {
   // Piloto: ingestão só com PILOT_HMAC_SECRET; sem ele a rota recusa tudo com motivo (leitura do painel continua).
   registerPilot(app, ctx, { hmacSecret: env.PILOT_HMAC_SECRET ?? '', operatorToken: env.PILOT_OPERATOR_TOKEN ?? '', sourceId: env.PILOT_SOURCE ?? 'odin', v1Disabled: env.PILOT_V1_DISABLED === '1', readOnly: ctx.cfg.publicReplayReadOnly, shadowPublic })
   registerShadow(app, db, env)
-  if (ctx.affiliates) { registerAffiliates(app, ctx, { publicMerchantId: env.AFFILIATE_PUBLIC_MERCHANT_ID ?? null }); registerCommissionBatches(app, ctx, env); console.log(`comissões em dólar: ligadas (cotação ${ctx.affiliates.quotes.name}, liquidar ${ctx.affiliates.settle ? 'sim' : 'não'}, escritas ${ctx.affiliates.writes === false ? 'recusadas (réplica pública)' : 'aceitas'}, lojista público ${env.AFFILIATE_PUBLIC_MERCHANT_ID ? 'definido' : 'ausente (leitura pública desligada)'}, correntes mapeadas ${Object.keys(ctx.affiliates.streams ?? {}).length})`) }
+  if (ctx.affiliates) { registerAffiliates(app, ctx, { publicMerchantId: env.AFFILIATE_PUBLIC_MERCHANT_ID ?? null }); registerCommissionBatches(app, ctx, env); console.log(`comissões em dólar: ligadas (cotação ${ctx.affiliates.quotes.name}, liquidar ${settleOn(ctx.affiliates) ? 'sim' : 'não'}, escritas ${ctx.affiliates.writes === false ? 'recusadas (réplica pública)' : 'aceitas'}, lojista público ${env.AFFILIATE_PUBLIC_MERCHANT_ID ? 'definido' : 'ausente (leitura pública desligada)'}, correntes mapeadas ${Object.keys(ctx.affiliates.streams ?? {}).length})`) }
 
   // Worker da outbox com estado ocioso de zero consultas (src/worker.ts). Erro de um job fica gravado
   // no próprio job (last_error); erro do banco vira espera crescente com motivo, nunca "fila vazia".

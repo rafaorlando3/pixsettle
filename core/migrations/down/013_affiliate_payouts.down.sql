@@ -1,4 +1,6 @@
 -- Refuses to run when any economic state exists: a down migration never deletes money.
+-- Exclusive locks first (the rollback runs in one transaction): no writer can add state between the check and the DROP.
+LOCK TABLE settlements, affiliate_commissions, affiliate_withdrawals, affiliate_ledger, affiliate_commission_revisions, affiliate_commission_batches, affiliate_commission_streams IN ACCESS EXCLUSIVE MODE;
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM settlements WHERE kind = 'affiliate_payout') THEN
@@ -12,6 +14,7 @@ BEGIN
   END IF;
 END;
 $$;
+DROP TABLE IF EXISTS affiliate_commission_rejections;
 DROP TABLE IF EXISTS affiliate_commission_applications;
 DROP TABLE IF EXISTS affiliate_commission_revisions;
 DROP TABLE IF EXISTS affiliate_commission_batches;

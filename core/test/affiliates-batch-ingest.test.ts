@@ -75,6 +75,17 @@ describe('ingestão por lote assinado alimenta o domínio', () => {
     expect((await e.applications()).at(-1)!.result).toBe('skipped_amount_changed')
     expect((await e.domain())[0]).toMatchObject({ brl: '1234', status: 'pending' })
     expect((await e.db.query(`SELECT count(*)::int AS n FROM state_transitions WHERE entity='affiliate_exception' AND to_state='affiliate_amount_changed'`)).rows[0].n).toBe(1)
+    // afiliado, pedido ou data trocados com o mesmo id e valor: não é a mesma comissão; nada liberado sobre o domínio antigo
+    const other = 'aff_' + 'c'.repeat(32)
+    await e.ingest(batch([ev(1, { affiliate_id: other, status: 'active', released_at: '2026-10-06T00:00:00Z', source_updated_at: '2026-10-06T00:00:00Z' })], { previous_batch_sha256: (await e.db.query(`SELECT last_batch_sha256 FROM affiliate_commission_streams`)).rows[0].last_batch_sha256 }))
+    expect(await e.apply()).toEqual({ applied: 1, failed: 0, retry: false })
+    expect((await e.applications()).at(-1)!.result).toBe('skipped_identity_changed')
+    expect((await e.domain())[0]).toMatchObject({ status: 'pending' }) // continua pendente, do afiliado original
+    expect((await e.db.query(`SELECT reason FROM state_transitions WHERE entity='affiliate_exception' AND to_state='affiliate_identity_changed'`)).rows[0].reason).toContain('affiliate_id')
+    await e.ingest(batch([ev(1, { order_id: 'ord_ffffffffffffffff', created_at: '2026-09-30T00:00:00Z', status: 'active', released_at: '2026-10-07T00:00:00Z', source_updated_at: '2026-10-07T00:00:00Z' })], { previous_batch_sha256: (await e.db.query(`SELECT last_batch_sha256 FROM affiliate_commission_streams`)).rows[0].last_batch_sha256 }))
+    expect(await e.apply()).toEqual({ applied: 1, failed: 0, retry: false })
+    expect((await e.db.query(`SELECT reason FROM state_transitions WHERE entity='affiliate_exception' AND to_state='affiliate_identity_changed' ORDER BY id DESC LIMIT 1`)).rows[0].reason).toMatch(/order_id,created_at/)
+    expect((await e.domain())[0]).toMatchObject({ status: 'pending' })
     // cotação fora do ar: nada aplicado, retry; depois volta
     const u = await env()
     await u.ingest(batch([ev(7)]))
@@ -116,6 +127,14 @@ describe('ingestão por lote assinado alimenta o domínio', () => {
     expect(gap.statusCode).toBe(409); expect(gap.json().error).toMatchObject({ code: 'commission_chain_gap' })
     const bad = await post(raw, { 'x-pixsettle-key-id': 'k_other' })
     expect(bad.statusCode).toBe(401); expect(bad.json().error.code).toBe('commission_key_invalid')
+    // toda recusa fica gravada (só inserção): token inválido, cadeia, chave
+    const rej = (await e.db.query(`SELECT origin, key_id, code, http, bytes FROM affiliate_commission_rejections ORDER BY id`)).rows
+    expect(rej).toEqual([
+      { origin: null, key_id: 'k_comtest', code: 'commission_unauthorized', http: 401, bytes: raw.length },
+      { origin: 'src_test1', key_id: 'k_comtest', code: 'commission_chain_gap', http: 409, bytes: batch([ev(2)]).length },
+      { origin: 'src_test1', key_id: 'k_other', code: 'commission_key_invalid', http: 401, bytes: raw.length },
+    ])
+    await expect(e.db.query(`DELETE FROM affiliate_commission_rejections`)).rejects.toThrow(/affiliate_append_only/)
     await expect(e.db.query(`UPDATE affiliate_commission_revisions SET amount_minor=1`)).rejects.toThrow(/affiliate_append_only/)
     await expect(e.db.query(`DELETE FROM affiliate_commission_batches`)).rejects.toThrow(/affiliate_append_only/)
     // sem chaves: 503 com motivo; módulo desligado: 404
@@ -132,6 +151,32 @@ describe('ingestão por lote assinado alimenta o domínio', () => {
     expect((await e.db.query(`SELECT to_state FROM state_transitions WHERE entity='affiliate_stream' ORDER BY id DESC LIMIT 1`)).rows[0].to_state).toBe('writes_off')
     e.ctx.affiliates!.writes = true
     expect(await e.apply()).toEqual({ applied: 1, failed: 0, retry: false })
+  })
+
+  it('lote maior que o bloco é drenado em ordem pela outbox, sem perder revisão; falha de domínio na fronteira fica gravada e não trava', async () => {
+    const e = await env()
+    e.ctx.affiliates!.applyBlock = 2
+    await e.ingest(batch([ev(1), ev(2), ev(3), ev(4), ev(5)]))
+    expect(await e.apply()).toEqual({ applied: 2, failed: 0, retry: false, more: true })
+    expect((await e.applications()).length).toBe(2)
+    await drain(e.ctx, 50, [APPLY_TOPIC]) // o job reagenda a si mesmo (retryInMs 0) até drenar
+    expect((await e.applications()).map(a => a.src).sort()).toEqual([1, 2, 3, 4, 5].map(n => 'com_' + n.toString(16).padStart(32, '0')))
+    // ordem da aplicação = ordem da corrente (source_updated_at, received_at, event_id), em blocos
+    const evOrder = (await e.db.query(`SELECT commission_id FROM affiliate_commission_revisions ORDER BY source_updated_at, received_at, event_id`)).rows.map(r => r.commission_id)
+    const appOrder = (await e.db.query(`SELECT commission_id FROM affiliate_commission_applications ORDER BY applied_at, commission_id`)).rows.map(r => r.commission_id)
+    expect(appOrder.slice(0, 2).sort()).toEqual(evOrder.slice(0, 2).sort()); expect(appOrder.slice(2, 4).sort()).toEqual(evOrder.slice(2, 4).sort())
+    expect((await e.db.query(`SELECT done_at FROM outbox WHERE topic=$1`, [APPLY_TOPIC])).rows[0].done_at).not.toBeNull()
+    expect(await e.apply()).toEqual({ applied: 0, failed: 0, retry: false })
+    // fronteira exata: 2 revisões com bloco 2 não deixam job pendurado
+    const f = await env(); f.ctx.affiliates!.applyBlock = 2
+    await f.ingest(batch([ev(1), ev(2)]))
+    expect(await f.apply()).toEqual({ applied: 2, failed: 0, retry: false })
+    // falha de domínio na fronteira (valor zero: invalid_amount) fica gravada como failed e as seguintes continuam
+    const g = await env(); g.ctx.affiliates!.applyBlock = 2
+    await g.ingest(batch([ev(1), ev(2, { amount_minor: 0 }), ev(3)]))
+    const first = await g.apply(); expect(first.more).toBe(true); expect(first.applied + first.failed).toBe(2)
+    await drain(g.ctx, 50, [APPLY_TOPIC])
+    expect((await g.applications()).map(a => a.result).sort()).toEqual(['created', 'created', 'failed:invalid_amount'])
   })
 
   it('anulação recusada pelo domínio (pagamento em voo ou saque pedido) fica aplicada como "pulada", com exceção para humano, sem travar a corrente', async () => {

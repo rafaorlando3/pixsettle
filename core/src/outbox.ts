@@ -29,6 +29,7 @@ export const handlers: Record<string, Handler> = {
     const [origin, store] = String(j.entity_id).split('|')
     const r = await applyCommissionRevisions(ctx, origin ?? '', store ?? '')
     if (r.retry) return { retryInMs: Math.min(300_000, 5_000 * 2 ** Math.min(tryNo, 6)), payload: { try: tryNo + 1 } }
+    if (r.more) return { retryInMs: 0, payload: { try: 0 } } // bloco cheio: continua já, na ordem, até drenar
   },
   request_refund: async (ctx, j) => { await executeRefund(ctx, j.entity_id) },
   observe_charge: (ctx, j) => observeCharge(ctx, j.entity_id),

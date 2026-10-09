@@ -1,6 +1,6 @@
 # Affiliate payouts in digital dollars (phase 2 contract)
 
-Status: contract v2, 2026-10-09 (v1 plus the Codex review of task 347, findings P1-1 to P2-13, all applied; see section 10).
+Status: contract v3, 2026-10-09 (v2 plus the second Codex review, X-1030, seven cases, all applied; see section 11).
 Module `core/src/affiliates/`, feature flag `AFFILIATE_PAYOUTS` (off by default).
 Scope of this phase: real commission events from the merchant's affiliate program enter PixSettle through the
 API, each commission is fixed in digital dollars at the moment the Pix is received, released after the
@@ -76,10 +76,17 @@ digital dollars on the Tempo network.
   reported `failed` the balance returns and the void goes through. Each refusal records one exception per reason code.
 - Blockers for an affiliate payout settlement: `affiliate_settle_off` (settlement switch off), settlement hold, commission
   voided or failed, withdrawal failed, orphan settlement, treasury paused. Order and refund blockers do not apply.
-- Settlement switch: `AFFILIATE_SETTLE=1` is the only value that signs and broadcasts affiliate payouts. Absent or any
-  other value: releases record the intent with `hold_reason = affiliate_settle_off` and jobs already queued are blocked
-  at the journal with the same reason (a reserved attempt is suspended, R2). When the switch is turned on, the server
-  resumes the stopped settlements (`resumeAffiliateSettlements`: hold cleared, commission `settling`, job requeued).
+- Settlement authorization is one predicate for every path (routes, batch apply, resume, advance, sign, broadcast):
+  `AFFILIATE_SETTLE=1` AND writes accepted (`PUBLIC_REPLAY_READ_ONLY` absent, or `AFFILIATE_ALLOW_WRITES_ON_PUBLIC_REPLAY=1`).
+  Otherwise releases record the intent with `hold_reason = affiliate_settle_off`, jobs already queued are blocked at the
+  journal with the same reason (a reserved or signed attempt is suspended, R2: bytes and nonce preserved, nothing sent)
+  and nothing is resumed. When the authorization becomes true, the server resumes the stopped settlements
+  (`resumeAffiliateSettlements`: hold cleared, commission `settling`, job requeued).
+- Void and the send journal are serialized by the journal's own lock order (settlement, then attempt; the commission row
+  after the settlement): a void that arrives while the worker is recording `broadcast_pending` waits for the settlement
+  lock and, once it has it, re-reads the attempts and refuses with `payout_in_flight`; a void that arrives first sets
+  the hold, and the worker's pre-broadcast check suspends the signed attempt. A refused void changes nothing except the
+  durable exception row.
 
 ## 5. Withdrawals
 
@@ -91,6 +98,9 @@ digital dollars on the Tempo network.
   end-to-end id, or `failed` with a reason, which credits the balance back. Wallet kind: a settlement with memo
   `wdr_<ULID>` to the registered wallet; fee 0 by default (Tempo transfers cost under a cent).
 - Every amount shown is the amount promised; the receipt repeats it.
+- The signed receipt never carries a destination address: `settlement.recipient_sha256` (sha256 of the lowercase
+  address) lets the merchant prove the destination without publishing it; the transaction hash is the public proof.
+  The public receipt route returns the signed envelope exactly as issued, nothing removed.
 - Evidence is named, never implied: a Pix `paid` is the merchant's declaration (`evidence: declared_by_merchant`; the
   end-to-end id is kept for the merchant, not published); a wallet `settled` is observed on chain (`chain_confirmed`).
   PixSettle does not verify the Pix at the provider in this phase.
@@ -105,7 +115,7 @@ digital dollars on the Tempo network.
 - `PUT /api/v1/affiliates/beneficiaries/:ref/wallet` body `{ address }` → registers the own wallet.
 - `POST /api/v1/affiliates/beneficiaries/:ref/withdrawals/simulate` body `{ kind, usd_units }` → lock.
 - `POST /api/v1/affiliates/withdrawals` body `{ lock_id }` → withdrawal; `POST /api/v1/affiliates/withdrawals/:id/paid|failed`.
-- `GET /api/v1/affiliates/summary` (merchant aggregate: counts, sums, quote modes, withdrawals with evidence, exceptions for a human, settlement switch) and `GET /api/v1/affiliates/receipts/:id` (the merchant's own receipts).
+- `GET /api/v1/affiliates/summary` (merchant aggregate: counts, sums, quote modes, withdrawals with evidence, exceptions for a human, settlement switch) and `GET /api/v1/affiliates/receipts/:id` (the merchant's own receipts, resolved by the real link receipt → commission or withdrawal → beneficiary → merchant; a beneficiary reference is unique only inside a merchant and is never used as a scope).
 - Public, read only, and only when `AFFILIATE_PUBLIC_MERCHANT_ID` names the public merchant (without it none of these routes exists): `GET /pilot/api/affiliates` (that merchant's aggregate; exceptions counted in the same scope), `GET /pilot/api/affiliates/:ref` (one pseudonymous beneficiary of that merchant) and `GET /pilot/api/affiliates/receipts/:id` (that merchant's receipts only). Public projections are allow-lists: commissions carry id, status, custody, amounts, quote and payout `{status, hold_reason, memo, tx_hash, receipt_id}`; withdrawals carry kind, status, evidence and amounts. Never the payout destination, the Pix end-to-end id, the merchant's event or order references, or the beneficiary's wallet address (only the mode).
 - Read-only replica: when the installation runs `PUBLIC_REPLAY_READ_ONLY=1`, every affiliate write (merchant API and producer batches) is refused with 403 `affiliates_read_only` / `commission_read_only` unless `AFFILIATE_ALLOW_WRITES_ON_PUBLIC_REPLAY=1` says explicitly that affiliate writes enter there; queued apply jobs wait with the reason `writes_off`.
 - Errors follow the core shape `{ error: { code, message, details } }`; every refusal has a stable code and a plain-language message.
@@ -141,11 +151,16 @@ the stream is busy, 503 when the keys are not configured. Phase 1 stores revisio
 `apply_commission_revisions`) applies each new revision to the domain in order: first observation `pending` or
 `review` creates the commission (fixing the dollars at that moment), `active` releases it, `voided` or `lost` voids
 it with the producer's `reason_code`; an observation that is already voided on first sight creates nothing; an
-amount change after the dollars were fixed is recorded as `affiliate_amount_changed` for a human and leaves the
-commission untouched. Each revision gets exactly one application row (`created`, `released`, `voided`, `unchanged`,
-`skipped_*`, `failed:<code>`); a quote outage or a stream not yet mapped to a merchant (`AFFILIATE_STREAMS_JSON`,
-`{"src_odin|store_1": "mer_..."}`) is retried with the reason recorded, never silently dropped. Beneficiary ids
-`aff_...` are affiliates and `par_...` are partners paid by percentage.
+revision that changes any field the commission fixed when it was born (amount, affiliate, kind, order reference or
+creation date) is recorded as `affiliate_amount_changed` or `affiliate_identity_changed` for a human and leaves the
+commission untouched (nothing is released or voided on the old domain). Each revision gets exactly one application row
+(`created`, `released`, `voided`, `unchanged`, `skipped_*`, `failed:<code>`); a quote outage or a stream not yet mapped
+to a merchant (`AFFILIATE_STREAMS_JSON`, `{"src_odin|store_1": "mer_..."}`) is retried with the reason recorded, never
+silently dropped. Revisions are applied in blocks of 500 per job and the job reschedules itself immediately while
+revisions remain, so a batch of up to 5,000 is drained in order. Every refused batch (token, key, signature, chain gap,
+framing, read-only replica, internal error) is recorded append-only in `affiliate_commission_rejections` with origin
+and key id when identifiable, the code, the technical detail, the HTTP status and the sha256 and size of the body
+received. Beneficiary ids `aff_...` are affiliates and `par_...` are partners paid by percentage.
 
 ## 10. Review of task 347 (Codex, 2026-10-09) and what changed
 
@@ -165,3 +180,23 @@ Canonical interfaces, as agreed with the producer: the signed batch (section 9) 
 exports the pilot; the merchant-key API (section 6) is the path for the merchant hub and any other client. Both end in the
 same domain functions. The 23 `commission.observed` events already collected privately will enter as `backfill` and be
 labelled so; a dedicated `commission` key (`AFFILIATE_KEYS_JSON`) is required, never the pilot HMAC.
+
+## 11. Second review (Codex, X-1030, 2026-10-09) and what changed
+
+1. Void vs. broadcast race: void now takes the settlement lock in the journal's order (beneficiary advisory lock, settlement,
+   commission) before reading attempts; `payout_in_flight` once `broadcast_pending` is committed. Tested with a
+   transaction holding the settlement lock while writing `broadcast_pending`: the void waits and then refuses.
+2. Read-only replica with `AFFILIATE_SETTLE=1`: one authorization predicate (`settle && writes`) feeds the journal, resume,
+   release, withdrawal and retry. Tested with an existing signed attempt: nothing mined, attempt suspended, resume 0.
+3. Receipt scope: resolved through receipt → commission/withdrawal → beneficiary → merchant. Tested with two merchants
+   sharing a reference: the other merchant's receipt is 404 on both the merchant route and the public route.
+4. Receipt destination: the signed payload carries `recipient_sha256` instead of `to`; the public route returns the
+   envelope as signed. Tested for an own-wallet commission and a wallet withdrawal (no address anywhere, signature verifies).
+5. Batch identity: amount, affiliate, kind, order reference and creation date compared before any effect;
+   `skipped_identity_changed` with the changed fields recorded.
+6. Batches above 500 revisions: blocks with immediate rescheduling; tested with block 2 on 5 and 3 revisions, including
+   a domain failure at the boundary.
+7. Refusals before effects: a refused void leaves settlement, attempts, ledger and commission untouched (asserted).
+Also added: durable batch rejections (`affiliate_commission_rejections`), exclusive locks at the start of the down
+migration, `retry-payout` for a failed settlement (section 6) and the producer's public vectors reproduced in the test
+suite. Core suite: 279 tests.

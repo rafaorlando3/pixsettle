@@ -1,5 +1,6 @@
 // Recibo verificável de um pagamento de comissão ou de um saque para carteira (fase 2, contrato 7 do núcleo).
 import { ulid } from 'ulid'
+import { createHash } from 'node:crypto'
 import { withTx } from '../db.js'
 import type { Ctx } from '../context.js'
 import { verifyEnvelope, type ReceiptEnvelope } from '../../../settlement/src/receipt.js'
@@ -26,7 +27,9 @@ export async function issueAffiliateReceipt(ctx: Ctx, settlementId: string) {
     order: { ref: null, commission_id: d.c_id ?? null, withdrawal_id: d.w_id ?? null }, // sem pedido do núcleo e sem referência do lojista: o recibo é público; com_/wdr_ é o vínculo
     beneficiary: { ref: d.b_ref, kind: d.b_kind },
     issued_at: ctx.now().toISOString(),
-    settlement: { id: d.id, to: d.recipient, amount: String(d.amount_units), memo: d.memo, tx_hash: d.tx_hash, block_number: String(obs.blockNumber), block_hash: obs.blockHash, log_index: obs.logIndex, confirmation_observed_at: iso(d.a_upd) },
+    // Sem destino no recibo (ele é público e verificável): o compromisso sha256 do endereço permite ao lojista provar o destino
+    // sem publicá-lo; a transação na cadeia (tx_hash) é a prova pública. Nunca um endereço de afiliado num documento público.
+    settlement: { id: d.id, amount: String(d.amount_units), memo: d.memo, tx_hash: d.tx_hash, block_number: String(obs.blockNumber), block_hash: obs.blockHash, log_index: obs.logIndex, confirmation_observed_at: iso(d.a_upd), recipient_sha256: createHash('sha256').update(String(d.recipient).toLowerCase()).digest('hex') },
     amounts: { usd_units: String(d.amount_units), usd: fmtUsd(BigInt(d.amount_units)), currency: 'USD', scale: 6 },
   }
   if (d.c_id) {

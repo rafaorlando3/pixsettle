@@ -73,8 +73,19 @@ export async function ingestCommissionBatch(db: Db, v: ValidatedBatch, receiptKe
 
 const VOID_REASONS: Record<string, string> = { voided: 'order_voided', lost: 'program_loss' }
 const kindOf = (affiliateId: string): BeneficiaryKind => (affiliateId.startsWith('par_') ? 'partner_percent' : 'affiliate')
+/** Campos que a comissão fixa ao nascer; uma revisão que os troque não é "a mesma comissão". */
+function immutableDiff(prior: any, r: any): string[] {
+  const out: string[] = []
+  if (BigInt(prior.amount_minor) !== BigInt(r.amount_minor)) out.push('amount_minor')
+  if (prior.beneficiary_ref !== r.affiliate_id) out.push('affiliate_id')
+  if (prior.kind !== kindOf(r.affiliate_id)) out.push('kind')
+  if ((prior.order_ref ?? null) !== (r.order_id ?? null)) out.push('order_id')
+  if (new Date(prior.occurred_at).getTime() !== new Date(r.created_at).getTime()) out.push('created_at')
+  return out
+}
 
-export type ApplyOutcome = { applied: number; failed: number; retry: boolean }
+export type ApplyOutcome = { applied: number; failed: number; retry: boolean; /** sobraram revisões além do bloco: reagendar já, sem esperar */ more?: boolean }
+export const APPLY_BLOCK = 500
 
 /**
  * Aplica, em ordem, as revisões ainda não aplicadas da corrente ao domínio. Cada revisão recebe exatamente uma linha
@@ -89,12 +100,15 @@ export async function applyCommissionRevisions(ctx: Ctx, origin: string, store: 
     return { applied: 0, failed: 0, retry: true }
   }
   const merchantId = aff.streams?.[streamEntity(origin, store)]
+  const block = aff.applyBlock ?? APPLY_BLOCK
+  // Um bloco por job; se sobrar, `more` manda o handler reagendar na hora (um lote de 5.000 revisões é drenado em blocos, na ordem).
   const pending = (await ctx.db.query(
     `SELECT r.* FROM affiliate_commission_revisions r
       WHERE r.origin=$1 AND r.store=$2 AND NOT EXISTS (SELECT 1 FROM affiliate_commission_applications a WHERE a.origin=r.origin AND a.store=r.store AND a.revision=r.revision AND a.commission_id=r.commission_id)
-      ORDER BY r.source_updated_at, r.received_at, r.event_id LIMIT 500`, [origin, store])).rows
+      ORDER BY r.source_updated_at, r.received_at, r.event_id LIMIT $3`, [origin, store, block + 1])).rows
   const out: ApplyOutcome = { applied: 0, failed: 0, retry: false }
   if (!pending.length) return out
+  if (pending.length > block) { out.more = true; pending.length = block }
   if (!merchantId) {
     await withTx(ctx.db, tx => recordTransition(tx, 'affiliate_stream', streamEntity(origin, store), null, 'unmapped', 'apply', `${pending.length} revisões esperando AFFILIATE_STREAMS_JSON`))
     return { ...out, retry: true }
@@ -103,11 +117,15 @@ export async function applyCommissionRevisions(ctx: Ctx, origin: string, store: 
     let result: string
     let commissionId: string | null = null
     try {
-      const prior = (await ctx.db.query(`SELECT id, status, amount_minor FROM affiliate_commissions WHERE merchant_id=$1 AND source_event_id=$2`, [merchantId, r.commission_id])).rows[0]
-      if (prior && BigInt(prior.amount_minor) !== BigInt(r.amount_minor)) {
-        // Valor mudou depois de fixado em dólar: a comissão é imutável; fica para uma pessoa.
-        await withTx(ctx.db, tx => recordTransition(tx, 'affiliate_exception', prior.id, prior.status, 'affiliate_amount_changed', 'apply', `${prior.amount_minor} -> ${r.amount_minor} (${r.revision.slice(0, 12)})`))
-        result = 'skipped_amount_changed'; commissionId = prior.id
+      const prior = (await ctx.db.query(
+        `SELECT c.id, c.status, c.amount_minor, c.order_ref, c.occurred_at, b.beneficiary_ref, b.kind FROM affiliate_commissions c JOIN affiliate_beneficiaries b ON b.id=c.beneficiary_id WHERE c.merchant_id=$1 AND c.source_event_id=$2`, [merchantId, r.commission_id])).rows[0]
+      const changed = prior ? immutableDiff(prior, r) : []
+      if (prior && changed.length) {
+        // Campos imutáveis mudaram depois de a comissão nascer (valor, afiliado, pedido, tipo ou data): nada é liberado nem anulado
+        // sobre o domínio antigo; a divergência fica registrada para uma pessoa, campo a campo.
+        const code = changed.length === 1 && changed[0] === 'amount_minor' ? 'affiliate_amount_changed' : 'affiliate_identity_changed'
+        await withTx(ctx.db, tx => recordTransition(tx, 'affiliate_exception', prior.id, prior.status, code, 'apply', `${changed.join(',')} (${r.revision.slice(0, 12)})`))
+        result = code === 'affiliate_amount_changed' ? 'skipped_amount_changed' : 'skipped_identity_changed'; commissionId = prior.id
       } else if (r.status === 'voided' || r.status === 'lost') {
         if (!prior) { result = 'skipped_void_on_first_sight' } // nunca existiu no domínio: nada a anular, nada a pagar
         else { await voidCommission(ctx, merchantId, prior.id, r.reason_code ?? VOID_REASONS[r.status]!, new Date(r.voided_at ?? r.source_updated_at)); result = 'voided'; commissionId = prior.id }

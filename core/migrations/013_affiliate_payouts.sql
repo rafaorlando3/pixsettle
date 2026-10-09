@@ -154,9 +154,18 @@ CREATE TABLE affiliate_commission_applications (
   applied_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (origin, store, commission_id, revision)
 );
+-- Recusas de lote, duráveis (contrato §9): origem/chave quando identificáveis, código, detalhe técnico, sha e tamanho do corpo recebido. Só inserção.
+CREATE TABLE affiliate_commission_rejections (
+  id bigserial PRIMARY KEY,
+  received_at timestamptz NOT NULL DEFAULT now(),
+  origin text NULL, key_id text NULL,
+  code text NOT NULL, detail text NULL, http integer NOT NULL,
+  body_sha256 text NOT NULL, bytes integer NOT NULL
+);
 CREATE FUNCTION affiliate_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN RAISE EXCEPTION 'affiliate_append_only'; END;
 $$;
 CREATE TRIGGER affiliate_revisions_immutable BEFORE UPDATE OR DELETE ON affiliate_commission_revisions FOR EACH ROW EXECUTE FUNCTION affiliate_append_only();
 CREATE TRIGGER affiliate_batches_immutable BEFORE UPDATE OR DELETE ON affiliate_commission_batches FOR EACH ROW EXECUTE FUNCTION affiliate_append_only();
 CREATE TRIGGER affiliate_ledger_immutable BEFORE UPDATE OR DELETE ON affiliate_ledger FOR EACH ROW EXECUTE FUNCTION affiliate_append_only();
+CREATE TRIGGER affiliate_rejections_immutable BEFORE UPDATE OR DELETE ON affiliate_commission_rejections FOR EACH ROW EXECUTE FUNCTION affiliate_append_only();

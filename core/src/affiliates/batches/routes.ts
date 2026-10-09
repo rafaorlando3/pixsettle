@@ -59,12 +59,21 @@ export function registerCommissionBatches(app: FastifyInstance, ctx: Ctx, env: R
       if (error.code === 'FST_ERR_CTP_INVALID_MEDIA_TYPE') return send(reply, 415, 'commission_content_type', 'use application/json')
       return send(reply, 503, 'commission_unavailable', 'ingestão temporariamente indisponível')
     })
+    // Toda recusa de lote vira uma linha durável (affiliate_commission_rejections): o produtor e uma pessoa veem o que foi recusado e por quê.
+    const rejected = async (req: any, http: number, code: string, detail: string | undefined, origin: string | null) => {
+      const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
+      const keyId = String(req.headers['x-pixsettle-key-id'] ?? '').slice(0, 64) || null
+      try {
+        await ctx.db.query(`INSERT INTO affiliate_commission_rejections (origin, key_id, code, detail, http, body_sha256, bytes) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [origin, keyId, code, detail ?? null, http, createHash('sha256').update(body).digest('hex'), body.length])
+      } catch (e) { req.log.error({ err: e }, 'não gravou a recusa do lote') }
+    }
     scope.post('/batches', async (req, reply) => {
       if (!config) return send(reply, 503, 'commission_not_configured', 'chaves de ingestão de comissões não configuradas')
-      if (ctx.affiliates?.writes === false) return send(reply, 403, 'commission_read_only', 'esta instalação é réplica pública somente leitura: lotes de comissões não são aceitos aqui')
+      if (ctx.affiliates?.writes === false) { await rejected(req, 403, 'commission_read_only', undefined, null); return send(reply, 403, 'commission_read_only', 'esta instalação é réplica pública somente leitura: lotes de comissões não são aceitos aqui') }
       const auth = /^Bearer ([\x21-\x7e]{32,512})$/.exec(String(req.headers.authorization ?? ''))?.[1]
       const token = auth ? config.tokens.find(t => timingSafeEqual(t.digest, digest(auth))) : undefined
-      if (!token) return send(reply, 401, 'commission_unauthorized', 'token ausente ou inválido')
+      if (!token) { await rejected(req, 401, 'commission_unauthorized', undefined, null); return send(reply, 401, 'commission_unauthorized', 'token ausente ou inválido') }
       try {
         const keys = config.keys.filter(k => k.origin === token.origin)
         const v = validateBatch(req.body as Buffer, String(req.headers['x-pixsettle-key-id'] ?? ''), keys)
@@ -73,9 +82,11 @@ export function registerCommissionBatches(app: FastifyInstance, ctx: Ctx, env: R
       } catch (e) {
         if (e instanceof CommissionError) {
           req.log.warn({ code: e.code, detail: e.detail }, 'lote de comissões recusado')
+          await rejected(req, e.http, e.code, e.detail || undefined, token.origin)
           return send(reply, e.http, e.code, 'lote de comissões recusado', e.detail || undefined)
         }
         req.log.error({ err: e }, 'ingestão de comissões falhou')
+        await rejected(req, 503, 'commission_unavailable', (e as Error).message?.slice(0, 200), token.origin)
         return send(reply, 503, 'commission_unavailable', 'ingestão temporariamente indisponível')
       }
     })

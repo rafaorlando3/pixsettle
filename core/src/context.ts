@@ -44,6 +44,8 @@ export type Ctx = {
     lockTtlMs: number
     /** corrente do produtor (origin|store) -> lojista do PixSettle; ausente = revisões esperam com motivo */
     streams?: Record<string, string>
+    /** revisões aplicadas por job (padrão 500); o restante é reagendado na hora */
+    applyBlock?: number
   }
 }
 

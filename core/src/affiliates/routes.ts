@@ -24,6 +24,17 @@ const RECEIPT_ID = /^rct_[0-9A-Z]{26}$/
 
 export const affiliateWritesAllowed = (ctx: Ctx) => ctx.affiliates?.writes !== false
 
+/** Recibo pelo vínculo real: recibo -> comissão ou saque -> beneficiário -> lojista. A referência do beneficiário é única só dentro do lojista, então nunca serve de escopo. */
+async function receiptOf(ctx: Ctx, id: string, merchantId: string) {
+  const r = (await ctx.db.query(
+    `SELECT r.envelope FROM affiliate_receipts r
+       LEFT JOIN affiliate_commissions c ON c.id=r.commission_id
+       LEFT JOIN affiliate_withdrawals w ON w.id=r.withdrawal_id
+       JOIN affiliate_beneficiaries b ON b.id=coalesce(c.beneficiary_id, w.beneficiary_id)
+      WHERE r.id=$1 AND b.merchant_id=$2`, [id, merchantId])).rows[0]
+  return r?.envelope ?? null
+}
+
 export function registerAffiliates(app: FastifyInstance, ctx: Ctx, opts: AffiliateRouteOptions = {}) {
   if (!ctx.affiliates) return
   const merchantOf = async (req: FastifyRequest): Promise<string | null> => {
@@ -82,9 +93,9 @@ export function registerAffiliates(app: FastifyInstance, ctx: Ctx, opts: Affilia
   app.get('/api/v1/affiliates/summary', guarded(async (_req, _reply, merchantId) => aggregateView(ctx, merchantId)))
   app.get('/api/v1/affiliates/receipts/:id', guarded(async (req, reply, merchantId) => {
     const id = String((req.params as any).id)
-    const r = RECEIPT_ID.test(id) ? (await ctx.db.query(`SELECT r.envelope FROM affiliate_receipts r JOIN settlements s ON s.id=r.settlement_id JOIN affiliate_beneficiaries b ON b.merchant_id=$2 AND b.beneficiary_ref=s.beneficiary_ref WHERE r.id=$1`, [id, merchantId])).rows[0] : null
+    const r = RECEIPT_ID.test(id) ? await receiptOf(ctx, id, merchantId) : null
     if (!r) return err(reply, 404, 'receipt_not_found', 'recibo desconhecido')
-    return r.envelope
+    return r
   }))
 
   // Leitura pública do piloto: só com lojista público definido; agregado desse lojista, um beneficiário pseudonimizado (lista permitida) e recibos desse lojista.
@@ -99,8 +110,8 @@ export function registerAffiliates(app: FastifyInstance, ctx: Ctx, opts: Affilia
   })
   app.get('/pilot/api/affiliates/receipts/:id', async (req, reply) => {
     const id = String((req.params as any).id)
-    const r = RECEIPT_ID.test(id) ? (await ctx.db.query(`SELECT r.envelope FROM affiliate_receipts r JOIN settlements s ON s.id=r.settlement_id JOIN affiliate_beneficiaries b ON b.merchant_id=$2 AND b.beneficiary_ref=s.beneficiary_ref WHERE r.id=$1`, [id, pub])).rows[0] : null
+    const r = RECEIPT_ID.test(id) ? await receiptOf(ctx, id, pub) : null
     if (!r) return err(reply, 404, 'receipt_not_found', 'recibo desconhecido')
-    return r.envelope
+    return r
   })
 }

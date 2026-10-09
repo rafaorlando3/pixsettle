@@ -2,10 +2,11 @@
 // kind='affiliate_payout'. Só funções puras de banco, sem importar o diário (evita ciclo).
 import { recordTransition, enqueue, type Tx } from '../db.js'
 
-// Chave de liquidação de afiliados. Fica desligada até server.ts ligar explicitamente (AFFILIATE_SETTLE=1):
-// com ela desligada nenhum job existente assina ou transmite um pagamento de comissão, mesmo que já esteja na fila.
+// Autorização de liquidação de afiliados. Fica desligada até server.ts ligar explicitamente: exige AFFILIATE_SETTLE=1 E a instalação
+// aceitar escritas (réplica pública sem opt-in nunca assina nem transmite). Desligada, nenhum job existente assina ou transmite um
+// pagamento de comissão, mesmo que já esteja na fila: advance não cria tentativa, sign/broadcast suspendem a existente (R2).
 let settleEnabled = false
-export function configureAffiliateJournal(opts: { settle: boolean }): void { settleEnabled = opts.settle }
+export function configureAffiliateJournal(opts: { settle: boolean; writes?: boolean }): void { settleEnabled = opts.settle === true && opts.writes !== false }
 export const affiliateSettleEnabled = () => settleEnabled
 
 /** Bloqueios de um pagamento de comissão ou de um saque para carteira. Vazio = pode assinar/transmitir. */
