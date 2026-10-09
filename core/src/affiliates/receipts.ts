@@ -8,7 +8,7 @@ import { fmtUsd, fmtBrl } from './money.js'
 export async function issueAffiliateReceipt(ctx: Ctx, settlementId: string) {
   const d = (await ctx.db.query(
     `SELECT s.*, a.tx_hash, a.observed, a.updated_at AS a_upd,
-            c.id AS c_id, c.source_event_id, c.order_ref, c.amount_minor, c.usd_units AS c_usd, c.fee_bps, c.rate_num, c.rate_den, c.quote_source, c.quote_at, c.quote_hash, c.occurred_at, c.released_at,
+            c.id AS c_id, c.source_event_id, c.order_ref, c.amount_minor, c.usd_units AS c_usd, c.fee_bps, c.rate_num, c.rate_den, c.quote_source, c.quote_at, c.quote_hash, c.quote_mode, c.custody, c.occurred_at, c.released_at,
             w.id AS w_id, w.usd_units AS w_usd, b.beneficiary_ref AS b_ref, b.kind AS b_kind
        FROM settlements s JOIN settlement_attempts a ON a.settlement_id=s.id AND a.status='confirmed'
        LEFT JOIN affiliate_commissions c ON c.settlement_id=s.id
@@ -23,7 +23,7 @@ export async function issueAffiliateReceipt(ctx: Ctx, settlementId: string) {
   const payload: Record<string, unknown> = {
     schema_version: 1, receipt_id: receiptId, receipt_type: d.c_id ? 'affiliate_commission_payout' : 'affiliate_wallet_withdrawal',
     issuer: ctx.cfg.issuer, provider_env: 'merchant_api', chain_env: ctx.chain.chainId === 42431 ? 'testnet' : 'mainnet', chain_id: d.chain_id, token: d.token, treasury: d.sender,
-    order: { ref: d.order_ref ?? null }, // sem pedido do núcleo: só a referência opaca do lojista
+    order: { ref: null, commission_id: d.c_id ?? null, withdrawal_id: d.w_id ?? null }, // sem pedido do núcleo e sem referência do lojista: o recibo é público; com_/wdr_ é o vínculo
     beneficiary: { ref: d.b_ref, kind: d.b_kind },
     issued_at: ctx.now().toISOString(),
     settlement: { id: d.id, to: d.recipient, amount: String(d.amount_units), memo: d.memo, tx_hash: d.tx_hash, block_number: String(obs.blockNumber), block_hash: obs.blockHash, log_index: obs.logIndex, confirmation_observed_at: iso(d.a_upd) },
@@ -31,9 +31,10 @@ export async function issueAffiliateReceipt(ctx: Ctx, settlementId: string) {
   }
   if (d.c_id) {
     payload.commission = {
-      id: d.c_id, order_ref: d.order_ref, // o id de origem do programa fica fora do recibo público; a comissão (com_) já é o vínculo
+      id: d.c_id, custody: d.custody, // ids de origem do programa e referência do pedido ficam fora do recibo público; a comissão (com_) já é o vínculo
       amount: { amount: String(d.amount_minor), currency: 'BRL', scale: 2, brl: fmtBrl(BigInt(d.amount_minor)) },
-      quote: { rate_num: String(d.rate_num), rate_den: String(d.rate_den), source: d.quote_source, at: iso(d.quote_at), hash: d.quote_hash, fee_bps: d.fee_bps },
+      // mode: at_pix = cotada no instante do Pix; backfill = importação histórica cotada depois (o recibo diz, nunca finge)
+      quote: { rate_num: String(d.rate_num), rate_den: String(d.rate_den), source: d.quote_source, at: iso(d.quote_at), hash: d.quote_hash, fee_bps: d.fee_bps, mode: d.quote_mode },
       occurred_at: iso(d.occurred_at), released_at: iso(d.released_at),
     }
   } else if (d.w_id) {

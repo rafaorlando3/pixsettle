@@ -35,6 +35,8 @@ CREATE TABLE affiliate_commissions (
   quote_at         timestamptz NOT NULL,
   quote_hash       text NOT NULL,
   status           text NOT NULL CHECK (status IN ('pending','released','settling','settled','voided','failed')),
+  custody          text NOT NULL DEFAULT 'pool' CHECK (custody IN ('pool','own_wallet')),   -- fixed at release: pool = withdrawable balance; own_wallet = paid straight to the beneficiary
+  quote_mode       text NOT NULL DEFAULT 'at_pix' CHECK (quote_mode IN ('at_pix','backfill')), -- backfill = quoted later than the Pix (historical import); shown as such
   reason_code      text NULL,
   occurred_at      timestamptz NOT NULL,
   released_at      timestamptz NULL,

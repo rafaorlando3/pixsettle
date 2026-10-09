@@ -5,6 +5,10 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { setup, settleAll } from './helpers.js'
 import { buildApp } from '../src/app.js'
 import { registerAffiliates } from '../src/affiliates/routes.js'
+import { configureAffiliateJournal } from '../src/affiliates/journal.js'
+import { resumeAffiliateSettlements } from '../src/affiliates/service.js'
+import { drain } from '../src/outbox.js'
+import { rollback } from '../src/rollback.js'
 import { SimulatedQuoteSource, BinanceUsdtBrlQuoteSource, parsePrice4, makeQuote } from '../src/affiliates/quotes.js'
 import { fixUsdUnits, pixNet, ratesFromPrice4, fmtUsd, fmtBrl } from '../src/affiliates/money.js'
 import { signReceipt, verifyEnvelope } from '../../settlement/src/receipt.js'
@@ -14,18 +18,19 @@ const ISSUER = privateKeyToAccount(ISSUER_KEY).address
 const drops: Array<() => Promise<void>> = []
 afterEach(async () => { for (const d of drops.splice(0)) await d() })
 
-async function env(over: { settle?: boolean; price4?: bigint; affiliatesOff?: boolean } = {}) {
+async function env(over: { settle?: boolean; price4?: bigint; affiliatesOff?: boolean; noPublic?: boolean } = {}) {
   const e = await setup()
   drops.push(e.drop)
   e.ctx.cfg.issuer = { id: 'pixsettle-test', address: ISSUER }
   e.chain.signReceipt = (payload: any) => signReceipt(payload, ISSUER_KEY)
   const quotes = new SimulatedQuoteSource(over.price4 ?? 52000n) // R$ 5,2000 por dólar
   if (!over.affiliatesOff) e.ctx.affiliates = { quotes, settle: over.settle ?? true, lockTtlMs: 120_000 }
+  configureAffiliateJournal({ settle: !over.affiliatesOff && (over.settle ?? true) }) // como o server.ts faz na subida
   const key = 'key-' + randomUUID()
   await e.db.query(`UPDATE merchants SET api_key_hash=$2 WHERE id=$1`, [e.merchantId, createHash('sha256').update(key).digest('hex')])
   await e.db.query(`INSERT INTO affiliate_policies (merchant_id, pool_address) VALUES ($1, '0x00000000000000000000000000000000000000A1')`, [e.merchantId])
   const app = buildApp(e.ctx, { asaasWebhookToken: 'tok-webhook-teste', diagnosticsToken: 'diag-teste' })
-  registerAffiliates(app, e.ctx, { publicMerchantId: e.merchantId })
+  registerAffiliates(app, e.ctx, { publicMerchantId: over.noPublic ? null : e.merchantId })
   const H = { authorization: `Bearer ${key}` }
   const post = (url: string, payload: any = {}) => app.inject({ method: 'POST', url, headers: H, payload })
   const get = (url: string) => app.inject({ method: 'GET', url, headers: H })
@@ -95,7 +100,8 @@ describe('API: comissão nasce em dólar no Pix, libera, paga na cadeia e emite 
     const rc = await e.app.inject({ method: 'GET', url: `/pilot/api/affiliates/receipts/${done.payout.receipt_id}` })
     expect(rc.statusCode).toBe(200)
     expect(await verifyEnvelope(rc.json(), [ISSUER])).toEqual({ ok: true, recovered: ISSUER })
-    expect(rc.json().payload).toMatchObject({ receipt_type: 'affiliate_commission_payout', commission: { id: body.id, amount: { brl: '50.00' } }, amounts: { usd: '9.61' }, beneficiary: { ref: c.beneficiary_ref } })
+    expect(rc.json().payload).toMatchObject({ receipt_type: 'affiliate_commission_payout', commission: { id: body.id, custody: 'pool', amount: { brl: '50.00' }, quote: { mode: 'backfill' } }, amounts: { usd: '9.61' }, beneficiary: { ref: c.beneficiary_ref } })
+    expect(JSON.stringify(rc.json())).not.toContain(c.order_ref) // recibo público sem a referência do pedido do lojista
     const v1 = (await e.get(`/api/v1/affiliates/beneficiaries/${c.beneficiary_ref}`)).json()
     expect(v1.balances).toMatchObject({ pending: { units: '0' }, available: { units: '9615384' }, withdrawn: { units: '0' } })
     // público: agregado e beneficiário sem ids de origem
@@ -132,15 +138,22 @@ describe('API: comissão nasce em dólar no Pix, libera, paga na cadeia e emite 
     expect(bal).toMatchObject({ pending: { units: '0' }, available: { units: '0' } })
     const ledger = (await e.db.query(`SELECT kind, usd_units::text AS u FROM affiliate_ledger WHERE ref_id=$1 ORDER BY id`, [a.id])).rows
     expect(ledger).toEqual([{ kind: 'credit_pending', u: '9615384' }, { kind: 'void', u: '-9615384' }])
-    // liberada e com intenção gravada, mas ainda não paga: o void segura a liquidação com motivo
+    // liberada e com intenção gravada, nenhuma tentativa ainda: o void encerra a liquidação com motivo e nada vai para a cadeia
     const b = (await e.post('/api/v1/affiliates/commissions', commission({ source_event_id: 'rwd_b' }))).json()
     await e.post(`/api/v1/affiliates/commissions/${b.id}/release`)
-    expect((await e.post(`/api/v1/affiliates/commissions/${b.id}/void`, { reason_code: 'med_claim' })).json().error.code).toBe('already_settled') // settling = já no diário
-    // paga na cadeia: exceção registrada, nada volta sozinho
+    const vb = await e.post(`/api/v1/affiliates/commissions/${b.id}/void`, { reason_code: 'med_claim' })
+    expect(vb.statusCode).toBe(200); expect(vb.json()).toMatchObject({ status: 'voided', payout: { status: 'failed', hold_reason: 'commission_voided' } })
     await settleAll(e.ctx, e.chain)
-    const r = await e.post(`/api/v1/affiliates/commissions/${b.id}/void`, { reason_code: 'med_claim' })
+    expect(e.chain.mined.length).toBe(0)
+    // paga na cadeia: exceção registrada, nada volta sozinho
+    const c2 = (await e.post('/api/v1/affiliates/commissions', commission({ source_event_id: 'rwd_c' }))).json()
+    await e.post(`/api/v1/affiliates/commissions/${c2.id}/release`)
+    await settleAll(e.ctx, e.chain)
+    const r = await e.post(`/api/v1/affiliates/commissions/${c2.id}/void`, { reason_code: 'med_claim' })
     expect(r.statusCode).toBe(409); expect(r.json().error.code).toBe('already_settled')
-    expect((await e.get(`/api/v1/affiliates/commissions/${b.id}`)).json().status).toBe('settled')
+    expect((await e.get(`/api/v1/affiliates/commissions/${c2.id}`)).json().status).toBe('settled')
+    expect((await e.app.inject({ method: 'GET', url: '/pilot/api/affiliates' })).json().exceptions_for_human).toBe(1)
+    expect((await e.post(`/api/v1/affiliates/commissions/${c2.id}/void`, { reason_code: 'med_claim' })).statusCode).toBe(409) // repetir não duplica a exceção
     expect((await e.app.inject({ method: 'GET', url: '/pilot/api/affiliates' })).json().exceptions_for_human).toBe(1)
   })
 
@@ -190,7 +203,8 @@ describe('saques: valor exato por Pix, trava de 120 s, pago ou falhou; carteira 
     const late = await e.post('/api/v1/affiliates/withdrawals', { lock_id: sim3.lock_id })
     expect(late.statusCode).toBe(409); expect(late.json().error.code).toBe('lock_expired')
     const agg = (await e.app.inject({ method: 'GET', url: '/pilot/api/affiliates' })).json()
-    expect(agg.withdrawals).toMatchObject({ total: 2, pix_paid: 1, brl_paid: '49.00' })
+    expect(agg.withdrawals).toMatchObject({ total: 2, pix_paid_declared: 1, brl_paid_declared: '49.00' })
+    expect((await e.get(`/api/v1/affiliates/withdrawals/${w.json().id}`)).json().evidence).toBe('declared_by_merchant') // Pix pago é declaração do lojista
   })
   it('carteira própria: cadastro validado, envio liquidado na cadeia com memo do saque e recibo', async () => {
     const { e, a } = await funded()
@@ -211,5 +225,191 @@ describe('saques: valor exato por Pix, trava de 120 s, pago ou falhou; carteira 
     expect((await e.post(`/api/v1/affiliates/withdrawals/${w.id}/paid`, { pix_e2e_id: 'E12345678' })).json().error.code).toBe('not_pix')
     const pub = (await e.app.inject({ method: 'GET', url: `/pilot/api/affiliates/${a.beneficiary_ref}` })).json()
     expect(pub.payout).toEqual({ mode: 'own_wallet' }); expect(JSON.stringify(pub.payout)).not.toContain('bEEF')
+  })
+})
+
+describe('revisão 347 (Codex, 09/10): custódia, anulação segura, chaves, projeções públicas e importação', () => {
+  const now = () => new Date().toISOString()
+
+  it('P1-1 comissão paga na carteira própria sai do direito disponível: nunca conta duas vezes', async () => {
+    const e = await env()
+    const ref = 'afl_' + 'b'.repeat(12), own = '0x000000000000000000000000000000000000bEEF'
+    const a = (await e.post('/api/v1/affiliates/commissions', commission({ beneficiary_ref: ref }))).json()
+    await e.put(`/api/v1/affiliates/beneficiaries/${ref}/wallet`, { address: own })
+    const rel = (await e.post(`/api/v1/affiliates/commissions/${a.id}/release`)).json()
+    expect(rel).toMatchObject({ custody: 'own_wallet', payout: { to: own } })
+    await settleAll(e.ctx, e.chain)
+    const v = (await e.get(`/api/v1/affiliates/beneficiaries/${ref}`)).json()
+    expect(v.balances).toMatchObject({ available: { units: '0' }, paid_to_own_wallet: { units: '9615384' }, withdrawn: { units: '0' } })
+    expect((await e.post(`/api/v1/affiliates/beneficiaries/${ref}/withdrawals/simulate`, { kind: 'pix', usd_units: '1' })).json().error.code).toBe('insufficient_available')
+    // a custódia é decidida na liberação: carteira cadastrada DEPOIS não muda uma comissão já no pool
+    const b = (await e.post('/api/v1/affiliates/commissions', commission({ beneficiary_ref: 'afl_' + 'c'.repeat(12) }))).json()
+    await e.post(`/api/v1/affiliates/commissions/${b.id}/release`); await settleAll(e.ctx, e.chain)
+    await e.put(`/api/v1/affiliates/beneficiaries/afl_${'c'.repeat(12)}/wallet`, { address: own })
+    expect((await e.get(`/api/v1/affiliates/beneficiaries/afl_${'c'.repeat(12)}`)).json().balances.available.units).toBe('9615384')
+  })
+
+  it('P1-2 anulação durante a liquidação: tentativa assinada e não enviada fica suspensa, nada é transmitido; já enviada vira exceção', async () => {
+    const e = await env()
+    const a = (await e.post('/api/v1/affiliates/commissions', commission())).json()
+    await e.post(`/api/v1/affiliates/commissions/${a.id}/release`)
+    await drain(e.ctx, 50, ['settle']); await drain(e.ctx, 50, ['sign_attempt']) // nonce reservado e bytes assinados, sem transmitir
+    expect((await e.db.query(`SELECT status FROM settlement_attempts`)).rows.map(r => r.status)).toEqual(['signed'])
+    const v = await e.post(`/api/v1/affiliates/commissions/${a.id}/void`, { reason_code: 'order_refunded' })
+    expect(v.statusCode).toBe(200); expect(v.json()).toMatchObject({ status: 'voided', payout: { hold_reason: 'commission_voided' } })
+    await settleAll(e.ctx, e.chain)
+    expect(e.chain.mined.length).toBe(0) // os bytes assinados nunca saem
+    expect((await e.db.query(`SELECT status FROM settlement_attempts`)).rows[0]).toMatchObject({ status: 'suspended' })
+    expect((await e.get(`/api/v1/affiliates/beneficiaries/${a.beneficiary_ref}`)).json().balances.available.units).toBe('0')
+    // a tentativa suspensa pausa a fila da tesouraria (R2): outra comissão espera, com motivo, até uma pessoa resolver
+    const c2 = (await e.post('/api/v1/affiliates/commissions', commission({ source_event_id: 'rwd_wait', beneficiary_ref: 'afl_' + 'd'.repeat(12) }))).json()
+    await e.post(`/api/v1/affiliates/commissions/${c2.id}/release`); await settleAll(e.ctx, e.chain, 3)
+    expect(e.chain.mined.length).toBe(0)
+    expect((await e.db.query(`SELECT reason FROM state_transitions WHERE entity='settlement_waiting' ORDER BY id DESC LIMIT 1`)).rows[0].reason).toMatch(/^treasury_paused:/)
+    // já transmitida (pendente na rede): recusa com exceção; a reconciliação segue até confirmar
+    const f = await env()
+    const b = (await f.post('/api/v1/affiliates/commissions', commission({ source_event_id: 'rwd_sent' }))).json()
+    await f.post(`/api/v1/affiliates/commissions/${b.id}/release`)
+    await drain(f.ctx, 50, ['settle']); await drain(f.ctx, 50, ['sign_attempt']); await drain(f.ctx, 50, ['broadcast_attempt'])
+    const sent = (await f.db.query(`SELECT status FROM settlement_attempts`)).rows[0].status
+    expect(['broadcast_pending', 'broadcast_sent']).toContain(sent)
+    const r = await f.post(`/api/v1/affiliates/commissions/${b.id}/void`, { reason_code: 'order_refunded' })
+    expect(r.statusCode).toBe(409); expect(r.json().error.code).toBe('payout_in_flight')
+    expect((await f.get(`/api/v1/affiliates/commissions/${b.id}`)).json().status).toBe('settling')
+    expect((await f.get('/api/v1/affiliates/summary')).json().exceptions_for_human).toBe(1)
+    await settleAll(f.ctx, f.chain)
+    expect((await f.get(`/api/v1/affiliates/commissions/${b.id}`)).json().status).toBe('settled'); expect(f.chain.mined.length).toBe(1)
+  })
+
+  it('P1-3 anulação com saque Pix pedido nunca deixa saldo negativo: recusa com exceção; saque falhou libera a anulação', async () => {
+    const e = await env()
+    const a = (await e.post('/api/v1/affiliates/commissions', commission())).json()
+    await e.post(`/api/v1/affiliates/commissions/${a.id}/release`) // settling, nenhuma tentativa; o direito já existe no pool
+    const sim = (await e.post(`/api/v1/affiliates/beneficiaries/${a.beneficiary_ref}/withdrawals/simulate`, { kind: 'pix', usd_units: '9615384' })).json()
+    const w = (await e.post('/api/v1/affiliates/withdrawals', { lock_id: sim.lock_id })).json()
+    const r = await e.post(`/api/v1/affiliates/commissions/${a.id}/void`, { reason_code: 'order_refunded' })
+    expect(r.statusCode).toBe(409); expect(r.json().error.code).toBe('withdrawal_in_progress')
+    expect((await e.get(`/api/v1/affiliates/commissions/${a.id}`)).json().status).toBe('settling')
+    expect((await e.get(`/api/v1/affiliates/beneficiaries/${a.beneficiary_ref}`)).json().balances.available.units).toBe('0')
+    expect((await e.get('/api/v1/affiliates/summary')).json().exceptions_for_human).toBe(1)
+    // saque falhou: o saldo volta e a anulação passa (liquidação encerrada, nada na cadeia)
+    await e.post(`/api/v1/affiliates/withdrawals/${w.id}/failed`, { reason_code: 'bank_rejected' })
+    expect((await e.get(`/api/v1/affiliates/beneficiaries/${a.beneficiary_ref}`)).json().balances.available.units).toBe('9615384')
+    expect((await e.post(`/api/v1/affiliates/commissions/${a.id}/void`, { reason_code: 'order_refunded' })).json()).toMatchObject({ status: 'voided', payout: { status: 'failed' } })
+    await settleAll(e.ctx, e.chain); expect(e.chain.mined.length).toBe(0)
+    expect((await e.get(`/api/v1/affiliates/beneficiaries/${a.beneficiary_ref}`)).json().balances.available.units).toBe('0')
+    // já paga na cadeia + saque pago: already_settled (exceção), saldo nunca negativo
+    const g = await env()
+    const c = (await g.post('/api/v1/affiliates/commissions', commission())).json()
+    await g.post(`/api/v1/affiliates/commissions/${c.id}/release`); await settleAll(g.ctx, g.chain)
+    const sim2 = (await g.post(`/api/v1/affiliates/beneficiaries/${c.beneficiary_ref}/withdrawals/simulate`, { kind: 'pix', usd_units: '9615384' })).json()
+    const w2 = (await g.post('/api/v1/affiliates/withdrawals', { lock_id: sim2.lock_id })).json()
+    await g.post(`/api/v1/affiliates/withdrawals/${w2.id}/paid`, { pix_e2e_id: 'E1234567820261009' })
+    expect((await g.post(`/api/v1/affiliates/commissions/${c.id}/void`, { reason_code: 'order_refunded' })).json().error.code).toBe('already_settled')
+    expect((await g.get(`/api/v1/affiliates/beneficiaries/${c.beneficiary_ref}`)).json().balances.available.units).toBe('0')
+    // comissão liberada (sem liquidação) com saque pedido: também recusa
+    const off = await env({ settle: false })
+    const b = (await off.post('/api/v1/affiliates/commissions', commission())).json()
+    await off.post(`/api/v1/affiliates/commissions/${b.id}/release`)
+    const sim3 = (await off.post(`/api/v1/affiliates/beneficiaries/${b.beneficiary_ref}/withdrawals/simulate`, { kind: 'pix', usd_units: '9615384' })).json()
+    await off.post('/api/v1/affiliates/withdrawals', { lock_id: sim3.lock_id })
+    expect((await off.post(`/api/v1/affiliates/commissions/${b.id}/void`, { reason_code: 'order_refunded' })).json().error.code).toBe('withdrawal_in_progress')
+  })
+
+  it('P1-4/P1-5 chave de liquidação: ausente = nada assina nem transmite, inclusive jobs já na fila; réplica pública recusa escritas', async () => {
+    const e = await env()
+    const a = (await e.post('/api/v1/affiliates/commissions', commission())).json()
+    await e.post(`/api/v1/affiliates/commissions/${a.id}/release`) // settling, job na fila
+    configureAffiliateJournal({ settle: false }); e.ctx.affiliates!.settle = false // a instalação reinicia sem AFFILIATE_SETTLE=1
+    await settleAll(e.ctx, e.chain)
+    expect(e.chain.mined.length).toBe(0)
+    expect((await e.db.query(`SELECT reason FROM state_transitions WHERE entity='settlement_blocked' ORDER BY id DESC LIMIT 1`)).rows[0].reason).toContain('affiliate_settle_off')
+    expect((await e.get('/api/v1/affiliates/summary')).json().evidence.settlement).toBe('disabled')
+    configureAffiliateJournal({ settle: true }); e.ctx.affiliates!.settle = true
+    expect(await resumeAffiliateSettlements(e.ctx)).toBe(1) // o server.ts faz isso na subida com AFFILIATE_SETTLE=1
+    await settleAll(e.ctx, e.chain)
+    expect((await e.get(`/api/v1/affiliates/commissions/${a.id}`)).json().status).toBe('settled')
+    // intenção gravada com a chave desligada também retoma
+    const off = await env({ settle: false })
+    const b = (await off.post('/api/v1/affiliates/commissions', commission())).json()
+    expect((await off.post(`/api/v1/affiliates/commissions/${b.id}/release`)).json()).toMatchObject({ status: 'released', payout: { hold_reason: 'affiliate_settle_off' } })
+    configureAffiliateJournal({ settle: true }); off.ctx.affiliates!.settle = true
+    expect(await resumeAffiliateSettlements(off.ctx)).toBe(1)
+    expect((await off.get(`/api/v1/affiliates/commissions/${b.id}`)).json()).toMatchObject({ status: 'settling', payout: { hold_reason: null } })
+    await settleAll(off.ctx, off.chain)
+    expect((await off.get(`/api/v1/affiliates/commissions/${b.id}`)).json().status).toBe('settled')
+    // réplica pública sem opt-in: leitura segue, escrita 403 com código
+    e.ctx.affiliates!.writes = false
+    const w = await e.post('/api/v1/affiliates/commissions', commission({ source_event_id: 'rwd_ro' }))
+    expect(w.statusCode).toBe(403); expect(w.json().error.code).toBe('affiliates_read_only')
+    expect((await e.post(`/api/v1/affiliates/commissions/${a.id}/void`, { reason_code: 'x_y' })).statusCode).toBe(403)
+    expect((await e.get(`/api/v1/affiliates/commissions/${a.id}`)).statusCode).toBe(200)
+    expect((await e.app.inject({ method: 'GET', url: '/pilot/api/affiliates' })).statusCode).toBe(200)
+  })
+
+  it('P1-6 a migração reversa recusa apagar estado econômico', async () => {
+    const e = await env()
+    await e.post('/api/v1/affiliates/commissions', commission())
+    await expect(rollback(e.db, '013_affiliate_payouts.sql')).rejects.toThrow(/refusing to drop/)
+    expect((await e.db.query(`SELECT count(*)::int AS n FROM affiliate_commissions`)).rows[0].n).toBe(1)
+    expect((await e.db.query(`SELECT count(*)::int AS n FROM schema_migrations WHERE name='013_affiliate_payouts.sql'`)).rows[0].n).toBe(1)
+  })
+
+  it('P1-7/P1-8 público: lista permitida (sem destino, sem id do Pix, sem ids do lojista), recibos só do lojista público, nada sem lojista público', async () => {
+    const e = await env()
+    const a = (await e.post('/api/v1/affiliates/commissions', commission())).json()
+    await e.post(`/api/v1/affiliates/commissions/${a.id}/release`); await settleAll(e.ctx, e.chain)
+    const sim = (await e.post(`/api/v1/affiliates/beneficiaries/${a.beneficiary_ref}/withdrawals/simulate`, { kind: 'pix', usd_units: '1000000' })).json()
+    const w = (await e.post('/api/v1/affiliates/withdrawals', { lock_id: sim.lock_id })).json()
+    await e.post(`/api/v1/affiliates/withdrawals/${w.id}/paid`, { pix_e2e_id: 'E9999999920261009' })
+    const pub = (await e.app.inject({ method: 'GET', url: `/pilot/api/affiliates/${a.beneficiary_ref}` })).json()
+    const text = JSON.stringify(pub)
+    expect(text).not.toContain('0x00000000000000000000000000000000000000A1'); expect(text).not.toContain('E9999999920261009')
+    expect(text).not.toContain(a.source_event_id); expect(text).not.toContain('EQ-1001')
+    expect(Object.keys(pub.commissions[0]).sort()).toEqual(['amount', 'custody', 'id', 'occurred_at', 'payout', 'quote', 'reason_code', 'released_at', 'status', 'usd', 'voided_at'])
+    expect(Object.keys(pub.commissions[0].payout).sort()).toEqual(['hold_reason', 'memo', 'receipt_id', 'status', 'tx_hash'])
+    expect(pub.withdrawals[0]).toMatchObject({ kind: 'pix', status: 'paid', evidence: 'declared_by_merchant' }); expect(pub.withdrawals[0].pix_e2e_id).toBeUndefined()
+    expect((await e.app.inject({ method: 'GET', url: '/pilot/api/affiliates/joao' })).statusCode).toBe(404)
+    // recibo de outro lojista não aparece no público deste
+    const other = await env()
+    const b = (await other.post('/api/v1/affiliates/commissions', commission())).json()
+    await other.post(`/api/v1/affiliates/commissions/${b.id}/release`); await settleAll(other.ctx, other.chain)
+    const rid = (await other.get(`/api/v1/affiliates/commissions/${b.id}`)).json().payout.receipt_id
+    expect((await other.app.inject({ method: 'GET', url: `/pilot/api/affiliates/receipts/${rid}` })).statusCode).toBe(200)
+    await e.db.query(`INSERT INTO merchants (id, name, api_key_hash, payout_address) VALUES ('mer_OUTRO', 'Outro', 'x', '0x8ee643c15C603856A76d05020b5ccB0FceA425BF')`)
+    await e.db.query(`UPDATE affiliate_beneficiaries SET merchant_id='mer_OUTRO'`) // o beneficiário passa a ser de outro lojista
+    expect((await e.app.inject({ method: 'GET', url: `/pilot/api/affiliates/receipts/${pub.commissions[0].payout.receipt_id}` })).statusCode).toBe(404)
+    expect((await e.app.inject({ method: 'GET', url: `/pilot/api/affiliates/${a.beneficiary_ref}` })).statusCode).toBe(404)
+    // sem lojista público: nenhuma rota pública
+    const np = await env({ noPublic: true })
+    expect((await np.app.inject({ method: 'GET', url: '/pilot/api/affiliates' })).statusCode).toBe(404)
+    expect((await np.post('/api/v1/affiliates/commissions', commission())).statusCode).toBe(201)
+  })
+
+  it('P1-9/P2-11/P2-12 pseudônimo opaco obrigatório, mesmo id com conteúdo diferente é conflito, repetição concorrente cria uma só', async () => {
+    const e = await env()
+    for (const bad of ['afl_abc', 'afl_' + 'A'.repeat(12), 'ben-' + 'a'.repeat(12), 'cpf_12345678901', 'maria.silva']) {
+      expect((await e.post('/api/v1/affiliates/commissions', commission({ beneficiary_ref: bad }))).json().error.code).toBe('invalid_beneficiary_ref')
+    }
+    const c = commission()
+    const first = (await e.post('/api/v1/affiliates/commissions', c)).json()
+    const conflict = await e.post('/api/v1/affiliates/commissions', { ...c, amount: { amount: '9999', currency: 'BRL', scale: 2 } })
+    expect(conflict.statusCode).toBe(409); expect(conflict.json().error.code).toBe('idempotency_conflict')
+    expect((await e.post('/api/v1/affiliates/commissions', { ...c, beneficiary_ref: 'afl_' + 'e'.repeat(12) })).json().error.code).toBe('idempotency_conflict')
+    expect((await e.get(`/api/v1/affiliates/commissions/${first.id}`)).json().usd.units).toBe('9615384')
+    const d = commission({ source_event_id: 'rwd_race' })
+    const rs = await Promise.all([1, 2, 3, 4, 5].map(() => e.post('/api/v1/affiliates/commissions', d)))
+    expect(rs.filter(r => r.statusCode === 201).length).toBe(1); expect(rs.every(r => [200, 201].includes(r.statusCode))).toBe(true)
+    expect(new Set(rs.map(r => r.json().id)).size).toBe(1)
+    expect((await e.db.query(`SELECT count(*)::int AS n FROM affiliate_commissions WHERE source_event_id='rwd_race'`)).rows[0].n).toBe(1)
+  })
+
+  it('P2-10 cotação é "no Pix" só quando o evento chega até 15 min depois; importação histórica fica marcada backfill', async () => {
+    const e = await env()
+    const live = (await e.post('/api/v1/affiliates/commissions', commission({ occurred_at: now() }))).json()
+    expect(live.quote.mode).toBe('at_pix')
+    const old = (await e.post('/api/v1/affiliates/commissions', commission({ source_event_id: 'rwd_old', occurred_at: '2026-10-01T10:00:00.000Z' }))).json()
+    expect(old.quote.mode).toBe('backfill')
+    expect((await e.get('/api/v1/affiliates/summary')).json().quote_modes).toEqual({ at_pix: 1, backfill: 1 })
   })
 })

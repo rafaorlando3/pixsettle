@@ -83,7 +83,12 @@ export type ApplyOutcome = { applied: number; failed: number; retry: boolean }
  */
 export async function applyCommissionRevisions(ctx: Ctx, origin: string, store: string): Promise<ApplyOutcome> {
   const aff = ctx.affiliates
-  const merchantId = aff?.streams?.[streamEntity(origin, store)]
+  // Módulo desligado ou instalação sem escritas: o job existente espera com motivo; nada é aplicado "por inércia".
+  if (!aff || aff.writes === false) {
+    await withTx(ctx.db, tx => recordTransition(tx, 'affiliate_stream', streamEntity(origin, store), null, aff ? 'writes_off' : 'affiliates_off', 'apply', 'revisões esperando a instalação aceitar escritas de afiliados'))
+    return { applied: 0, failed: 0, retry: true }
+  }
+  const merchantId = aff.streams?.[streamEntity(origin, store)]
   const pending = (await ctx.db.query(
     `SELECT r.* FROM affiliate_commission_revisions r
       WHERE r.origin=$1 AND r.store=$2 AND NOT EXISTS (SELECT 1 FROM affiliate_commission_applications a WHERE a.origin=r.origin AND a.store=r.store AND a.revision=r.revision AND a.commission_id=r.commission_id)
@@ -120,7 +125,10 @@ export async function applyCommissionRevisions(ctx: Ctx, origin: string, store: 
       }
     } catch (e) {
       if (e instanceof DomainError && e.code === 'quote_unavailable') { out.retry = true; break } // volta depois, com a cotação viva; ordem preservada
-      if (e instanceof DomainError && e.code === 'already_settled') { result = 'skipped_already_settled' } // exceção já registrada pelo domínio
+      // Anulação recusada pelo domínio com exceção já registrada para uma pessoa: a revisão fica aplicada como "pulada", com o motivo.
+      if (e instanceof DomainError && e.code === 'already_settled') { result = 'skipped_already_settled' }
+      else if (e instanceof DomainError && e.code === 'payout_in_flight') { result = 'skipped_payout_in_flight' }
+      else if (e instanceof DomainError && e.code === 'withdrawal_in_progress') { result = 'skipped_withdrawal_in_progress' }
       else if (e instanceof DomainError) { result = `failed:${e.code}`; out.failed++ }
       else throw e
     }

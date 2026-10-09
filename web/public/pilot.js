@@ -45,8 +45,9 @@ async function refreshAffiliates() {
   const kv = (k, v) => { facts.append(h('dt', {}, k), h('dd', {}, v)) }
   kv('Commissions in BRL', `R$ ${a.brl.brl}`)
   kv('By status', `${a.by_status.pending} pending · ${a.by_status.released} released · ${a.by_status.settling} settling · ${a.by_status.settled} settled · ${a.by_status.voided} voided`)
-  kv('Withdrawals', `${a.withdrawals.total} total · ${a.withdrawals.pix_paid} paid by Pix (R$ ${a.withdrawals.brl_paid}) · ${a.withdrawals.wallet_settled} sent to own wallets`)
-  kv('Currency', `digital dollar on Tempo (chain ${a.currency.chain_id}), token ${a.currency.token.slice(0, 10)}…`)
+  kv('Withdrawals', `${a.withdrawals.total} total · ${a.withdrawals.pix_paid_declared} Pix declared paid by the merchant (R$ ${a.withdrawals.brl_paid_declared}) · ${a.withdrawals.wallet_settled} sent to own wallets, confirmed on chain`)
+  kv('Quotes', `${a.quote_modes.at_pix} fixed at Pix time · ${a.quote_modes.backfill} imported (quoted later than the Pix)`)
+  kv('Currency', `digital dollar on Tempo (chain ${a.currency.chain_id}, ${a.currency.chain_env}), token ${a.currency.token.slice(0, 10)}… · on-chain settlement ${a.evidence.settlement}`)
   const links = $('#aff-links'); links.replaceChildren()
   for (const r of a.sample_refs ?? []) links.append(h('a', { href: `/pilot/affiliates/${encodeURIComponent(r)}` }, `beneficiary ${r.slice(0, 12)}…`))
 }

@@ -16,6 +16,8 @@ import { registerPilot } from './pilot/routes.js'
 import { copilotFromEnv } from './copilot/model.js'
 import { quoteSourceFromEnv } from './affiliates/quotes.js'
 import { registerAffiliates } from './affiliates/routes.js'
+import { configureAffiliateJournal } from './affiliates/journal.js'
+import { resumeAffiliateSettlements } from './affiliates/service.js'
 import { registerCommissionBatches, streamMap } from './affiliates/batches/routes.js'
 import { registerShadow } from './pilot-shadow/routes.js'
 
@@ -56,9 +58,17 @@ export async function startCore(env: CoreEnv = process.env) {
     }),
     // Copiloto: COPILOT_MODE off|replay|live|live_record; COPILOT_PROVIDER anthropic|openai; COPILOT_MODEL; COPILOT_API_KEY; COPILOT_BASE_URL.
     copilot: copilotFromEnv(env, db),
-    // Fase 2 (AFFILIATE_PAYOUTS=1): comissões em dólar; AFFILIATE_SETTLE=0 grava a intenção sem liquidar; AFFILIATE_QUOTE_SOURCE simulated|binance_usdtbrl.
-    affiliates: (env.AFFILIATE_PAYOUTS === '1' || env.AFFILIATE_PAYOUTS === 'true') ? { quotes: quoteSourceFromEnv(env), settle: env.AFFILIATE_SETTLE !== '0', lockTtlMs: Number(env.AFFILIATE_LOCK_TTL_MS ?? 120_000), streams: streamMap(env) } : undefined,
+    // Fase 2 (AFFILIATE_PAYOUTS=1): comissões em dólar. Liquidar na cadeia só com AFFILIATE_SETTLE=1 (ausente = intenção gravada com motivo
+    // affiliate_settle_off); AFFILIATE_QUOTE_SOURCE simulated|binance_usdtbrl; na réplica pública (PUBLIC_REPLAY_READ_ONLY=1) as escritas de
+    // afiliados ficam recusadas a menos que AFFILIATE_ALLOW_WRITES_ON_PUBLIC_REPLAY=1 diga explicitamente que entram.
+    affiliates: (env.AFFILIATE_PAYOUTS === '1' || env.AFFILIATE_PAYOUTS === 'true') ? {
+      quotes: quoteSourceFromEnv(env), settle: env.AFFILIATE_SETTLE === '1',
+      writes: env.PUBLIC_REPLAY_READ_ONLY !== '1' || env.AFFILIATE_ALLOW_WRITES_ON_PUBLIC_REPLAY === '1',
+      lockTtlMs: Number(env.AFFILIATE_LOCK_TTL_MS ?? 120_000), streams: streamMap(env),
+    } : undefined,
   }
+  configureAffiliateJournal({ settle: ctx.affiliates?.settle === true }) // módulo desligado ou AFFILIATE_SETTLE != 1: nenhum job existente assina ou transmite comissão
+  if (ctx.affiliates?.settle) { const n = await resumeAffiliateSettlements(ctx); if (n) console.log(`comissões em dólar: ${n} liquidação(ões) retomada(s) com AFFILIATE_SETTLE=1`) }
   if (!ctx.copilot?.model) console.log(`copiloto: modelo desligado (${ctx.copilot?.offReason})`)
   else console.log(`copiloto: ${ctx.copilot.model.name} em modo ${ctx.copilot.model.mode}`)
   if (ctx.cfg.publicReplayReadOnly && !(provider instanceof SimulatedPixProvider)) throw new Error('public replay requires the simulated Pix provider')
@@ -68,7 +78,7 @@ export async function startCore(env: CoreEnv = process.env) {
   // Piloto: ingestão só com PILOT_HMAC_SECRET; sem ele a rota recusa tudo com motivo (leitura do painel continua).
   registerPilot(app, ctx, { hmacSecret: env.PILOT_HMAC_SECRET ?? '', operatorToken: env.PILOT_OPERATOR_TOKEN ?? '', sourceId: env.PILOT_SOURCE ?? 'odin', v1Disabled: env.PILOT_V1_DISABLED === '1', readOnly: ctx.cfg.publicReplayReadOnly, shadowPublic })
   registerShadow(app, db, env)
-  if (ctx.affiliates) { registerAffiliates(app, ctx, { publicMerchantId: env.AFFILIATE_PUBLIC_MERCHANT_ID ?? null }); registerCommissionBatches(app, ctx, env); console.log(`comissões em dólar: ligadas (cotação ${ctx.affiliates.quotes.name}, liquidar ${ctx.affiliates.settle ? 'sim' : 'não'}, correntes mapeadas ${Object.keys(ctx.affiliates.streams ?? {}).length})`) }
+  if (ctx.affiliates) { registerAffiliates(app, ctx, { publicMerchantId: env.AFFILIATE_PUBLIC_MERCHANT_ID ?? null }); registerCommissionBatches(app, ctx, env); console.log(`comissões em dólar: ligadas (cotação ${ctx.affiliates.quotes.name}, liquidar ${ctx.affiliates.settle ? 'sim' : 'não'}, escritas ${ctx.affiliates.writes === false ? 'recusadas (réplica pública)' : 'aceitas'}, lojista público ${env.AFFILIATE_PUBLIC_MERCHANT_ID ? 'definido' : 'ausente (leitura pública desligada)'}, correntes mapeadas ${Object.keys(ctx.affiliates.streams ?? {}).length})`) }
 
   // Worker da outbox com estado ocioso de zero consultas (src/worker.ts). Erro de um job fica gravado
   // no próprio job (last_error); erro do banco vira espera crescente com motivo, nunca "fila vazia".

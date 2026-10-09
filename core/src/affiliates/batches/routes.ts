@@ -61,6 +61,7 @@ export function registerCommissionBatches(app: FastifyInstance, ctx: Ctx, env: R
     })
     scope.post('/batches', async (req, reply) => {
       if (!config) return send(reply, 503, 'commission_not_configured', 'chaves de ingestão de comissões não configuradas')
+      if (ctx.affiliates?.writes === false) return send(reply, 403, 'commission_read_only', 'esta instalação é réplica pública somente leitura: lotes de comissões não são aceitos aqui')
       const auth = /^Bearer ([\x21-\x7e]{32,512})$/.exec(String(req.headers.authorization ?? ''))?.[1]
       const token = auth ? config.tokens.find(t => timingSafeEqual(t.digest, digest(auth))) : undefined
       if (!token) return send(reply, 401, 'commission_unauthorized', 'token ausente ou inválido')

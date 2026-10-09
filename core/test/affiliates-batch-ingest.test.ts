@@ -9,6 +9,7 @@ import { ingestCommissionBatch, applyCommissionRevisions, signCommissionReceipt,
 import { registerCommissionBatches, batchConfig, streamMap } from '../src/affiliates/batches/routes.js'
 import { registerAffiliates } from '../src/affiliates/routes.js'
 import { SimulatedQuoteSource } from '../src/affiliates/quotes.js'
+import { configureAffiliateJournal } from '../src/affiliates/journal.js'
 import { drain } from '../src/outbox.js'
 
 const RECEIPT_KEY = Buffer.from('receipt-key-test-0123456789abcdef0123456789')
@@ -18,6 +19,7 @@ afterEach(async () => { for (const d of drops.splice(0)) await d() })
 async function env(mapped = true) {
   const e = await setup(); drops.push(e.drop)
   e.ctx.affiliates = { quotes: new SimulatedQuoteSource(50000n), settle: true, lockTtlMs: 120_000, streams: mapped ? { 'src_test1|store_1': e.merchantId } : {} }
+  configureAffiliateJournal({ settle: true })
   await e.db.query(`INSERT INTO affiliate_policies (merchant_id, pool_address) VALUES ($1, '0x00000000000000000000000000000000000000A1')`, [e.merchantId])
   const key = 'key-' + randomUUID()
   await e.db.query(`UPDATE merchants SET api_key_hash=$2 WHERE id=$1`, [e.merchantId, createHash('sha256').update(key).digest('hex')])
@@ -122,5 +124,26 @@ describe('ingestão por lote assinado alimenta o domínio', () => {
     const off = await setup(); drops.push(off.drop)
     const app3 = buildApp(off.ctx, { asaasWebhookToken: 't', diagnosticsToken: 'd' }); registerCommissionBatches(app3, off.ctx, envVars)
     expect((await app3.inject({ method: 'POST', url: '/pilot/affiliates/v1/batches', headers: { 'content-type': 'application/json' }, payload: raw })).statusCode).toBe(404)
+    // réplica pública sem opt-in: lote recusado com código; job de aplicação já na fila espera com motivo
+    e.ctx.affiliates!.writes = false
+    const ro = await post(batch([ev(2)], { previous_batch_sha256: ok.json().batch_sha256 }))
+    expect(ro.statusCode).toBe(403); expect(ro.json().error.code).toBe('commission_read_only')
+    expect(await e.apply()).toEqual({ applied: 0, failed: 0, retry: true })
+    expect((await e.db.query(`SELECT to_state FROM state_transitions WHERE entity='affiliate_stream' ORDER BY id DESC LIMIT 1`)).rows[0].to_state).toBe('writes_off')
+    e.ctx.affiliates!.writes = true
+    expect(await e.apply()).toEqual({ applied: 1, failed: 0, retry: false })
+  })
+
+  it('anulação recusada pelo domínio (pagamento em voo ou saque pedido) fica aplicada como "pulada", com exceção para humano, sem travar a corrente', async () => {
+    const e = await env()
+    const r1 = await e.ingest(batch([ev(1, { status: 'active', released_at: '2026-10-02T12:00:00Z' })]))
+    expect(await e.apply()).toEqual({ applied: 1, failed: 0, retry: false })
+    await drain(e.ctx, 50, ['settle']); await drain(e.ctx, 50, ['sign_attempt']); await drain(e.ctx, 50, ['broadcast_attempt']) // já transmitido, ainda não confirmado
+    await e.ingest(batch([ev(1, { status: 'voided', reason_code: 'order_voided', voided_at: '2026-10-03T12:00:00Z', source_updated_at: '2026-10-03T12:00:00Z' }), ev(3)], { previous_batch_sha256: r1.receipt.batch_sha256 }))
+    expect(await e.apply()).toEqual({ applied: 2, failed: 0, retry: false })
+    expect((await e.applications()).map(a => a.result).sort()).toEqual(['created', 'created_released', 'skipped_payout_in_flight'])
+    expect((await e.db.query(`SELECT count(*)::int AS n FROM state_transitions WHERE entity='affiliate_exception' AND to_state='affiliate_clawback_needed'`)).rows[0].n).toBe(1)
+    await settleAll(e.ctx, e.chain)
+    expect((await e.domain())[0]).toMatchObject({ status: 'settled' }) // o pagamento em voo confirma; a devolução fica para uma pessoa
   })
 })

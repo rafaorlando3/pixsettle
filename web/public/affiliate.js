@@ -9,6 +9,8 @@ const statusLabel = {
   requested: 'requested', paid: 'paid by Pix',
 }
 const pill = s => h('span', { class: `pill ${s}` }, statusLabel[s] ?? s)
+// Pix "paid" is the merchant's own declaration (end-to-end id kept privately); wallet "settled" is observed on chain.
+const evidenceLabel = { declared_by_merchant: 'declared paid by the merchant', promise: 'exact BRL promised', chain_confirmed: 'confirmed on chain', pending_chain: 'waiting for the chain' }
 
 function explorerLink(tx) {
   if (!tx) return h('span', { class: 'muted' }, '-')
@@ -38,7 +40,7 @@ async function load() {
       h('td', {}, h('div', {}, when(c.occurred_at)), h('div', { class: 'small muted' }, c.id.slice(0, 14) + '…')),
       h('td', {}, `R$ ${c.amount.brl}`),
       h('td', { class: 'strong' }, `US$ ${c.usd.usd}`),
-      h('td', {}, h('div', {}, `R$ ${rate}`), h('div', { class: 'small muted' }, `${c.quote.source}${c.quote.fee_bps ? ` · fee ${c.quote.fee_bps / 100}%` : ''}`)),
+      h('td', {}, h('div', {}, `R$ ${rate}`), h('div', { class: 'small muted' }, `${c.quote.source}${c.quote.fee_bps ? ` · fee ${c.quote.fee_bps / 100}%` : ''}${c.quote.mode === 'backfill' ? ' · imported: quoted later than the Pix' : ''}`)),
       h('td', {}, pill(c.status), c.reason_code ? h('div', { class: 'small muted' }, c.reason_code) : null),
       h('td', {}, c.payout ? h('div', {}, explorerLink(c.payout.tx_hash), c.payout.receipt_id ? h('div', { class: 'small' }, h('a', { href: `/pilot/api/affiliates/receipts/${c.payout.receipt_id}` }, 'receipt')) : null, c.payout.hold_reason ? h('div', { class: 'small muted' }, c.payout.hold_reason) : null) : h('span', { class: 'muted' }, '-')),
     ))
@@ -51,7 +53,7 @@ async function load() {
       h('td', {}, w.kind === 'pix' ? 'Pix' : 'own wallet'),
       h('td', {}, `US$ ${w.usd.usd}`),
       h('td', {}, w.kind === 'pix' ? h('div', {}, h('div', { class: 'strong' }, `R$ ${w.net.brl}`), h('div', { class: 'small muted' }, `fee R$ ${w.fee.brl}`)) : explorerLink(w.payout?.tx_hash)),
-      h('td', {}, pill(w.status), w.reason_code ? h('div', { class: 'small muted' }, w.reason_code) : null),
+      h('td', {}, pill(w.status), h('div', { class: 'small muted' }, evidenceLabel[w.evidence] ?? ''), w.reason_code ? h('div', { class: 'small muted' }, w.reason_code) : null),
     ))
   }
   $('#wd-empty').classList.toggle('hidden', v.withdrawals.length > 0)

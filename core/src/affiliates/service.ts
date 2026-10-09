@@ -1,5 +1,8 @@
 // Fase 2: comissões de afiliados em dólar digital (docs/affiliate-payouts.md). Regras de domínio, só banco.
 // Toda recusa é DomainError com código estável e mensagem simples; toda mudança de estado grava transição.
+// Revisão do Codex (REVISAO-347-BASE.md, 09/10) aplicada: custódia (pool x carteira própria) debita o direito uma vez só;
+// anulação segura por estado da liquidação; anulação nunca deixa saldo negativo; pseudônimos opacos obrigatórios;
+// idempotência sob trava com conflito de conteúdo; cotação de importação marcada como tal; projeções públicas por lista permitida.
 import { ulid } from 'ulid'
 import { withTx, txLock, recordTransition, enqueue, type Tx } from '../db.js'
 import { DomainError } from '../flows/orders.js'
@@ -10,8 +13,14 @@ import type { UsdQuote } from './quotes.js'
 export type BeneficiaryKind = 'affiliate' | 'partner_percent'
 export const BENEFICIARY_KINDS: readonly BeneficiaryKind[] = ['affiliate', 'partner_percent']
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/
-const REF = /^[A-Za-z0-9._:-]{8,128}$/
+/** Pseudônimo opaco por construção: prefixo curto + hexadecimal (o produtor usa aff_/par_ + 32 hex; outros clientes geram no servidor). */
+export const REF = /^(aff|par|afl|ben)_[0-9a-f]{12,64}$/
 const SOURCE_ID = /^[A-Za-z0-9._:-]{1,128}$/
+const ORDER_REF = /^[A-Za-z0-9._:-]{1,64}$/
+/** Cotação "no instante do Pix" só quando o evento chega até este atraso; depois é importação (backfill) e é dito assim. */
+export const AT_PIX_WINDOW_MS = 15 * 60_000
+/** Tentativas que podem já ter saído para a rede: a partir daqui ninguém "desfaz" um pagamento, só reconcilia. */
+const MAYBE_SENT = ['broadcast_pending', 'broadcast_sent', 'unknown', 'manual_review', 'confirmed']
 
 export type CommissionInput = {
   sourceEventId: string; beneficiaryRef: string; kind: BeneficiaryKind; orderRef?: string | null
@@ -21,6 +30,7 @@ export type CommissionInput = {
 const newId = (p: 'ben' | 'com' | 'qlk' | 'wdr' | 'stl' | 'rct') => `${p}_${ulid()}`
 const memoOf = (id: string) => '0x' + Buffer.concat([Buffer.from(id, 'ascii'), Buffer.alloc(32 - id.length)]).toString('hex')
 const benKey = (beneficiaryId: string) => `affiliate:${beneficiaryId}`
+const idemKey = (merchantId: string, sourceEventId: string) => `affiliate:idem:${merchantId}:${sourceEventId}`
 
 function affiliatesOn(ctx: Ctx) {
   if (!ctx.affiliates) throw new DomainError('affiliates_off', 'módulo de comissões em dólar desligado nesta instalação', 404)
@@ -38,16 +48,19 @@ async function freshQuote(ctx: Ctx): Promise<UsdQuote> {
   return r.quote
 }
 
+/** Beneficiário sob a trava do pseudônimo: inserção concorrente não duplica nem falha. */
 async function ensureBeneficiary(tx: Tx, merchantId: string, ref: string, kind: BeneficiaryKind) {
+  await txLock(tx, `affiliate:ref:${merchantId}:${ref}`)
   const existing = (await tx.query(`SELECT * FROM affiliate_beneficiaries WHERE merchant_id=$1 AND beneficiary_ref=$2`, [merchantId, ref])).rows[0]
   if (existing) {
     if (existing.kind !== kind) throw new DomainError('beneficiary_kind_mismatch', `beneficiário já cadastrado como ${existing.kind}`, 409)
     return existing
   }
   const id = newId('ben')
-  await tx.query(`INSERT INTO affiliate_beneficiaries (id, merchant_id, beneficiary_ref, kind) VALUES ($1,$2,$3,$4)`, [id, merchantId, ref, kind])
-  await recordTransition(tx, 'affiliate_beneficiary', id, null, 'created', 'api', kind)
-  return (await tx.query(`SELECT * FROM affiliate_beneficiaries WHERE id=$1`, [id])).rows[0]
+  await tx.query(`INSERT INTO affiliate_beneficiaries (id, merchant_id, beneficiary_ref, kind) VALUES ($1,$2,$3,$4) ON CONFLICT (merchant_id, beneficiary_ref) DO NOTHING`, [id, merchantId, ref, kind])
+  const row = (await tx.query(`SELECT * FROM affiliate_beneficiaries WHERE merchant_id=$1 AND beneficiary_ref=$2`, [merchantId, ref])).rows[0]
+  if (row.id === id) await recordTransition(tx, 'affiliate_beneficiary', id, null, 'created', 'api', kind)
+  return row
 }
 
 async function beneficiaryOf(tx: Tx, merchantId: string, ref: string) {
@@ -56,42 +69,59 @@ async function beneficiaryOf(tx: Tx, merchantId: string, ref: string) {
   return b
 }
 
-/** 3. Comissão nasce em dólar no instante do Pix: cotação fixada, taxa de conversão descontada, arredondado para baixo. */
+const sameContent = (c: any, input: CommissionInput, beneficiaryRef: string, kind: string) =>
+  c.beneficiary_ref === beneficiaryRef && c.b_kind === kind && BigInt(c.amount_minor) === input.amountMinor &&
+  (c.order_ref ?? null) === (input.orderRef ?? null) && new Date(c.occurred_at).getTime() === input.occurredAt.getTime()
+
+/** 3. Comissão nasce em dólar: cotação fixada na recepção (marcada at_pix ou backfill), taxa descontada, arredondado para baixo. */
 export async function createCommission(ctx: Ctx, merchantId: string, input: CommissionInput) {
   affiliatesOn(ctx)
   if (!SOURCE_ID.test(input.sourceEventId)) throw new DomainError('invalid_source_event_id', 'source_event_id inválido')
-  if (!REF.test(input.beneficiaryRef)) throw new DomainError('invalid_beneficiary_ref', 'beneficiary_ref deve ser um identificador opaco (8 a 128 caracteres), nunca nome, CPF ou chave Pix')
+  if (!REF.test(input.beneficiaryRef)) throw new DomainError('invalid_beneficiary_ref', 'beneficiary_ref deve ser um pseudônimo opaco (prefixo aff_, par_, afl_ ou ben_ e 12 a 64 hexadecimais), nunca nome, CPF ou chave Pix')
   if (!BENEFICIARY_KINDS.includes(input.kind)) throw new DomainError('invalid_kind', 'kind deve ser affiliate ou partner_percent')
+  if (input.orderRef != null && !ORDER_REF.test(input.orderRef)) throw new DomainError('invalid_order_ref', 'order_ref deve ser uma referência curta (1 a 64 caracteres, sem espaços)')
   if (input.amountMinor <= 0n) throw new DomainError('invalid_amount', 'amount deve ser positivo, em centavos')
   if (Number.isNaN(input.occurredAt.getTime())) throw new DomainError('invalid_occurred_at', 'occurred_at inválido')
-  // Idempotente pela chave natural: a mesma comissão nunca é cotada duas vezes.
-  const prior = (await ctx.db.query(`SELECT id FROM affiliate_commissions WHERE merchant_id=$1 AND source_event_id=$2`, [merchantId, input.sourceEventId])).rows[0]
-  if (prior) return { created: false, commission: await commissionView(ctx, merchantId, prior.id) }
+  // Leitura rápida fora da trava só para não cotar à toa; a decisão idempotente é sempre sob a trava, abaixo.
+  const quick = await findBySource(ctx, merchantId, input.sourceEventId)
+  if (quick) { assertSame(quick, input); return { created: false, commission: projectCommission(quick) } }
   const quote = await freshQuote(ctx)
-  const id = await withTx(ctx.db, async tx => {
-    const again = (await tx.query(`SELECT id FROM affiliate_commissions WHERE merchant_id=$1 AND source_event_id=$2`, [merchantId, input.sourceEventId])).rows[0]
-    if (again) return again.id as string
+  const now = ctx.now()
+  const quoteMode = Math.abs(now.getTime() - input.occurredAt.getTime()) <= AT_PIX_WINDOW_MS ? 'at_pix' : 'backfill'
+  const created = await withTx(ctx.db, async tx => {
+    await txLock(tx, idemKey(merchantId, input.sourceEventId))
+    const again = (await tx.query(`SELECT c.*, b.beneficiary_ref, b.kind AS b_kind FROM affiliate_commissions c JOIN affiliate_beneficiaries b ON b.id=c.beneficiary_id WHERE c.merchant_id=$1 AND c.source_event_id=$2`, [merchantId, input.sourceEventId])).rows[0]
+    if (again) { assertSame(again, input); return false }
     const b = await ensureBeneficiary(tx, merchantId, input.beneficiaryRef, input.kind)
     await txLock(tx, benKey(b.id))
     const policy = await policyOf(tx, merchantId)
     const { usdUnits } = fixUsdUnits(input.amountMinor, policy.conversion_fee_bps, quote.buy)
     const id = newId('com')
     await tx.query(
-      `INSERT INTO affiliate_commissions (id, merchant_id, beneficiary_id, source_event_id, order_ref, amount_minor, fee_bps, usd_units, rate_num, rate_den, quote_source, quote_at, quote_hash, status, occurred_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',$14)`,
+      `INSERT INTO affiliate_commissions (id, merchant_id, beneficiary_id, source_event_id, order_ref, amount_minor, fee_bps, usd_units, rate_num, rate_den, quote_source, quote_at, quote_hash, quote_mode, status, occurred_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending',$15)`,
       [id, merchantId, b.id, input.sourceEventId, input.orderRef ?? null, input.amountMinor.toString(), policy.conversion_fee_bps, usdUnits.toString(),
-        quote.buy.rateNum.toString(), quote.buy.rateDen.toString(), quote.source, quote.at, quote.hash, input.occurredAt],
+        quote.buy.rateNum.toString(), quote.buy.rateDen.toString(), quote.source, quote.at, quote.hash, quoteMode, input.occurredAt],
     )
     await tx.query(`INSERT INTO affiliate_ledger (beneficiary_id, kind, usd_units, ref_kind, ref_id, op_key) VALUES ($1,'credit_pending',$2,'commission',$3,$4)`,
       [b.id, usdUnits.toString(), id, `credit:${id}`])
     await recordTransition(tx, 'affiliate_commission', id, null, 'pending', 'api',
-      JSON.stringify({ amount_minor: input.amountMinor.toString(), usd_units: usdUnits.toString(), quote: quote.source, price4: quote.price4.toString(), age_s: quote.ageS }))
-    return id
+      JSON.stringify({ amount_minor: input.amountMinor.toString(), usd_units: usdUnits.toString(), quote: quote.source, price4: quote.price4.toString(), age_s: quote.ageS, quote_mode: quoteMode }))
+    return true
   })
-  return { created: true, commission: await commissionView(ctx, merchantId, id) }
+  const row = await findBySource(ctx, merchantId, input.sourceEventId)
+  return { created, commission: projectCommission(row) }
 }
 
-/** 4. Liberação: a regra do lojista diz quando; aqui a comissão vira pagamento no diário de envio. */
+function assertSame(existing: any, input: CommissionInput) {
+  if (!sameContent(existing, input, input.beneficiaryRef, input.kind)) throw new DomainError('idempotency_conflict', 'source_event_id já existe com conteúdo diferente (beneficiário, valor, tipo, pedido ou data); a comissão fixada não muda', 409)
+}
+
+async function findBySource(ctx: Ctx, merchantId: string, sourceEventId: string) {
+  return (await ctx.db.query(`${COMMISSION_SELECT} WHERE c.merchant_id=$1 AND c.source_event_id=$2`, [merchantId, sourceEventId])).rows[0] ?? null
+}
+
+/** 4. Liberação: a regra do lojista diz quando; aqui a comissão vira pagamento no diário de envio. Custódia decidida aqui. */
 export async function releaseCommission(ctx: Ctx, merchantId: string, commissionId: string, occurredAt: Date) {
   const aff = affiliatesOn(ctx)
   await withTx(ctx.db, async tx => {
@@ -102,9 +132,10 @@ export async function releaseCommission(ctx: Ctx, merchantId: string, commission
     }
     const b = (await tx.query(`SELECT * FROM affiliate_beneficiaries WHERE id=$1`, [c.beneficiary_id])).rows[0]
     const policy = await policyOf(tx, merchantId)
+    const custody: 'pool' | 'own_wallet' = b.payout_address ? 'own_wallet' : 'pool'
     const recipient: string | null = b.payout_address ?? policy.pool_address ?? null
-    await tx.query(`UPDATE affiliate_commissions SET status='released', released_at=$2, updated_at=now() WHERE id=$1`, [c.id, occurredAt])
-    await recordTransition(tx, 'affiliate_commission', c.id, 'pending', 'released', 'api')
+    await tx.query(`UPDATE affiliate_commissions SET status='released', custody=$2, released_at=$3, updated_at=now() WHERE id=$1`, [c.id, custody, occurredAt])
+    await recordTransition(tx, 'affiliate_commission', c.id, 'pending', 'released', 'api', custody)
     await tx.query(`INSERT INTO affiliate_ledger (beneficiary_id, kind, usd_units, ref_kind, ref_id, op_key) VALUES ($1,'release',0,'commission',$2,$3)`, [b.id, c.id, `release:${c.id}`])
     if (!recipient) { await recordTransition(tx, 'affiliate_commission', c.id, 'released', 'released', 'api', 'no_payout_address: sem carteira do beneficiário e sem pool do lojista'); return }
     const stl = newId('stl')
@@ -114,40 +145,83 @@ export async function releaseCommission(ctx: Ctx, merchantId: string, commission
        VALUES ($1,NULL,'affiliate_payout',$2,$3,$4,$5,$6,$7,$8,'intent_recorded',$9)`,
       [stl, b.beneficiary_ref, ctx.chain.chainId, ctx.chain.token, ctx.chain.treasury, recipient, String(c.usd_units), memoOf(c.id), hold],
     )
-    await recordTransition(tx, 'settlement', stl, null, 'intent_recorded', 'affiliate_release', JSON.stringify({ commission: c.id, usd_units: String(c.usd_units), hold }))
+    await recordTransition(tx, 'settlement', stl, null, 'intent_recorded', 'affiliate_release', JSON.stringify({ commission: c.id, usd_units: String(c.usd_units), custody, hold }))
     await tx.query(`UPDATE affiliate_commissions SET settlement_id=$2, status=$3, updated_at=now() WHERE id=$1`, [c.id, stl, aff.settle ? 'settling' : 'released'])
     if (aff.settle) { await recordTransition(tx, 'affiliate_commission', c.id, 'released', 'settling', 'api', stl); await enqueue(tx, 'settle', stl) }
   })
   return commissionView(ctx, merchantId, commissionId)
 }
 
-/** 4. Anulação (cancelamento, estorno, MED, fraude). Depois de liquidada na cadeia vira exceção para um humano. */
+/**
+ * 4. Anulação (cancelamento, estorno, MED, fraude), segura por estado:
+ *  pending: anula. released: anula se o disponível continuar >= 0 (saque Pix em andamento = recusa com exceção).
+ *  settling: se nenhuma tentativa pode ter saído, segura a liquidação e anula (tentativa assinada fica suspensa pelo diário);
+ *  se alguma pode ter saído, ou já pagou: recusa com exceção para humano. Nada volta sozinho.
+ */
 export async function voidCommission(ctx: Ctx, merchantId: string, commissionId: string, reasonCode: string, occurredAt: Date) {
   affiliatesOn(ctx)
   if (!/^[a-z0-9_]{2,64}$/.test(reasonCode)) throw new DomainError('invalid_reason_code', 'reason_code deve ser um código simples (a-z, 0-9, _)')
-  const settledStatus = await withTx(ctx.db, async tx => {
+  const refusal = await withTx(ctx.db, async tx => {
     const c = await lockCommission(tx, merchantId, commissionId)
     if (c.status === 'voided') return null
-    if (c.status === 'settled' || c.status === 'settling') return c.status as string
+    if (c.status === 'settled') return { code: 'already_settled', state: c.status, detail: 'comissão já paga na cadeia: a devolução precisa de uma pessoa (exceção registrada)' }
+    if (c.status === 'settling') {
+      const sent = (await tx.query(`SELECT count(*)::int AS n FROM settlement_attempts WHERE settlement_id=$1 AND status = ANY($2)`, [c.settlement_id, MAYBE_SENT])).rows[0].n
+      if (sent > 0) return { code: 'payout_in_flight', state: c.status, detail: 'o pagamento pode já ter saído para a rede: fica para reconciliação e uma pessoa (exceção registrada)' }
+      const attempts = (await tx.query(`SELECT count(*)::int AS n FROM settlement_attempts WHERE settlement_id=$1`, [c.settlement_id])).rows[0].n
+      // Nada saiu: segura a liquidação ANTES de anular; sem tentativa, a liquidação encerra; com tentativa reservada/assinada, o diário a suspende com motivo.
+      await tx.query(`UPDATE settlements SET hold_reason='commission_voided', status=CASE WHEN $2::int = 0 THEN 'failed' ELSE status END, updated_at=now() WHERE id=$1`, [c.settlement_id, attempts])
+      await recordTransition(tx, 'settlement', c.settlement_id, null, attempts === 0 ? 'failed' : 'held', 'affiliate_void', `commission_voided:${c.id}`)
+    }
+    if (c.status === 'released' && c.settlement_id) {
+      await tx.query(`UPDATE settlements SET hold_reason='commission_voided', status='failed', updated_at=now() WHERE id=$1 AND status IN ('intent_recorded','in_progress')`, [c.settlement_id])
+      await recordTransition(tx, 'settlement', c.settlement_id, null, 'failed', 'affiliate_void', `commission_voided:${c.id}`)
+    }
+    if (c.status === 'released' || c.status === 'settling') {
+      const bal = await balances(tx, c.beneficiary_id)
+      const counts = c.custody === 'pool' // só o que entrou no disponível custodiado sai dele
+      if (counts && bal.available - BigInt(c.usd_units) < 0n) {
+        return { code: 'withdrawal_in_progress', state: c.status, detail: `saque em andamento consome este crédito (disponível US$ ${fmtUsd(bal.available)}); resolva o saque (pago ou falhou) antes de anular (exceção registrada)` }
+      }
+    }
     await tx.query(`UPDATE affiliate_commissions SET status='voided', reason_code=$2, voided_at=$3, updated_at=now() WHERE id=$1`, [c.id, reasonCode, occurredAt])
     await recordTransition(tx, 'affiliate_commission', c.id, c.status, 'voided', 'api', reasonCode)
     await tx.query(`INSERT INTO affiliate_ledger (beneficiary_id, kind, usd_units, ref_kind, ref_id, op_key) VALUES ($1,'void',$2,'commission',$3,$4)`,
       [c.beneficiary_id, (-BigInt(c.usd_units)).toString(), c.id, `void:${c.id}`])
-    if (c.settlement_id) {
-      await tx.query(`UPDATE settlements SET hold_reason='commission_voided', updated_at=now() WHERE id=$1 AND status IN ('intent_recorded','in_progress')`, [c.settlement_id])
-      await recordTransition(tx, 'settlement', c.settlement_id, null, 'held', 'affiliate_void', `commission_voided:${c.id}`)
-    }
     return null
   })
-  if (settledStatus) {
-    // Exceção durável em transação própria (a recusa abaixo não pode apagar o registro); uma por motivo.
+  if (refusal) {
+    // Exceção durável em transação própria (a recusa não pode apagar o registro); uma por motivo.
     await withTx(ctx.db, async tx => {
       const dup = (await tx.query(`SELECT 1 FROM state_transitions WHERE entity='affiliate_exception' AND entity_id=$1 AND reason=$2`, [commissionId, reasonCode])).rowCount
-      if (!dup) await recordTransition(tx, 'affiliate_exception', commissionId, settledStatus, 'affiliate_clawback_needed', 'api', reasonCode)
+      if (!dup) await recordTransition(tx, 'affiliate_exception', commissionId, refusal.state, 'affiliate_clawback_needed', 'api', reasonCode)
     })
-    throw new DomainError('already_settled', 'comissão já paga na cadeia: a devolução precisa de uma pessoa (exceção registrada)', 409)
+    throw new DomainError(refusal.code, refusal.detail, 409)
   }
   return commissionView(ctx, merchantId, commissionId)
+}
+
+/**
+ * Ao ligar a liquidação (AFFILIATE_SETTLE=1 numa instalação que antes gravava só a intenção): liquidações de afiliados paradas
+ * por affiliate_settle_off, sem tentativa ativa, voltam para a fila; a comissão liberada passa a settling. Nada mais é tocado.
+ */
+export async function resumeAffiliateSettlements(ctx: Ctx): Promise<number> {
+  if (!ctx.affiliates?.settle) return 0
+  return withTx(ctx.db, async tx => {
+    const rows = (await tx.query(
+      `SELECT s.id FROM settlements s WHERE s.kind='affiliate_payout' AND s.status IN ('intent_recorded','in_progress')
+          AND (s.hold_reason IS NULL OR s.hold_reason='affiliate_settle_off')
+          AND NOT EXISTS (SELECT 1 FROM settlement_attempts a WHERE a.settlement_id=s.id AND a.status IN ('nonce_reserved','signed','suspended','broadcast_pending','broadcast_sent','unknown','manual_review','confirmed'))
+        ORDER BY s.created_at FOR UPDATE`)).rows
+    for (const r of rows) {
+      await tx.query(`UPDATE settlements SET hold_reason=NULL, updated_at=now() WHERE id=$1 AND hold_reason='affiliate_settle_off'`, [r.id])
+      const c = (await tx.query(`UPDATE affiliate_commissions SET status='settling', updated_at=now() WHERE settlement_id=$1 AND status='released' RETURNING id`, [r.id])).rows[0]
+      if (c) await recordTransition(tx, 'affiliate_commission', c.id, 'released', 'settling', 'resume', r.id)
+      await recordTransition(tx, 'settlement', r.id, null, 'resumed', 'affiliate_resume', 'affiliate_settle_on')
+      await enqueue(tx, 'settle', r.id)
+    }
+    return rows.length
+  })
 }
 
 async function lockCommission(tx: Tx, merchantId: string, commissionId: string) {
@@ -165,17 +239,22 @@ export async function registerWallet(ctx: Ctx, merchantId: string, ref: string, 
     await txLock(tx, benKey(b.id))
     await tx.query(`UPDATE affiliate_beneficiaries SET payout_address=$2, updated_at=now() WHERE id=$1`, [b.id, address])
     await recordTransition(tx, 'affiliate_beneficiary', b.id, b.payout_address ? 'wallet' : 'pool', 'wallet', 'api', address)
-    return { beneficiary_ref: ref, payout_address: address }
+    return { beneficiary_ref: ref, payout: { mode: 'own_wallet', address } }
   })
 }
 
-/** Saldos derivados dos estados (a razão é a trilha de auditoria): pendente, disponível, sacado. */
+/**
+ * Saldos derivados dos estados (a razão é a trilha de auditoria). O direito disponível é só o custodiado no pool:
+ * comissão paga direto na carteira própria já saiu e nunca entra em "disponível".
+ */
 export async function balances(tx: Tx | Ctx['db'], beneficiaryId: string) {
   const q = async (sql: string) => BigInt((await tx.query(sql, [beneficiaryId])).rows[0].s ?? '0')
   const pending = await q(`SELECT coalesce(sum(usd_units),0)::text AS s FROM affiliate_commissions WHERE beneficiary_id=$1 AND status='pending'`)
-  const released = await q(`SELECT coalesce(sum(usd_units),0)::text AS s FROM affiliate_commissions WHERE beneficiary_id=$1 AND status IN ('released','settling','settled')`)
+  const custodied = await q(`SELECT coalesce(sum(usd_units),0)::text AS s FROM affiliate_commissions WHERE beneficiary_id=$1 AND status IN ('released','settling','settled') AND custody='pool'`)
+  const paidToWallet = await q(`SELECT coalesce(sum(usd_units),0)::text AS s FROM affiliate_commissions WHERE beneficiary_id=$1 AND status='settled' AND custody='own_wallet'`)
+  const inFlightToWallet = await q(`SELECT coalesce(sum(usd_units),0)::text AS s FROM affiliate_commissions WHERE beneficiary_id=$1 AND status IN ('released','settling') AND custody='own_wallet'`)
   const withdrawn = await q(`SELECT coalesce(sum(usd_units),0)::text AS s FROM affiliate_withdrawals WHERE beneficiary_id=$1 AND status IN ('requested','paid','settling','settled')`)
-  return { pending, available: released - withdrawn, withdrawn }
+  return { pending, available: custodied - withdrawn, withdrawn, paidToWallet, inFlightToWallet }
 }
 
 /** 5. Simulação de saque: números exatos, cotação de venda travada por lockTtlMs, uso único. */
@@ -258,6 +337,7 @@ export async function createWithdrawal(ctx: Ctx, merchantId: string, lockId: str
   return withdrawalView(ctx, merchantId, id)
 }
 
+/** Pix pago/falhou é DECLARAÇÃO do lojista (id fim a fim guardado); o produto não verifica no provedor e diz isso em todas as vistas. */
 export async function markWithdrawal(ctx: Ctx, merchantId: string, withdrawalId: string, outcome: 'paid' | 'failed', detail: { pixE2eId?: string; reasonCode?: string }) {
   affiliatesOn(ctx)
   await withTx(ctx.db, async tx => {
@@ -271,7 +351,7 @@ export async function markWithdrawal(ctx: Ctx, merchantId: string, withdrawalId:
     if (outcome === 'paid') {
       if (!detail.pixE2eId || !/^[A-Za-z0-9]{8,64}$/.test(detail.pixE2eId)) throw new DomainError('invalid_pix_e2e_id', 'informe o id fim a fim do Pix pago')
       await tx.query(`UPDATE affiliate_withdrawals SET status='paid', pix_e2e_id=$2, updated_at=now() WHERE id=$1`, [withdrawalId, detail.pixE2eId])
-      await recordTransition(tx, 'affiliate_withdrawal', withdrawalId, 'requested', 'paid', 'api', detail.pixE2eId)
+      await recordTransition(tx, 'affiliate_withdrawal', withdrawalId, 'requested', 'paid', 'api', 'declared_by_merchant')
     } else {
       const rc = detail.reasonCode ?? 'unspecified'
       if (!/^[a-z0-9_]{2,64}$/.test(rc)) throw new DomainError('invalid_reason_code', 'reason_code deve ser um código simples (a-z, 0-9, _)')
@@ -287,38 +367,48 @@ export async function markWithdrawal(ctx: Ctx, merchantId: string, withdrawalId:
 // ------------------------------------------------------------------ leituras
 
 const iso = (x: any) => (x ? new Date(x).toISOString() : null)
-
-export async function commissionView(ctx: Ctx, merchantId: string, id: string) {
-  const c = (await ctx.db.query(
-    `SELECT c.*, b.beneficiary_ref, b.kind AS b_kind, s.status AS s_status, s.recipient, s.memo, s.hold_reason,
+const COMMISSION_SELECT = `SELECT c.*, b.beneficiary_ref, b.kind AS b_kind, s.status AS s_status, s.recipient, s.memo, s.hold_reason,
             (SELECT tx_hash FROM settlement_attempts a WHERE a.settlement_id=s.id AND a.status='confirmed' LIMIT 1) AS tx_hash,
             (SELECT id FROM affiliate_receipts r WHERE r.settlement_id=s.id) AS receipt_id
-       FROM affiliate_commissions c JOIN affiliate_beneficiaries b ON b.id=c.beneficiary_id LEFT JOIN settlements s ON s.id=c.settlement_id
-      WHERE c.id=$1 AND c.merchant_id=$2`, [id, merchantId])).rows[0]
+       FROM affiliate_commissions c JOIN affiliate_beneficiaries b ON b.id=c.beneficiary_id LEFT JOIN settlements s ON s.id=c.settlement_id`
+const WITHDRAWAL_SELECT = `SELECT w.*, b.beneficiary_ref, b.merchant_id, s.status AS s_status, s.hold_reason, s.recipient, s.memo,
+            (SELECT tx_hash FROM settlement_attempts a WHERE a.settlement_id=s.id AND a.status='confirmed' LIMIT 1) AS tx_hash,
+            (SELECT id FROM affiliate_receipts r WHERE r.settlement_id=s.id) AS receipt_id
+       FROM affiliate_withdrawals w JOIN affiliate_beneficiaries b ON b.id=w.beneficiary_id LEFT JOIN settlements s ON s.id=w.settlement_id`
+
+export async function commissionView(ctx: Ctx, merchantId: string, id: string) {
+  const c = (await ctx.db.query(`${COMMISSION_SELECT} WHERE c.id=$1 AND c.merchant_id=$2`, [id, merchantId])).rows[0]
   if (!c) throw new DomainError('commission_not_found', 'comissão desconhecida', 404)
   return projectCommission(c)
 }
 
+/** Visão do lojista (chave): tudo que o lojista precisa, inclusive destino e ids de origem. */
 export function projectCommission(c: any) {
   const usd = BigInt(c.usd_units)
   return {
     id: c.id, source_event_id: c.source_event_id, order_ref: c.order_ref, beneficiary_ref: c.beneficiary_ref, kind: c.b_kind,
-    status: c.status, reason_code: c.reason_code,
+    status: c.status, reason_code: c.reason_code, custody: c.custody,
     amount: { amount: String(c.amount_minor), currency: 'BRL', scale: 2, brl: fmtBrl(BigInt(c.amount_minor)) },
     usd: { units: usd.toString(), scale: 6, usd: fmtUsd(usd) },
-    quote: { rate_num: String(c.rate_num), rate_den: String(c.rate_den), source: c.quote_source, at: iso(c.quote_at), hash: c.quote_hash, fee_bps: c.fee_bps },
+    quote: { rate_num: String(c.rate_num), rate_den: String(c.rate_den), source: c.quote_source, at: iso(c.quote_at), hash: c.quote_hash, fee_bps: c.fee_bps, mode: c.quote_mode },
     occurred_at: iso(c.occurred_at), released_at: iso(c.released_at), voided_at: iso(c.voided_at),
     payout: c.settlement_id ? { settlement_id: c.settlement_id, status: c.s_status, hold_reason: c.hold_reason, to: c.recipient, memo: c.memo, tx_hash: c.tx_hash ?? null, receipt_id: c.receipt_id ?? null } : null,
     trace: { source_event_id: c.source_event_id, commission_id: c.id, settlement_id: c.settlement_id ?? null, tx_hash: c.tx_hash ?? null, receipt_id: c.receipt_id ?? null },
   }
 }
 
+/** Projeção PÚBLICA por lista permitida: sem destino, sem ids de origem, sem referência do pedido. */
+export function publicCommission(c: any) {
+  const p = projectCommission(c)
+  return {
+    id: p.id, status: p.status, reason_code: p.reason_code, custody: p.custody, amount: p.amount, usd: p.usd, quote: p.quote,
+    occurred_at: p.occurred_at, released_at: p.released_at, voided_at: p.voided_at,
+    payout: p.payout ? { status: p.payout.status, hold_reason: p.payout.hold_reason, memo: p.payout.memo, tx_hash: p.payout.tx_hash, receipt_id: p.payout.receipt_id } : null,
+  }
+}
+
 export async function withdrawalView(ctx: Ctx, merchantId: string, id: string) {
-  const w = (await ctx.db.query(
-    `SELECT w.*, b.beneficiary_ref, b.merchant_id, s.status AS s_status, s.hold_reason, s.recipient, s.memo,
-            (SELECT tx_hash FROM settlement_attempts a WHERE a.settlement_id=s.id AND a.status='confirmed' LIMIT 1) AS tx_hash,
-            (SELECT id FROM affiliate_receipts r WHERE r.settlement_id=s.id) AS receipt_id
-       FROM affiliate_withdrawals w JOIN affiliate_beneficiaries b ON b.id=w.beneficiary_id LEFT JOIN settlements s ON s.id=w.settlement_id WHERE w.id=$1`, [id])).rows[0]
+  const w = (await ctx.db.query(`${WITHDRAWAL_SELECT} WHERE w.id=$1`, [id])).rows[0]
   if (!w || w.merchant_id !== merchantId) throw new DomainError('withdrawal_not_found', 'saque desconhecido', 404)
   return projectWithdrawal(w)
 }
@@ -326,6 +416,8 @@ export async function withdrawalView(ctx: Ctx, merchantId: string, id: string) {
 export function projectWithdrawal(w: any) {
   return {
     id: w.id, beneficiary_ref: w.beneficiary_ref, kind: w.kind, status: w.status, reason_code: w.reason_code,
+    /** Pix: "paid" é declaração do lojista com o id fim a fim; carteira: "settled" é confirmação observada na cadeia. */
+    evidence: w.kind === 'pix' ? (w.status === 'paid' ? 'declared_by_merchant' : 'promise') : (w.status === 'settled' ? 'chain_confirmed' : 'pending_chain'),
     usd: { units: String(w.usd_units), usd: fmtUsd(BigInt(w.usd_units)) },
     net: { amount: String(w.net_minor), currency: 'BRL', scale: 2, brl: fmtBrl(BigInt(w.net_minor)) },
     fee: { amount: String(w.fee_minor), currency: 'BRL', scale: 2, brl: fmtBrl(BigInt(w.fee_minor)) },
@@ -335,66 +427,75 @@ export function projectWithdrawal(w: any) {
   }
 }
 
-/** Visão do beneficiário: saldos em dólar e em reais de agora, comissões e saques. Sem dado pessoal (o ref já é um hash). */
-export async function beneficiaryView(ctx: Ctx, merchantId: string, ref: string) {
+/** Projeção PÚBLICA do saque: sem destino e sem id fim a fim do Pix. */
+export function publicWithdrawal(w: any) {
+  const p = projectWithdrawal(w)
+  return {
+    id: p.id, kind: p.kind, status: p.status, reason_code: p.reason_code, evidence: p.evidence, usd: p.usd, net: p.net, fee: p.fee,
+    payout: p.payout ? { status: p.payout.status, hold_reason: p.payout.hold_reason, memo: p.payout.memo, tx_hash: p.payout.tx_hash, receipt_id: p.payout.receipt_id } : null,
+    created_at: p.created_at, updated_at: p.updated_at,
+  }
+}
+
+const chainEnv = (ctx: Ctx) => (ctx.chain.chainId === 42431 ? 'testnet' : ctx.chain.chainId === 4217 ? 'mainnet' : `chain_${ctx.chain.chainId}`)
+
+/** Visão do beneficiário: saldos em dólar e em reais de agora, comissões e saques. `pub` = lista permitida pública. */
+export async function beneficiaryView(ctx: Ctx, merchantId: string, ref: string, pub = false) {
   const b = (await ctx.db.query(`SELECT * FROM affiliate_beneficiaries WHERE merchant_id=$1 AND beneficiary_ref=$2`, [merchantId, ref])).rows[0]
   if (!b) throw new DomainError('beneficiary_not_found', 'beneficiário desconhecido', 404)
   const bal = await balances(ctx.db, b.id)
   const q = await affiliatesOn(ctx).quotes.quote(ctx.now())
   const brlNow = (u: bigint) => (q.ok ? fmtBrl((u * q.quote.sell.rateNum) / q.quote.sell.rateDen) : null)
-  const commissions = (await ctx.db.query(
-    `SELECT c.*, b.beneficiary_ref, b.kind AS b_kind, s.status AS s_status, s.recipient, s.memo, s.hold_reason,
-            (SELECT tx_hash FROM settlement_attempts a WHERE a.settlement_id=s.id AND a.status='confirmed' LIMIT 1) AS tx_hash,
-            (SELECT id FROM affiliate_receipts r WHERE r.settlement_id=s.id) AS receipt_id
-       FROM affiliate_commissions c JOIN affiliate_beneficiaries b ON b.id=c.beneficiary_id LEFT JOIN settlements s ON s.id=c.settlement_id
-      WHERE c.beneficiary_id=$1 ORDER BY c.occurred_at DESC, c.id DESC LIMIT 200`, [b.id])).rows.map(projectCommission)
-  const withdrawals = (await ctx.db.query(
-    `SELECT w.*, b.beneficiary_ref, s.status AS s_status, s.hold_reason, s.recipient, s.memo,
-            (SELECT tx_hash FROM settlement_attempts a WHERE a.settlement_id=s.id AND a.status='confirmed' LIMIT 1) AS tx_hash,
-            (SELECT id FROM affiliate_receipts r WHERE r.settlement_id=s.id) AS receipt_id
-       FROM affiliate_withdrawals w JOIN affiliate_beneficiaries b ON b.id=w.beneficiary_id LEFT JOIN settlements s ON s.id=w.settlement_id
-      WHERE w.beneficiary_id=$1 ORDER BY w.created_at DESC LIMIT 100`, [b.id])).rows.map(projectWithdrawal)
+  const commissions = (await ctx.db.query(`${COMMISSION_SELECT} WHERE c.beneficiary_id=$1 ORDER BY c.occurred_at DESC, c.id DESC LIMIT 200`, [b.id])).rows.map(pub ? publicCommission : projectCommission)
+  const withdrawals = (await ctx.db.query(`${WITHDRAWAL_SELECT} WHERE w.beneficiary_id=$1 ORDER BY w.created_at DESC LIMIT 100`, [b.id])).rows.map(pub ? publicWithdrawal : projectWithdrawal)
+  const usdOf = (u: bigint) => ({ units: u.toString(), usd: fmtUsd(u) })
   return {
-    beneficiary_ref: ref, kind: b.kind, payout: b.payout_address ? { mode: 'own_wallet', address: b.payout_address } : { mode: 'pool' },
-    currency: { symbol: 'USD', token: ctx.chain.token, chain_id: ctx.chain.chainId, note: 'digital dollar on the Tempo network' },
+    beneficiary_ref: ref, kind: b.kind,
+    payout: pub ? { mode: b.payout_address ? 'own_wallet' : 'pool' } : (b.payout_address ? { mode: 'own_wallet', address: b.payout_address } : { mode: 'pool' }),
+    currency: { symbol: 'USD', token: ctx.chain.token, chain_id: ctx.chain.chainId, chain_env: chainEnv(ctx), note: 'digital dollar on the Tempo network' },
     balances: {
-      pending: { units: bal.pending.toString(), usd: fmtUsd(bal.pending), brl_now: brlNow(bal.pending) },
-      available: { units: bal.available.toString(), usd: fmtUsd(bal.available), brl_now: brlNow(bal.available) },
-      withdrawn: { units: bal.withdrawn.toString(), usd: fmtUsd(bal.withdrawn) },
+      pending: { ...usdOf(bal.pending), brl_now: brlNow(bal.pending) },
+      available: { ...usdOf(bal.available), brl_now: brlNow(bal.available) },
+      withdrawn: usdOf(bal.withdrawn),
+      paid_to_own_wallet: usdOf(bal.paidToWallet),
+      in_flight_to_own_wallet: usdOf(bal.inFlightToWallet),
     },
     rate_now: q.ok ? { price4: q.quote.price4.toString(), brl_per_usd: (Number(q.quote.price4) / 10_000).toFixed(4), source: q.quote.source, at: q.quote.at.toISOString(), age_s: q.quote.ageS } : { unavailable: q.detail },
     commissions, withdrawals,
   }
 }
 
-/** Agregado público do piloto: contagens e somas, nenhum ref individual. */
-export async function aggregateView(ctx: Ctx, merchantId?: string) {
-  const where = merchantId ? `WHERE c.merchant_id=$1` : ''
-  const args = merchantId ? [merchantId] : []
+/** Agregado do lojista (público quando o lojista público está configurado): contagens e somas; exceções no mesmo escopo. */
+export async function aggregateView(ctx: Ctx, merchantId: string) {
   const r = (await ctx.db.query(
     `SELECT count(DISTINCT c.beneficiary_id)::int AS beneficiaries, count(*)::int AS commissions,
             coalesce(sum(c.amount_minor),0)::text AS brl_minor, coalesce(sum(c.usd_units),0)::text AS usd_units,
             count(*) FILTER (WHERE c.status='pending')::int AS pending, count(*) FILTER (WHERE c.status='released')::int AS released,
             count(*) FILTER (WHERE c.status='settling')::int AS settling, count(*) FILTER (WHERE c.status='settled')::int AS settled,
-            count(*) FILTER (WHERE c.status='voided')::int AS voided,
+            count(*) FILTER (WHERE c.status='voided')::int AS voided, count(*) FILTER (WHERE c.status='failed')::int AS failed,
+            count(*) FILTER (WHERE c.quote_mode='backfill')::int AS backfill,
             coalesce(sum(c.usd_units) FILTER (WHERE c.status='settled'),0)::text AS usd_settled
-       FROM affiliate_commissions c ${where}`, args)).rows[0]
+       FROM affiliate_commissions c WHERE c.merchant_id=$1`, [merchantId])).rows[0]
   const w = (await ctx.db.query(
-    `SELECT count(*)::int AS withdrawals, count(*) FILTER (WHERE w.kind='pix' AND w.status='paid')::int AS pix_paid,
+    `SELECT count(*)::int AS withdrawals, count(*) FILTER (WHERE w.kind='pix' AND w.status='paid')::int AS pix_paid_declared,
+            count(*) FILTER (WHERE w.kind='pix' AND w.status='requested')::int AS pix_requested,
             count(*) FILTER (WHERE w.kind='wallet' AND w.status='settled')::int AS wallet_settled,
             coalesce(sum(w.net_minor) FILTER (WHERE w.kind='pix' AND w.status='paid'),0)::text AS brl_paid_minor
-       FROM affiliate_withdrawals w JOIN affiliate_beneficiaries b ON b.id=w.beneficiary_id ${merchantId ? 'WHERE b.merchant_id=$1' : ''}`, args)).rows[0]
-  const exceptions = (await ctx.db.query(`SELECT count(*)::int AS n FROM state_transitions WHERE entity='affiliate_exception'`)).rows[0].n
-  const sample = (await ctx.db.query(`SELECT b.beneficiary_ref FROM affiliate_beneficiaries b ${merchantId ? 'WHERE b.merchant_id=$1' : ''} ORDER BY (SELECT count(*) FROM affiliate_commissions c WHERE c.beneficiary_id=b.id) DESC, b.id LIMIT 3`, args)).rows.map(r => r.beneficiary_ref as string)
+       FROM affiliate_withdrawals w JOIN affiliate_beneficiaries b ON b.id=w.beneficiary_id WHERE b.merchant_id=$1`, [merchantId])).rows[0]
+  const exceptions = (await ctx.db.query(
+    `SELECT count(*)::int AS n FROM state_transitions t JOIN affiliate_commissions c ON c.id=t.entity_id WHERE t.entity='affiliate_exception' AND c.merchant_id=$1`, [merchantId])).rows[0].n
+  const sample = (await ctx.db.query(`SELECT b.beneficiary_ref FROM affiliate_beneficiaries b WHERE b.merchant_id=$1 ORDER BY (SELECT count(*) FROM affiliate_commissions c WHERE c.beneficiary_id=b.id) DESC, b.id LIMIT 3`, [merchantId])).rows.map(r => r.beneficiary_ref as string)
   const q = await affiliatesOn(ctx).quotes.quote(ctx.now())
   return {
     beneficiaries: r.beneficiaries, commissions: r.commissions,
     brl: { amount: r.brl_minor, brl: fmtBrl(BigInt(r.brl_minor)) }, usd: { units: r.usd_units, usd: fmtUsd(BigInt(r.usd_units)) },
-    by_status: { pending: r.pending, released: r.released, settling: r.settling, settled: r.settled, voided: r.voided },
+    by_status: { pending: r.pending, released: r.released, settling: r.settling, settled: r.settled, voided: r.voided, failed: r.failed },
+    quote_modes: { backfill: r.backfill, at_pix: r.commissions - r.backfill },
     usd_settled_on_chain: { units: r.usd_settled, usd: fmtUsd(BigInt(r.usd_settled)) },
-    withdrawals: { total: w.withdrawals, pix_paid: w.pix_paid, wallet_settled: w.wallet_settled, brl_paid: fmtBrl(BigInt(w.brl_paid_minor)) },
-    exceptions_for_human: exceptions, sample_refs: sample, // pseudônimos: páginas públicas de exemplo
+    withdrawals: { total: w.withdrawals, pix_requested: w.pix_requested, pix_paid_declared: w.pix_paid_declared, wallet_settled: w.wallet_settled, brl_paid_declared: fmtBrl(BigInt(w.brl_paid_minor)) },
+    exceptions_for_human: exceptions, sample_refs: sample, // pseudônimos do lojista público: páginas públicas de exemplo
     rate_now: q.ok ? { brl_per_usd: (Number(q.quote.price4) / 10_000).toFixed(4), source: q.quote.source, at: q.quote.at.toISOString(), age_s: q.quote.ageS } : { unavailable: q.detail },
-    currency: { symbol: 'USD', token: ctx.chain.token, chain_id: ctx.chain.chainId },
+    currency: { symbol: 'USD', token: ctx.chain.token, chain_id: ctx.chain.chainId, chain_env: chainEnv(ctx) },
+    evidence: { pix: 'declared_by_merchant', wallet: 'chain_confirmed', settlement: ctx.affiliates?.settle ? 'enabled' : 'disabled' },
   }
 }

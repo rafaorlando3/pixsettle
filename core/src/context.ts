@@ -35,7 +35,16 @@ export type Ctx = {
   /** Copiloto de exceções: modelo para o resíduo que as regras não decidem (ausente = model_off, com motivo). */
   copilot?: { model: CopilotModel | null; offReason?: string; /** teto de chamadas ao modelo por 24 h (modo vivo); esgotado = aguardando humano, com motivo */ budgetCallsPerDay?: number }
   /** Fase 2 (docs/affiliate-payouts.md): ausente = módulo desligado (nenhuma rota, nenhuma tabela lida pelos fluxos existentes). */
-  affiliates?: { quotes: UsdQuoteSource; /** liquidar na cadeia as comissões liberadas? false = intenção gravada com motivo affiliate_settle_off */ settle: boolean; lockTtlMs: number; /** corrente do produtor (origin|store) -> lojista do PixSettle; ausente = revisões esperam com motivo */ streams?: Record<string, string> }
+  affiliates?: {
+    quotes: UsdQuoteSource
+    /** liquidar na cadeia as comissões liberadas? false = intenção gravada com motivo affiliate_settle_off (journal.ts também precisa ser configurado) */
+    settle: boolean
+    /** aceitar escritas (API do lojista e lotes do produtor)? false = 403 affiliates_read_only; a leitura pública continua. Ausente = true. */
+    writes?: boolean
+    lockTtlMs: number
+    /** corrente do produtor (origin|store) -> lojista do PixSettle; ausente = revisões esperam com motivo */
+    streams?: Record<string, string>
+  }
 }
 
 export class CrashError extends Error {
