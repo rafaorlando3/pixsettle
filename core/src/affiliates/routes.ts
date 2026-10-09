@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto'
 import type { Ctx } from '../context.js'
 import { DomainError } from '../flows/orders.js'
 import {
-  createCommission, releaseCommission, voidCommission, registerWallet, simulateWithdrawal, createWithdrawal, markWithdrawal,
+  createCommission, releaseCommission, voidCommission, retryCommissionPayout, registerWallet, simulateWithdrawal, createWithdrawal, markWithdrawal,
   beneficiaryView, commissionView, withdrawalView, aggregateView, REF, type BeneficiaryKind,
 } from './service.js'
 
@@ -59,6 +59,7 @@ export function registerAffiliates(app: FastifyInstance, ctx: Ctx, opts: Affilia
     releaseCommission(ctx, merchantId, String((req.params as any).id), dateOf((req.body as any)?.occurred_at, ctx.now()))))
   app.post('/api/v1/affiliates/commissions/:id/void', write(async (req, _reply, merchantId) =>
     voidCommission(ctx, merchantId, String((req.params as any).id), String((req.body as any)?.reason_code ?? ''), dateOf((req.body as any)?.occurred_at, ctx.now()))))
+  app.post('/api/v1/affiliates/commissions/:id/retry-payout', write(async (req, _reply, merchantId) => retryCommissionPayout(ctx, merchantId, String((req.params as any).id))))
 
   app.get('/api/v1/affiliates/beneficiaries/:ref', guarded(async (req, _reply, merchantId) => beneficiaryView(ctx, merchantId, String((req.params as any).ref))))
   app.put('/api/v1/affiliates/beneficiaries/:ref/wallet', write(async (req, _reply, merchantId) =>

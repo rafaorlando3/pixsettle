@@ -28,7 +28,9 @@ export type CommissionInput = {
 }
 
 const newId = (p: 'ben' | 'com' | 'qlk' | 'wdr' | 'stl' | 'rct') => `${p}_${ulid()}`
-const memoOf = (id: string) => '0x' + Buffer.concat([Buffer.from(id, 'ascii'), Buffer.alloc(32 - id.length)]).toString('hex')
+/** Memo de 32 bytes: o id (30 caracteres) + 2 bytes zero; um pagamento refeito usa o sufixo "-N" nos 2 bytes finais (memo é único no diário). */
+const memoOf = (id: string, attempt = 1) => '0x' + Buffer.concat([Buffer.from(id, 'ascii'), attempt === 1 ? Buffer.alloc(32 - id.length) : Buffer.from(`-${attempt}`.slice(-(32 - id.length)), 'ascii')]).toString('hex')
+const memoPrefix = (id: string) => '0x' + Buffer.from(id, 'ascii').toString('hex')
 const benKey = (beneficiaryId: string) => `affiliate:${beneficiaryId}`
 const idemKey = (merchantId: string, sourceEventId: string) => `affiliate:idem:${merchantId}:${sourceEventId}`
 
@@ -198,6 +200,42 @@ export async function voidCommission(ctx: Ctx, merchantId: string, commissionId:
     })
     throw new DomainError(refusal.code, refusal.detail, 409)
   }
+  return commissionView(ctx, merchantId, commissionId)
+}
+
+/**
+ * Pagamento que falhou no diário (max_attempts etc.): o lojista pede nova intenção para a MESMA comissão. Só quando a
+ * liquidação anterior está `failed` sem tentativa que possa ter saído e a comissão não foi anulada; nada é debitado de novo
+ * (a razão não muda: o direito já existia), a liquidação antiga fica como histórico e a nova nasce com memo igual.
+ */
+export async function retryCommissionPayout(ctx: Ctx, merchantId: string, commissionId: string) {
+  const aff = affiliatesOn(ctx)
+  await withTx(ctx.db, async tx => {
+    const c = await lockCommission(tx, merchantId, commissionId)
+    if (c.status !== 'settling' && c.status !== 'released') throw new DomainError('commission_not_payable', `comissão está ${c.status}; só liberada ou em liquidação pode ter o pagamento refeito`, 409)
+    if (!c.settlement_id) throw new DomainError('no_payout', 'comissão liberada sem intenção de pagamento (sem carteira e sem pool); cadastre o destino e libere de novo', 409)
+    const s = (await tx.query(`SELECT * FROM settlements WHERE id=$1 FOR UPDATE`, [c.settlement_id])).rows[0]
+    if (s.status !== 'failed') throw new DomainError('payout_not_failed', `a liquidação está ${s.status}; só uma liquidação falhada pode ser refeita`, 409)
+    const sent = (await tx.query(`SELECT count(*)::int AS n FROM settlement_attempts WHERE settlement_id=$1 AND status = ANY($2)`, [s.id, MAYBE_SENT])).rows[0].n
+    if (sent > 0) throw new DomainError('payout_in_flight', 'uma tentativa da liquidação anterior pode ter saído para a rede; reconcilie antes de refazer', 409)
+    const b = (await tx.query(`SELECT * FROM affiliate_beneficiaries WHERE id=$1`, [c.beneficiary_id])).rows[0]
+    const policy = await policyOf(tx, merchantId)
+    const recipient: string | null = c.custody === 'own_wallet' ? b.payout_address : (policy.pool_address ?? null)
+    if (!recipient) throw new DomainError('no_payout_address', 'sem destino para o pagamento (carteira própria ou pool do lojista)', 409)
+    const stl = newId('stl')
+    const hold = aff.settle ? null : 'affiliate_settle_off'
+    const nth = (await tx.query(`SELECT count(*)::int AS n FROM settlements WHERE kind='affiliate_payout' AND memo LIKE $1 || '%'`, [memoPrefix(c.id)])).rows[0].n + 1
+    if (nth > 9) throw new DomainError('payout_retries_exhausted', 'nove liquidações para a mesma comissão; fica para uma pessoa', 409)
+    await tx.query(
+      `INSERT INTO settlements (id, order_id, kind, beneficiary_ref, chain_id, token, sender, recipient, amount_units, memo, status, hold_reason)
+       VALUES ($1,NULL,'affiliate_payout',$2,$3,$4,$5,$6,$7,$8,'intent_recorded',$9)`,
+      [stl, b.beneficiary_ref, ctx.chain.chainId, ctx.chain.token, ctx.chain.treasury, recipient, String(c.usd_units), memoOf(c.id, nth), hold],
+    )
+    await recordTransition(tx, 'settlement', stl, null, 'intent_recorded', 'affiliate_retry', JSON.stringify({ commission: c.id, replaces: s.id, attempt: nth, hold }))
+    await tx.query(`UPDATE affiliate_commissions SET settlement_id=$2, status=$3, updated_at=now() WHERE id=$1`, [c.id, stl, aff.settle ? 'settling' : 'released'])
+    await recordTransition(tx, 'affiliate_commission', c.id, c.status, aff.settle ? 'settling' : 'released', 'api', `retry_payout:${s.id}->${stl}`)
+    if (aff.settle) await enqueue(tx, 'settle', stl)
+  })
   return commissionView(ctx, merchantId, commissionId)
 }
 

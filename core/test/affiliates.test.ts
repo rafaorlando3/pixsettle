@@ -413,3 +413,37 @@ describe('revisão 347 (Codex, 09/10): custódia, anulação segura, chaves, pro
     expect((await e.get('/api/v1/affiliates/summary')).json().quote_modes).toEqual({ at_pix: 1, backfill: 1 })
   })
 })
+
+describe('pagamento refeito: liquidação falhada ganha nova intenção para a mesma comissão, sem débito novo', () => {
+  it('max_attempts no diário -> retry-payout cria nova liquidação e paga; recusas: não falhada, tentativa em voo, anulada', async () => {
+    const e = await env()
+    const a = (await e.post('/api/v1/affiliates/commissions', commission())).json()
+    await e.post(`/api/v1/affiliates/commissions/${a.id}/release`)
+    const stl = (await e.get(`/api/v1/affiliates/commissions/${a.id}`)).json().payout.settlement_id
+    expect((await e.post(`/api/v1/affiliates/commissions/${a.id}/retry-payout`)).json().error.code).toBe('payout_not_failed')
+    // o diário desistiu (como faz depois de maxAttemptsPerSettlement tentativas revertidas)
+    await e.db.query(`UPDATE settlements SET status='failed', hold_reason='max_attempts' WHERE id=$1`, [stl])
+    await e.db.query(`DELETE FROM outbox WHERE entity_id=$1`, [stl])
+    const r = await e.post(`/api/v1/affiliates/commissions/${a.id}/retry-payout`)
+    expect(r.statusCode).toBe(200); expect(r.json()).toMatchObject({ status: 'settling', payout: { status: 'intent_recorded', hold_reason: null } })
+    const oldMemo = (await e.db.query(`SELECT memo FROM settlements WHERE id=$1`, [stl])).rows[0].memo as string
+    expect(r.json().payout.settlement_id).not.toBe(stl); expect(r.json().payout.memo.slice(0, 62)).toBe(oldMemo.slice(0, 62)); expect(Buffer.from(r.json().payout.memo.slice(2), 'hex').toString('ascii')).toBe(a.id + '-2')
+    await settleAll(e.ctx, e.chain)
+    const done = (await e.get(`/api/v1/affiliates/commissions/${a.id}`)).json()
+    expect(done.status).toBe('settled'); expect(e.chain.transfersByMemo.get(done.payout.memo)).toBe(1) // uma transferência só
+    const ledger = (await e.db.query(`SELECT kind FROM affiliate_ledger WHERE beneficiary_id=(SELECT beneficiary_id FROM affiliate_commissions WHERE id=$1) ORDER BY id`, [a.id])).rows.map(r => r.kind)
+    expect(ledger).toEqual(['credit_pending', 'release', 'settle']) // nada debitado ou creditado a mais
+    expect((await e.get(`/api/v1/affiliates/beneficiaries/${a.beneficiary_ref}`)).json().balances.available.units).toBe('9615384')
+    // tentativa que pode ter saído na liquidação antiga: recusa
+    const b = (await e.post('/api/v1/affiliates/commissions', commission({ source_event_id: 'rwd_b', beneficiary_ref: 'afl_' + 'f'.repeat(12) }))).json()
+    await e.post(`/api/v1/affiliates/commissions/${b.id}/release`)
+    const stl2 = (await e.get(`/api/v1/affiliates/commissions/${b.id}`)).json().payout.settlement_id
+    await e.db.query(`UPDATE settlements SET status='failed', hold_reason='max_attempts' WHERE id=$1`, [stl2])
+    await e.db.query(`INSERT INTO settlement_attempts (id, settlement_id, attempt_no, chain_id, sender, nonce_key, nonce, status) VALUES ('att_x', $1, 1, $2, $3, 0, 99, 'unknown')`, [stl2, e.ctx.chain.chainId, e.ctx.chain.treasury])
+    expect((await e.post(`/api/v1/affiliates/commissions/${b.id}/retry-payout`)).json().error.code).toBe('payout_in_flight')
+    // anulada: recusa
+    const c = (await e.post('/api/v1/affiliates/commissions', commission({ source_event_id: 'rwd_c', beneficiary_ref: 'afl_' + '0'.repeat(12) }))).json()
+    await e.post(`/api/v1/affiliates/commissions/${c.id}/void`, { reason_code: 'order_refunded' })
+    expect((await e.post(`/api/v1/affiliates/commissions/${c.id}/retry-payout`)).json().error.code).toBe('commission_not_payable')
+  })
+})
