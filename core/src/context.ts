@@ -2,6 +2,7 @@ import type { Db } from './db.js'
 import type { PixProvider } from './providers/types.js'
 import type { ChainGateway } from './chain/gateway.js'
 import type { CopilotModel } from './copilot/model.js'
+import type { UsdQuoteSource } from './affiliates/quotes.js'
 
 export type Config = {
   /** Public pilot/replay is read-only; simulated demo remains available. */
@@ -33,6 +34,8 @@ export type Ctx = {
   crashAt?: (point: string) => void
   /** Copiloto de exceções: modelo para o resíduo que as regras não decidem (ausente = model_off, com motivo). */
   copilot?: { model: CopilotModel | null; offReason?: string; /** teto de chamadas ao modelo por 24 h (modo vivo); esgotado = aguardando humano, com motivo */ budgetCallsPerDay?: number }
+  /** Fase 2 (docs/affiliate-payouts.md): ausente = módulo desligado (nenhuma rota, nenhuma tabela lida pelos fluxos existentes). */
+  affiliates?: { quotes: UsdQuoteSource; /** liquidar na cadeia as comissões liberadas? false = intenção gravada com motivo affiliate_settle_off */ settle: boolean; lockTtlMs: number }
 }
 
 export class CrashError extends Error {

@@ -26,6 +26,29 @@ function bar(label, n, total, cls = '') {
   return h('div', { class: 'bar' }, h('span', {}, label), h('div', { class: 'track' }, fill), h('span', { class: 'n' }, String(n)))
 }
 
+/** Fase 2: o cartão só aparece quando a API pública de afiliados existe (módulo ligado); 404 = oculto, sem erro. */
+async function refreshAffiliates() {
+  const cardEl = $('#aff-card'); if (!cardEl) return
+  let a
+  try {
+    const r = await fetch('/pilot/api/affiliates', { headers: { accept: 'application/json' } })
+    if (r.status === 404) { cardEl.classList.add('hidden'); return }
+    a = await r.json(); if (!r.ok) throw new Error(a?.error?.message ?? `HTTP ${r.status}`)
+  } catch (e) { cardEl.classList.remove('hidden'); $('#aff-badge').textContent = `offline: ${e.message}`; return }
+  cardEl.classList.remove('hidden')
+  $('#aff-badge').textContent = a.rate_now?.brl_per_usd ? `R$ ${a.rate_now.brl_per_usd} per USD (${a.rate_now.source})` : `rate unavailable: ${a.rate_now?.unavailable ?? ''}`
+  $('#aff-ben').textContent = String(a.beneficiaries)
+  $('#aff-com').textContent = `${a.commissions} (US$ ${a.usd.usd})`
+  $('#aff-usd').textContent = `US$ ${a.usd_settled_on_chain.usd}`
+  $('#aff-exc').textContent = String(a.exceptions_for_human)
+  const facts = $('#aff-facts'); facts.replaceChildren()
+  const kv = (k, v) => { facts.append(h('dt', {}, k), h('dd', {}, v)) }
+  kv('Commissions in BRL', `R$ ${a.brl.brl}`)
+  kv('By status', `${a.by_status.pending} pending · ${a.by_status.released} released · ${a.by_status.settling} settling · ${a.by_status.settled} settled · ${a.by_status.voided} voided`)
+  kv('Withdrawals', `${a.withdrawals.total} total · ${a.withdrawals.pix_paid} paid by Pix (R$ ${a.withdrawals.brl_paid}) · ${a.withdrawals.wallet_settled} sent to own wallets`)
+  kv('Currency', `digital dollar on Tempo (chain ${a.currency.chain_id}), token ${a.currency.token.slice(0, 10)}…`)
+}
+
 async function refreshSummary() {
   let s
   try { s = await getJson('/pilot/api/summary') } catch (e) { setLive('down', `offline: ${e.message}`); return }
@@ -166,5 +189,5 @@ async function decide(id, action, note, close) {
 
 for (const id of ['#f-status', '#f-kind', '#f-store']) $(id).addEventListener('change', refreshQueue)
 $('#drawer').addEventListener('click', e => { if (e.target === $('#drawer')) $('#drawer').classList.add('hidden') })
-refreshSummary(); refreshQueue()
-setInterval(refreshSummary, 15_000); setInterval(refreshQueue, 20_000)
+refreshSummary(); refreshQueue(); refreshAffiliates()
+setInterval(refreshSummary, 15_000); setInterval(refreshQueue, 20_000); setInterval(refreshAffiliates, 30_000)

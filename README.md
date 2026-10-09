@@ -16,6 +16,8 @@ Built for the Colosseum Crypto World's Fair, Tempo track.
 
 **Historical pilot and exception copilot.** PixSettle replays a signed, pseudonymized export from a multi-store merchant operation. The public pilot is read-only: deterministic evidence, recorded copilot verdicts and advisory review, with no paid model calls or financial settlement. Current counts must be measured from the deployed shadow projection. Page `/pilot`; details in [`docs/pilot.md`](docs/pilot.md) and [`docs/ai-copilot.md`](docs/ai-copilot.md).
 
+**Affiliate payouts in digital dollars (phase 2, behind `AFFILIATE_PAYOUTS=1`).** The merchant's affiliate program posts each commission the moment its Pix is confirmed; PixSettle fixes the amount in digital dollars at that instant (quote, source and hash on the receipt), holds it until the merchant releases it, pays it on Tempo with one `transferWithMemo` per commission, and lets the beneficiary withdraw to Pix with the exact BRL amount shown before confirming, or send the dollars to a wallet of their own. API and public read-only views are described in [`docs/affiliate-payouts.md`](docs/affiliate-payouts.md).
+
 > **Demo status, stated plainly.** The Tempo side is real: settlements are `transferWithMemo` transactions on Tempo testnet (Moderato, chain id 42431) in pathUSD. The Pix side runs on a **simulated provider** in the public demo (an Asaas sandbox adapter is in progress). The FX quote and the merchant reserve are **simulated accounting**, labeled as such on every screen and receipt. No real money moves. Production use would require separately validated provider and FX integrations, operational controls and applicable regulatory arrangements. This prototype does not hold customer funds.
 
 ## How it works

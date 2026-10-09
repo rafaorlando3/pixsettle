@@ -4,16 +4,22 @@ import { withTx } from '../src/db.js'
 import { openException, judgeWithModel, buildModelInput } from '../src/copilot/judge.js'
 import { RecordingModel, ScriptedModel } from '../src/copilot/model.js'
 import { hashOf, type Verdict } from '../src/copilot/verdict.js'
-import { rollback } from '../src/rollback.js'
+import { rollback, lastApplied } from '../src/rollback.js'
 import { migrate } from '../src/migrate.js'
 
 const migration = '012_copilot_confidence.sql'
+/** Migrações posteriores à 012 (fase 2 em diante) são desfeitas antes, em ordem inversa; o teste continua sobre a 012. */
+async function undoNewer(db: any): Promise<string[]> {
+  const undone: string[] = []
+  for (;;) { const last = await lastApplied(db); if (!last || last <= migration) break; await rollback(db, last); undone.unshift(last) }
+  return undone
+}
 const drops: Array<() => Promise<void>> = []
 afterEach(async () => { for (const drop of drops.splice(0)) await drop() })
 
 async function seed(confidence: number, changeContext = false, legacyPrecision = false) {
   const env = await setup(); drops.push(env.drop)
-  if (legacyPrecision) await rollback(env.db, migration)
+  if (legacyPrecision) { await undoNewer(env.db); await rollback(env.db, migration) }
   let exceptionId = ''
   const verdict: Verdict = { action: 'hold_request_balance', confidence, requires_human: false, rationale: 'The structured balance needs an operator review.', evidence_refs: ['e1'] }
   const live = new ScriptedModel('synthetic-confidence-fixture', async () => {
@@ -74,22 +80,25 @@ describe('validated confidence survives PostgreSQL persistence and lossless roll
 
   it('refuses a lossy down migration atomically, preserving value, hash, type and migration marker', async () => {
     const { db } = await seed(0.8499), before = await rows(db)
+    const newer = await undoNewer(db)
     await expect(rollback(db, migration)).rejects.toThrow(/copilot_confidence_precision_loss/)
     expect(await precision(db)).toBe('numeric')
     expect(await rows(db)).toEqual(before)
     expect((await db.query('SELECT count(*)::int AS n FROM schema_migrations WHERE name=$1', [migration])).rows[0].n).toBe(1)
     expect(hashOf(reconstruct((await rows(db))[0]))).toBe(before[0].verdict_hash)
+    expect(await migrate(db)).toEqual(newer) // as posteriores voltam; nada da 012 mudou
   })
 
   it.each([0, 0.85, 1])('returns and reapplies without changing a safe confidence %s or its hash', async confidence => {
     const { db } = await seed(confidence), before = (await rows(db))[0]
+    const newer = await undoNewer(db)
     expect(await rollback(db, migration)).toEqual({ undone: migration })
     expect(await precision(db)).toBe('numeric(4,3)')
     const reverted = (await rows(db))[0]
     expect(Number(reverted.confidence)).toBe(confidence)
     expect(hashOf(reconstruct(reverted))).toBe(before.verdict_hash)
     expect((await db.query('SELECT count(*)::int AS n FROM schema_migrations WHERE name=$1', [migration])).rows[0].n).toBe(0)
-    expect(await migrate(db)).toEqual([migration])
+    expect(await migrate(db)).toEqual([migration, ...newer])
     expect(await precision(db)).toBe('numeric')
     expect(hashOf(reconstruct((await rows(db))[0]))).toBe(before.verdict_hash)
   })

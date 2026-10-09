@@ -4,6 +4,7 @@ import { newId } from '../ids.js'
 import { reserveOfIntent } from './amounts.js'
 import type { Ctx } from '../context.js'
 import type { Intent, Broadcast } from '../chain/gateway.js'
+import { affiliatePayoutBlockers, onAffiliatePayoutConfirmed } from '../affiliates/journal.js'
 
 export const ACTIVE = ['nonce_reserved', 'signed', 'suspended', 'broadcast_pending', 'broadcast_sent', 'unknown', 'manual_review'] as const
 const BLOCKING_REFUND = ['requested', 'submitting', 'unknown', 'confirmed', 'partial']
@@ -52,7 +53,9 @@ async function setAttempt(tx: Tx, att: any, to: string, source: string, extra: R
 }
 
 /** Motivos que proíbem assinar/transmitir (conferidos sob a trava do pedido). */
-async function blockers(tx: Tx, orderId: string, settlement: any): Promise<string[]> {
+async function blockers(tx: Tx, orderId: string | null, settlement: any): Promise<string[]> {
+  // Fase 2 (docs/affiliate-payouts.md): pagamento de comissão não tem pedido nem devolução; os bloqueios são os do módulo.
+  if (settlement.kind === 'affiliate_payout') return affiliatePayoutBlockers(tx, settlement)
   const out: string[] = []
   const o = (await tx.query(`SELECT hold_reason FROM orders WHERE id=$1`, [orderId])).rows[0]
   if (o.hold_reason) out.push(`order_hold:${o.hold_reason}`)
@@ -107,10 +110,10 @@ async function loadForUpdate(tx: Tx, attemptId: string) {
   // Ordem fixa de travas: pedido -> liquidação -> tentativa (evita impasse).
   const ids = (await tx.query(`SELECT s.order_id, a.settlement_id FROM settlement_attempts a JOIN settlements s ON s.id=a.settlement_id WHERE a.id=$1`, [attemptId])).rows[0]
   if (!ids) return null
-  await tx.query(`SELECT id FROM orders WHERE id=$1 FOR UPDATE`, [ids.order_id])
+  if (ids.order_id !== null) await tx.query(`SELECT id FROM orders WHERE id=$1 FOR UPDATE`, [ids.order_id]) // pagamento de comissão (fase 2) não tem pedido
   const s = (await tx.query(`SELECT * FROM settlements WHERE id=$1 FOR UPDATE`, [ids.settlement_id])).rows[0]
   const a = (await tx.query(`SELECT * FROM settlement_attempts WHERE id=$1 FOR UPDATE`, [attemptId])).rows[0]
-  return { s, a, orderId: ids.order_id as string }
+  return { s, a, orderId: ids.order_id as string | null }
 }
 
 export async function signAttempt(ctx: Ctx, attemptId: string): Promise<StepResult> {
@@ -235,6 +238,7 @@ export async function reconcileAttempt(ctx: Ctx, attemptId: string, tryNo: numbe
       await setAttempt(tx, x.a, 'confirmed', 'reconcile', { observed: obs })
       await tx.query(`UPDATE settlements SET status='confirmed', updated_at=now() WHERE id=$1`, [x.s.id])
       await recordTransition(tx, 'settlement', x.s.id, x.s.status, 'confirmed', 'reconcile', obs.txHash)
+      if (x.s.kind === 'affiliate_payout') { await onAffiliatePayoutConfirmed(tx, x.s, obs.txHash); return } // fase 2: sem pedido, cotação ou razão do lojista
       const o = (await tx.query(`SELECT * FROM orders WHERE id=$1`, [x.orderId])).rows[0]
       if (o.status === 'settling') {
         await tx.query(`UPDATE orders SET status='settled', updated_at=now() WHERE id=$1`, [o.id])

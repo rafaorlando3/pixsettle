@@ -82,6 +82,9 @@ const COMMON_FIELDS = ['schema_version', 'receipt_id', 'receipt_type', 'issuer',
 const TYPE_FIELDS: Record<string, string[]> = {
   settlement: ['token', 'treasury', 'pix', 'quote', 'amounts', 'settlement'],
   refund_notice: ['refund'],
+  // Fase 2 (docs/affiliate-payouts.md): pagamento de comissão e saque para carteira própria.
+  affiliate_commission_payout: ['token', 'treasury', 'beneficiary', 'amounts', 'settlement', 'commission'],
+  affiliate_wallet_withdrawal: ['token', 'treasury', 'beneficiary', 'amounts', 'settlement', 'withdrawal'],
 }
 
 export function validatePayload(p: Record<string, unknown>): asserts p is ReceiptPayload {

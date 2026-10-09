@@ -14,6 +14,8 @@ import { defaultSweep } from './flows/sweep.js'
 import { startWorker, wakeOnWrites } from './worker.js'
 import { registerPilot } from './pilot/routes.js'
 import { copilotFromEnv } from './copilot/model.js'
+import { quoteSourceFromEnv } from './affiliates/quotes.js'
+import { registerAffiliates } from './affiliates/routes.js'
 import { registerShadow } from './pilot-shadow/routes.js'
 
 export type CoreEnv = Record<string, string | undefined>
@@ -53,6 +55,8 @@ export async function startCore(env: CoreEnv = process.env) {
     }),
     // Copiloto: COPILOT_MODE off|replay|live|live_record; COPILOT_PROVIDER anthropic|openai; COPILOT_MODEL; COPILOT_API_KEY; COPILOT_BASE_URL.
     copilot: copilotFromEnv(env, db),
+    // Fase 2 (AFFILIATE_PAYOUTS=1): comissões em dólar; AFFILIATE_SETTLE=0 grava a intenção sem liquidar; AFFILIATE_QUOTE_SOURCE simulated|binance_usdtbrl.
+    affiliates: env.AFFILIATE_PAYOUTS === '1' ? { quotes: quoteSourceFromEnv(env), settle: env.AFFILIATE_SETTLE !== '0', lockTtlMs: Number(env.AFFILIATE_LOCK_TTL_MS ?? 120_000) } : undefined,
   }
   if (!ctx.copilot?.model) console.log(`copiloto: modelo desligado (${ctx.copilot?.offReason})`)
   else console.log(`copiloto: ${ctx.copilot.model.name} em modo ${ctx.copilot.model.mode}`)
@@ -63,6 +67,7 @@ export async function startCore(env: CoreEnv = process.env) {
   // Piloto: ingestão só com PILOT_HMAC_SECRET; sem ele a rota recusa tudo com motivo (leitura do painel continua).
   registerPilot(app, ctx, { hmacSecret: env.PILOT_HMAC_SECRET ?? '', operatorToken: env.PILOT_OPERATOR_TOKEN ?? '', sourceId: env.PILOT_SOURCE ?? 'odin', v1Disabled: env.PILOT_V1_DISABLED === '1', readOnly: ctx.cfg.publicReplayReadOnly, shadowPublic })
   registerShadow(app, db, env)
+  if (ctx.affiliates) { registerAffiliates(app, ctx, { publicMerchantId: env.AFFILIATE_PUBLIC_MERCHANT_ID ?? null }); console.log(`comissões em dólar: ligadas (cotação ${ctx.affiliates.quotes.name}, liquidar ${ctx.affiliates.settle ? 'sim' : 'não'})`) }
 
   // Worker da outbox com estado ocioso de zero consultas (src/worker.ts). Erro de um job fica gravado
   // no próprio job (last_error); erro do banco vira espera crescente com motivo, nunca "fila vazia".
