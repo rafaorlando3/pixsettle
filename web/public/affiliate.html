@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PixSettle affiliate balance in digital dollars</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="stylesheet" href="/assets/affiliate.css">
+<script type="module" src="/assets/affiliate.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="logo">P</div>
+  <div><div class="brand">PixSettle</div><div class="tag">Affiliate payouts in digital dollars on Tempo (read-only, pseudonymous)</div></div>
+  <div class="spacer"></div>
+  <nav class="nav"><a href="/demo">Demo console</a><a href="/pilot">Historical pilot</a><a class="active" href="#">Affiliate</a></nav>
+  <span class="badge live" id="live"><span class="dot"></span><span id="live-text">loading</span></span>
+</header>
+<main class="aff-main">
+  <section class="card aff-hero">
+    <div class="aff-who"><span class="muted small">Beneficiary</span> <code id="aff-ref">-</code> <span class="badge" id="aff-kind">-</span></div>
+    <div class="aff-balance">
+      <div class="aff-usd" id="aff-usd">US$ -</div>
+      <div class="aff-brl" id="aff-brl">≈ R$ - today</div>
+      <div class="aff-token small muted" id="aff-token">digital dollar · Tempo</div>
+    </div>
+    <div class="kpis aff-kpis3">
+      <div class="kpi"><div class="v" id="k-pending">-</div><div class="l">Waiting for release</div></div>
+      <div class="kpi"><div class="v ok" id="k-available">-</div><div class="l">Available now</div></div>
+      <div class="kpi"><div class="v" id="k-withdrawn">-</div><div class="l">Withdrawn</div></div>
+    </div>
+    <p class="small muted" id="aff-note">Each commission was converted the moment the order's Pix landed; the number in dollars never changes while it waits. Withdraw to Pix and the exact amount in BRL is shown before confirming, or send the dollars to a wallet of your own.</p>
+  </section>
+  <div class="grid-aff">
+    <section class="card">
+      <h2>Commissions</h2>
+      <table class="tbl" id="commissions"><thead><tr><th>Order</th><th>Paid in BRL</th><th>Fixed in USD</th><th>Rate</th><th>Status</th><th>On chain</th></tr></thead><tbody></tbody></table>
+    </section>
+    <section class="card">
+      <h2>Withdrawals</h2>
+      <table class="tbl" id="withdrawals"><thead><tr><th>When</th><th>Kind</th><th>USD</th><th>Received (BRL)</th><th>Status</th></tr></thead><tbody></tbody></table>
+      <p class="small muted" id="wd-empty">No withdrawals yet.</p>
+    </section>
+  </div>
+</main>
+</body>
+</html>

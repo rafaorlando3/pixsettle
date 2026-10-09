@@ -47,6 +47,8 @@ async function refreshAffiliates() {
   kv('By status', `${a.by_status.pending} pending · ${a.by_status.released} released · ${a.by_status.settling} settling · ${a.by_status.settled} settled · ${a.by_status.voided} voided`)
   kv('Withdrawals', `${a.withdrawals.total} total · ${a.withdrawals.pix_paid} paid by Pix (R$ ${a.withdrawals.brl_paid}) · ${a.withdrawals.wallet_settled} sent to own wallets`)
   kv('Currency', `digital dollar on Tempo (chain ${a.currency.chain_id}), token ${a.currency.token.slice(0, 10)}…`)
+  const links = $('#aff-links'); links.replaceChildren()
+  for (const r of a.sample_refs ?? []) links.append(h('a', { href: `/pilot/affiliates/${encodeURIComponent(r)}` }, `beneficiary ${r.slice(0, 12)}…`))
 }
 
 async function refreshSummary() {

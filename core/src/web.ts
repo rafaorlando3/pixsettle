@@ -37,6 +37,7 @@ export function registerWeb(app: FastifyInstance, ctx: Ctx, opts: WebOptions) {
   })
   app.get('/pay/:token', page('pay.html'))
   app.get('/pilot', page('pilot.html'))
+  app.get('/pilot/affiliates/:ref', page('affiliate.html')) // fase 2: página pública de um beneficiário (dados em /pilot/api/affiliates/:ref)
   app.get('/receipt/:id', page('receipt.html'))
   if (opts.demo) {
     app.get('/', async (_req, reply) => reply.redirect('/demo'))

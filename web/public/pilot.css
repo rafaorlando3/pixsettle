@@ -49,5 +49,5 @@ select { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); 
 .m0 { margin: 0; } .mb12 { margin-bottom: 12px; }
 .push { margin-left: auto; } .ml6 { margin-left: 6px; } .mt4 { margin-top: 4px; }
 
-.aff-kpis { grid-template-columns: repeat(4, 1fr); }
-@media (max-width: 700px) { .aff-kpis { grid-template-columns: repeat(2, 1fr); } }
+.aff-kpis { grid-template-columns: repeat(2, 1fr); }
+.aff-links a { margin-right: 10px; }

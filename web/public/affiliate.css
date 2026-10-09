@@ -1,0 +1,18 @@
+.nav { display: flex; gap: 6px; margin-right: 10px; }
+.nav a { padding: 6px 10px; border-radius: 999px; text-decoration: none; color: var(--muted); font-weight: 600; font-size: 13px; }
+.nav a.active { background: var(--accent-soft); color: var(--accent); }
+.aff-main { max-width: 1100px; margin: 0 auto; padding: 18px 16px 40px; display: grid; gap: 16px; }
+.aff-hero { display: grid; gap: 14px; }
+.aff-who code { font-size: 13px; }
+.aff-balance { display: grid; gap: 2px; }
+.aff-usd { font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.aff-brl { font-size: 18px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.aff-token { font-size: 11px; }
+.aff-kpis3 { grid-template-columns: repeat(3, 1fr); }
+.grid-aff { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+.pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); }
+.pill.settled, .pill.paid { color: var(--ok); border-color: var(--ok); }
+.pill.pending, .pill.requested, .pill.settling, .pill.released { color: var(--muted); }
+.pill.voided, .pill.failed { color: var(--warn); border-color: var(--warn); }
+.strong { font-weight: 700; }
+@media (max-width: 900px) { .grid-aff { grid-template-columns: 1fr; } .aff-usd { font-size: 32px; } .aff-kpis3 { grid-template-columns: 1fr; } }

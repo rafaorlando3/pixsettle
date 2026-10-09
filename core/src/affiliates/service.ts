@@ -356,7 +356,7 @@ export async function beneficiaryView(ctx: Ctx, merchantId: string, ref: string)
       WHERE w.beneficiary_id=$1 ORDER BY w.created_at DESC LIMIT 100`, [b.id])).rows.map(projectWithdrawal)
   return {
     beneficiary_ref: ref, kind: b.kind, payout: b.payout_address ? { mode: 'own_wallet', address: b.payout_address } : { mode: 'pool' },
-    currency: { symbol: 'USD', token: ctx.chain.token, chain_id: ctx.chain.chainId, note: 'dólar digital na rede Tempo' },
+    currency: { symbol: 'USD', token: ctx.chain.token, chain_id: ctx.chain.chainId, note: 'digital dollar on the Tempo network' },
     balances: {
       pending: { units: bal.pending.toString(), usd: fmtUsd(bal.pending), brl_now: brlNow(bal.pending) },
       available: { units: bal.available.toString(), usd: fmtUsd(bal.available), brl_now: brlNow(bal.available) },
@@ -385,6 +385,7 @@ export async function aggregateView(ctx: Ctx, merchantId?: string) {
             coalesce(sum(w.net_minor) FILTER (WHERE w.kind='pix' AND w.status='paid'),0)::text AS brl_paid_minor
        FROM affiliate_withdrawals w JOIN affiliate_beneficiaries b ON b.id=w.beneficiary_id ${merchantId ? 'WHERE b.merchant_id=$1' : ''}`, args)).rows[0]
   const exceptions = (await ctx.db.query(`SELECT count(*)::int AS n FROM state_transitions WHERE entity='affiliate_exception'`)).rows[0].n
+  const sample = (await ctx.db.query(`SELECT b.beneficiary_ref FROM affiliate_beneficiaries b ${merchantId ? 'WHERE b.merchant_id=$1' : ''} ORDER BY (SELECT count(*) FROM affiliate_commissions c WHERE c.beneficiary_id=b.id) DESC, b.id LIMIT 3`, args)).rows.map(r => r.beneficiary_ref as string)
   const q = await affiliatesOn(ctx).quotes.quote(ctx.now())
   return {
     beneficiaries: r.beneficiaries, commissions: r.commissions,
@@ -392,7 +393,7 @@ export async function aggregateView(ctx: Ctx, merchantId?: string) {
     by_status: { pending: r.pending, released: r.released, settling: r.settling, settled: r.settled, voided: r.voided },
     usd_settled_on_chain: { units: r.usd_settled, usd: fmtUsd(BigInt(r.usd_settled)) },
     withdrawals: { total: w.withdrawals, pix_paid: w.pix_paid, wallet_settled: w.wallet_settled, brl_paid: fmtBrl(BigInt(w.brl_paid_minor)) },
-    exceptions_for_human: exceptions,
+    exceptions_for_human: exceptions, sample_refs: sample, // pseudônimos: páginas públicas de exemplo
     rate_now: q.ok ? { brl_per_usd: (Number(q.quote.price4) / 10_000).toFixed(4), source: q.quote.source, at: q.quote.at.toISOString(), age_s: q.quote.ageS } : { unavailable: q.detail },
     currency: { symbol: 'USD', token: ctx.chain.token, chain_id: ctx.chain.chainId },
   }
