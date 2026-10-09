@@ -40,7 +40,7 @@ async function load() {
       h('td', {}, h('div', {}, when(c.occurred_at)), h('div', { class: 'small muted' }, c.id.slice(0, 14) + '…')),
       h('td', {}, `R$ ${c.amount.brl}`),
       h('td', { class: 'strong' }, `US$ ${c.usd.usd}`),
-      h('td', {}, h('div', {}, `R$ ${rate}`), h('div', { class: 'small muted' }, `${c.quote.source}${c.quote.fee_bps ? ` · fee ${c.quote.fee_bps / 100}%` : ''}${c.quote.mode === 'backfill' ? ' · imported: quoted later than the Pix' : ''}`)),
+      h('td', {}, h('div', {}, `R$ ${rate}`), h('div', { class: 'small muted' }, `${c.quote.source}${c.quote.fee_bps ? ` · fee ${c.quote.fee_bps / 100}%` : ''}${c.quote.mode === 'backfill' ? ' · imported (quoted later)' : ''}`)),
       h('td', {}, pill(c.status), c.reason_code ? h('div', { class: 'small muted' }, c.reason_code) : null),
       h('td', {}, c.payout ? h('div', {}, explorerLink(c.payout.tx_hash), c.payout.receipt_id ? h('div', { class: 'small' }, h('a', { href: `/pilot/api/affiliates/receipts/${c.payout.receipt_id}` }, 'receipt')) : null, c.payout.hold_reason ? h('div', { class: 'small muted' }, c.payout.hold_reason) : null) : h('span', { class: 'muted' }, '-')),
     ))
