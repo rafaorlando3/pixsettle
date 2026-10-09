@@ -3,10 +3,11 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { createServer, type Server } from 'node:http'
 import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import { toEventSelector, pad, toHex } from 'viem'
 import { signReceipt, type ReceiptEnvelope } from '../../settlement/src/receipt.js'
-import { verifyReceipt, type Step } from '../src/verify.js'
+import { verifyReceipt, recipientCommitment, type Step } from '../src/verify.js'
 
 const V = JSON.parse(readFileSync(new URL('../../contract/vectors/receipt-v1.json', import.meta.url), 'utf8'))
 const BASE = V.valid.find((c: any) => c.name === 'settlement_basic').envelope.payload
@@ -228,3 +229,91 @@ describe('verificador do navegador: aviso de estorno', () => {
     expect(r.calls).toBe(0)
   })
 })
+
+// Fase 2 (revisão 349 dedicada, D2): recibos de afiliado nunca carregam o destino; o navegador confere o destinatário do
+// TransferWithMemo contra o compromisso settlement.recipient_sha256 e nunca mostra a carteira.
+describe('verificador do navegador: recibos de afiliado (comissão e saque) com compromisso do destinatário', () => {
+  const RECIPIENT = '0x5eE9C0ffee1234567890AbCdEf1234567890AfF1' // carteira do afiliado: só existe no teste, nunca no recibo
+  const OTHER = '0x000000000000000000000000000000000000d00d'
+  const commit = (a: string) => createHash('sha256').update(a.toLowerCase()).digest('hex') // mesmo cálculo do emissor (core/src/affiliates/receipts.ts)
+  function affiliate(type: 'affiliate_commission_payout' | 'affiliate_wallet_withdrawal', edit?: (p: any) => void) {
+    const b = BASE, s = b.settlement
+    const p: any = {
+      schema_version: 1, receipt_id: 'rct_01K7AFFILIATE000000000000A', receipt_type: type, issuer: clone(b.issuer), provider_env: 'merchant_api',
+      chain_env: b.chain_env, chain_id: b.chain_id, token: b.token, treasury: b.treasury,
+      order: { ref: null, commission_id: type === 'affiliate_commission_payout' ? 'com_01K7TESTCOMMISSION0000001' : null, withdrawal_id: type === 'affiliate_wallet_withdrawal' ? 'wdr_01K7TESTWITHDRAWAL0000001' : null },
+      beneficiary: { ref: 'afl_7f3a9c1e2b4d', kind: 'affiliate' }, issued_at: '2026-10-09T20:00:00.000Z',
+      settlement: { id: 'stl_01K7TESTSETTLEMENT0000001', amount: s.amount, memo: s.memo, tx_hash: s.tx_hash, block_number: s.block_number, block_hash: s.block_hash, log_index: s.log_index,
+        confirmation_observed_at: '2026-10-09T20:00:05.000Z', recipient_sha256: commit(RECIPIENT) },
+      amounts: { usd_units: String(s.amount), usd: (Number(s.amount) / 1e6).toFixed(6), currency: 'USD', scale: 6 },
+    }
+    if (type === 'affiliate_commission_payout') p.commission = { id: p.order.commission_id, custody: 'own_wallet', amount: { amount: '12345', currency: 'BRL', scale: 2, brl: '123.45' },
+      quote: { rate_num: '1', rate_den: '5', source: 'binance_usdtbrl', at: '2026-10-09T19:59:00.000Z', hash: 'a'.repeat(64), fee_bps: 0, mode: 'at_pix' }, occurred_at: '2026-10-09T19:58:00.000Z', released_at: '2026-10-09T19:59:30.000Z' }
+    else p.withdrawal = { id: p.order.withdrawal_id, kind: 'wallet' }
+    edit?.(p)
+    return signReceipt(p, KEY)
+  }
+  const toRecipient = (addr: string) => (x: any) => { x.logs[1].topics[2] = pad(addr as `0x${string}`) }
+  const noAddress = (r: { steps: Step[] }) => { const j = JSON.stringify(r.steps).toLowerCase(); expect(j).not.toContain(RECIPIENT.slice(2, 12).toLowerCase()); expect(j).not.toContain(RECIPIENT.toLowerCase()) }
+
+  it('comissão own_wallet: assinatura ok, origem informativa (sem "Pix undefined"), cadeia ok pelo compromisso, carteira nunca exibida', async () => {
+    const r = await run(await affiliate('affiliate_commission_payout'), { kind: 'receipt', patch: toRecipient(RECIPIENT) })
+    expect(r.sig.state).toBe('ok')
+    expect(r.steps.find(s => s.key === 'pix')).toBeUndefined()
+    const origin = r.steps.find(s => s.key === 'origin')!
+    expect(origin.state).toBe('info'); expect(origin.label).toBe('Affiliate commission')
+    expect(origin.detail).toContain('R$ 123.45'); expect(origin.detail).toContain('own_wallet'); expect(origin.detail).toContain('Pix landed'); expect(origin.detail).not.toContain('undefined')
+    expect(r.chain.state).toBe('ok'); expect(r.chain.detail).toContain('committed'); expect(r.calls).toBe(1)
+    noAddress(r)
+  })
+  it('saque para carteira: assinatura ok, origem "Wallet withdrawal", cadeia ok pelo compromisso', async () => {
+    const r = await run(await affiliate('affiliate_wallet_withdrawal'), { kind: 'receipt', patch: toRecipient(RECIPIENT) })
+    expect(r.sig.state).toBe('ok')
+    const origin = r.steps.find(s => s.key === 'origin')!
+    expect(origin.label).toBe('Wallet withdrawal'); expect(origin.detail).toContain('afl_7f3a9c1e2b4d'); expect(origin.detail).not.toContain('undefined')
+    expect(r.chain.state).toBe('ok'); expect(r.calls).toBe(1)
+    noAddress(r)
+  })
+  it('compromisso que não bate com o destinatário na cadeia (recibo reassinado): fail, sem revelar endereço', async () => {
+    const r = await run(await affiliate('affiliate_commission_payout', p => { p.settlement.recipient_sha256 = commit(OTHER) }), { kind: 'receipt', patch: toRecipient(RECIPIENT) })
+    expect(r.sig.state).toBe('ok')
+    expect(r.chain.state).toBe('fail'); expect(r.chain.detail).toContain('recipient commitment')
+    noAddress(r)
+  })
+  it('log adulterado (transferência foi para outra carteira): fail', async () => {
+    const r = await run(await affiliate('affiliate_wallet_withdrawal'), { kind: 'receipt', patch: toRecipient(OTHER) })
+    expect(r.sig.state).toBe('ok'); expect(r.chain.state).toBe('fail'); expect(r.chain.detail).toContain('recipient commitment')
+  })
+  it('valor, memo ou índice do log diferentes: fail (as outras conferências continuam valendo)', async () => {
+    const a = await run(await affiliate('affiliate_commission_payout', p => { p.settlement.amount = '1' }), { kind: 'receipt', patch: toRecipient(RECIPIENT) })
+    expect(a.chain.state).toBe('fail')
+    const m = await run(await affiliate('affiliate_commission_payout', p => { p.settlement.memo = '0x' + 'ab'.repeat(32) }), { kind: 'receipt', patch: toRecipient(RECIPIENT) })
+    expect(m.chain.state).toBe('fail')
+    const i = await run(await affiliate('affiliate_commission_payout', p => { p.settlement.log_index = '7' }), { kind: 'receipt', patch: toRecipient(RECIPIENT) })
+    expect(i.chain.state).toBe('fail'); expect(i.chain.detail).toContain('log index')
+  })
+  it('recibo de afiliado com destino embutido ou sem compromisso válido: malformado, fail sem consultar a RPC', async () => {
+    const withTo = await run(await affiliate('affiliate_commission_payout', p => { p.settlement.to = RECIPIENT }), { kind: 'receipt', patch: toRecipient(RECIPIENT) })
+    expect(withTo.chain.state).toBe('fail'); expect(withTo.chain.detail).toMatch(/malformed.*\bto\b/); expect(withTo.calls).toBe(0)
+    const noCommit = await run(await affiliate('affiliate_wallet_withdrawal', p => { p.settlement.recipient_sha256 = 'xyz' }), { kind: 'receipt', patch: toRecipient(RECIPIENT) })
+    expect(noCommit.chain.state).toBe('fail'); expect(noCommit.chain.detail).toContain('recipient_sha256'); expect(noCommit.calls).toBe(0)
+  })
+  it('adulterado depois de assinado (compromisso trocado sem reassinar): assinatura falha', async () => {
+    const env = await affiliate('affiliate_commission_payout')
+    ;(env.payload as any).settlement.recipient_sha256 = commit(OTHER)
+    const r = await run(env, { kind: 'receipt', patch: toRecipient(OTHER) })
+    expect(r.sig.state).toBe('fail'); expect(r.sig.detail).toMatch(/^digest_mismatch/)
+  })
+  it('RPC indisponível, sem recibo ainda ou recibo incompleto: unavailable com motivo, nunca fail', async () => {
+    const env = await affiliate('affiliate_wallet_withdrawal')
+    const down = await run(env, { kind: 'http_500' }); expect(down.chain.state).toBe('unavailable'); expect(down.chain.reason).toBe('rpc_unreachable')
+    const hang = await run(env, { kind: 'hang' }); expect(hang.chain.state).toBe('unavailable'); expect(hang.chain.reason).toBe('rpc_unreachable')
+    const none = await run(env, { kind: 'null' }); expect(none.chain.state).toBe('unavailable'); expect(none.chain.reason).toBe('receipt_not_found')
+    const partial = await run(env, { kind: 'receipt', patch: x => { delete x.logs } }); expect(partial.chain.state).toBe('unavailable'); expect(partial.chain.reason).toBe('rpc_incomplete')
+  })
+  it('recipientCommitment: mesmo cálculo do emissor (sha256 do endereço em minúsculas), independente da caixa do endereço', () => {
+    expect(recipientCommitment(RECIPIENT)).toBe(commit(RECIPIENT))
+    expect(recipientCommitment(RECIPIENT.toUpperCase().replace('0X', '0x'))).toBe(commit(RECIPIENT))
+  })
+})
+

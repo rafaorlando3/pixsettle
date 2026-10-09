@@ -162,7 +162,8 @@ CREATE TABLE affiliate_commission_rejections (
   code text NOT NULL, detail text NULL, http integer NOT NULL,
   -- capture: full = corpo inteiro recebido (sha e tamanho medidos); declared = corpo não lido (413/415/erro do parser), tamanho = Content-Length declarado; none = nada
   capture text NOT NULL CHECK (capture IN ('full','declared','none')),
-  body_sha256 text NULL, bytes integer NULL,
+  -- bytes é bigint: um Content-Length declarado acima de 2 GB (413 antes de ler) precisa caber; um valor que nem é inteiro seguro fica no detail, com bytes nulo
+  body_sha256 text NULL, bytes bigint NULL,
   CHECK ((capture = 'full' AND body_sha256 IS NOT NULL AND bytes IS NOT NULL) OR (capture <> 'full' AND body_sha256 IS NULL))
 );
 CREATE FUNCTION affiliate_append_only() RETURNS trigger LANGUAGE plpgsql AS $$

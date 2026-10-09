@@ -15,7 +15,8 @@ function memoText(memo) {
 
 async function run() {
   let env, meta
-  try { [env, meta] = await Promise.all([api(`/r/${encodeURIComponent(id)}`), api('/.well-known/pixsettle.json')]) }
+  // Recibos de liquidação ficam em /r/:id; recibos de afiliado (fase 2, só do lojista público) em /pilot/api/affiliates/receipts/:id.
+  try { [env, meta] = await Promise.all([loadReceipt(id), api('/.well-known/pixsettle.json')]) }
   catch (e) { hero('bad', 'Receipt not found', e.message); return }
   const pinned = new URLSearchParams(location.search).get('issuer')
   const trusted = pinned ? [pinned] : meta.trusted_issuers.map(i => i.address)
@@ -27,6 +28,7 @@ async function run() {
   $('#again').onclick = () => verify(env, trusted, meta)
   details(env.payload, meta)
   if (env.payload.receipt_type === 'refund_notice') $('#how').textContent = 'Your browser recomputed the SHA-256 digest of the canonical JSON (RFC 8785) and recovered the EIP-191 signer. A refund notice is a signed statement by the issuer about what the Pix provider reported; there is no on-chain transfer to check.'
+  else if (isAffiliate(env.payload)) $('#how').textContent = 'Your browser recomputed the SHA-256 digest of the canonical JSON (RFC 8785), recovered the EIP-191 signer, and fetched the transaction receipt straight from the public Tempo RPC. This receipt never carries the recipient wallet: it carries a SHA-256 commitment of the address, and your browser checks that the on-chain transfer went to an address matching that commitment.'
   await verify(env, trusted, meta)
 }
 
@@ -53,6 +55,7 @@ async function verify(env, trusted, meta) {
     else hero('warn', 'Signature valid, chain check unavailable', 'The Tempo RPC could not be reached. Nothing was concluded. Use "Verify again" in a moment.')
   }
   else if (env.payload.receipt_type === 'refund_notice') hero('ok', 'Refund notice verified', 'Signed by a trusted issuer. The refund itself is attested by the issuer from the Pix provider, not proven on-chain.')
+  else if (isAffiliate(env.payload)) hero('ok', 'Receipt verified', 'Signed by a trusted issuer and matched to a successful transfer on Tempo to the recipient committed in this receipt (the wallet itself is not published).')
   else hero('ok', 'Receipt verified', 'Signed by a trusted issuer and matched to a successful transfer on Tempo.')
 }
 
@@ -75,8 +78,37 @@ function refundDetails(p) {
   $('#details').replaceChildren(...rows.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))
 }
 
+const isAffiliate = p => p?.receipt_type === 'affiliate_commission_payout' || p?.receipt_type === 'affiliate_wallet_withdrawal'
+
+async function loadReceipt(id) {
+  try { return await api(`/r/${encodeURIComponent(id)}`) }
+  catch (e) {
+    if (e.status !== 404) throw e
+    try { return await api(`/pilot/api/affiliates/receipts/${encodeURIComponent(id)}`) }
+    catch (e2) { throw e2.status === 404 ? e : e2 }
+  }
+}
+
+// Recibo de afiliado (fase 2): comissão ou saque; sem carteira em lugar nenhum, só o compromisso sha256 e a transação pública.
+function affiliateDetails(p, meta) {
+  const s = p.settlement, a = p.amounts, c = p.commission, w = p.withdrawal
+  const rows = [['Type', c ? 'Affiliate commission payout' : 'Wallet withdrawal'], ['Beneficiary', h('span', { class: 'mono' }, `${p.beneficiary?.ref ?? '?'} (${p.beneficiary?.kind ?? '?'})`)]]
+  if (c) {
+    rows.push(['Commission', h('span', { class: 'mono' }, c.id)], ['Commission amount', `R$ ${c.amount?.brl ?? '?'} (${c.custody} custody)`],
+      ['Quote', `${c.quote?.rate_num}/${c.quote?.rate_den} from ${c.quote?.source}${c.quote?.fee_bps ? `, fee ${c.quote.fee_bps / 100}%` : ''}, ${c.quote?.mode === 'at_pix' ? 'fixed when the Pix landed' : 'imported commission, quoted at import'}`],
+      ['Occurred', c.occurred_at ? new Date(c.occurred_at).toLocaleString() : '-'], ['Released', c.released_at ? new Date(c.released_at).toLocaleString() : '-'])
+  } else if (w) rows.push(['Withdrawal', h('span', { class: 'mono' }, w.id)])
+  rows.push(['Paid', h('b', {}, `${a.usd} ${a.currency}`)],
+    ['Paid to', h('span', {}, 'Recipient committed as ', h('span', { class: 'mono' }, `sha256:${short(s.recipient_sha256, 8)}`), ' (wallet not published; checked on-chain by your browser)')],
+    ['Transaction', h('a', { class: 'mono', href: `${meta.chain.explorer}/tx/${s.tx_hash}`, target: '_blank', rel: 'noopener' }, short(s.tx_hash, 10))],
+    ['Block', s.block_number], ['Memo', h('span', { class: 'mono' }, memoText(s.memo) || s.memo)],
+    ['Issued', new Date(p.issued_at).toLocaleString()], ['Receipt id', h('span', { class: 'mono' }, p.receipt_id)])
+  $('#details').replaceChildren(...rows.flatMap(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]))
+}
+
 function details(p, meta) {
   if (p.receipt_type === 'refund_notice') return refundDetails(p)
+  if (isAffiliate(p)) return affiliateDetails(p, meta)
   const s = p.settlement, a = p.amounts
   const rows = [
     ['Order', h('span', { class: 'mono' }, p.order.id)],

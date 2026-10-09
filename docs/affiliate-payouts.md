@@ -1,6 +1,6 @@
 # Affiliate payouts in digital dollars (phase 2 contract)
 
-Status: contract v4, 2026-10-09 (v3 plus the dedicated review of task 349, X-1037/X-1042/X-1044/X-1046, all applied; see section 12).
+Status: contract v5, 2026-10-09 (v4 plus the second pass of the dedicated review of task 349, X-1060/X-1061/X-1062, all applied; see section 13).
 Module `core/src/affiliates/`, feature flag `AFFILIATE_PAYOUTS` (off by default).
 Scope of this phase: real commission events from the merchant's affiliate program enter PixSettle through the
 API, each commission is fixed in digital dollars at the moment the Pix is received, released after the
@@ -100,7 +100,12 @@ digital dollars on the Tempo network.
 - Every amount shown is the amount promised; the receipt repeats it.
 - The signed receipt never carries a destination address: `settlement.recipient_sha256` (sha256 of the lowercase
   address) lets the merchant prove the destination without publishing it; the transaction hash is the public proof.
-  The public receipt route returns the signed envelope exactly as issued, nothing removed.
+  The public receipt route returns the signed envelope exactly as issued, nothing removed. The browser verifier
+  (`web/src/verify.ts`, page `/receipt/<rct_>`) recognises `affiliate_commission_payout` and `affiliate_wallet_withdrawal`,
+  checks token, sender, amount, memo, block and log index as for a settlement receipt, and checks the recipient of the
+  `TransferWithMemo` log against `recipient_sha256` instead of a `to` field; it never displays the wallet. An affiliate
+  receipt that carries `to` is malformed (fail). What the issuer attests (the commission's BRL amount, custody and quote
+  mode, or the withdrawal) is shown as an informational step; an RPC that cannot be reached is `unavailable`, never `fail`.
 - Evidence is named, never implied: a Pix `paid` is the merchant's declaration (`evidence: declared_by_merchant`; the
   end-to-end id is kept for the merchant, not published); a wallet `settled` is observed on chain (`chain_confirmed`).
   PixSettle does not verify the Pix at the provider in this phase.
@@ -110,7 +115,7 @@ digital dollars on the Tempo network.
 - `POST /api/v1/affiliates/commissions` body `{ source_event_id, beneficiary_ref, kind, order_ref, amount: {amount, currency: 'BRL', scale: 2}, occurred_at }` → 201 commission; 200 when the same `source_event_id` already exists with the same content (decided under a lock per event id, so concurrent repeats create one); 409 `idempotency_conflict` when the content differs (beneficiary, kind, amount, order or date): the fixed commission never changes.
 - `beneficiary_ref` must be opaque by construction: `^(aff|par|afl|ben)_[0-9a-f]{12,64}$`; anything else (a name, CPF, e-mail or Pix key) is refused with `invalid_beneficiary_ref`.
 - `POST /api/v1/affiliates/commissions/:id/release` and `/void` body `{ reason_code, occurred_at }`.
-- `POST /api/v1/affiliates/commissions/:id/retry-payout`: when the send journal gave up on a payout (`settlements.status = failed`, for example after the maximum number of reverted attempts) and no attempt may have reached the network, records a new settlement intent for the same commission with the same memo plus a `-N` suffix (memo is unique in the journal), without touching the ledger. Refused with `payout_not_failed`, `payout_in_flight`, `commission_not_payable`, `no_payout` or `no_payout_address`.
+- `POST /api/v1/affiliates/commissions/:id/retry-payout`: when the send journal gave up on a payout (`settlements.status = failed`, for example after the maximum number of reverted attempts) and no attempt may have reached the network, records a new settlement intent for the same commission with the same memo plus a `-N` suffix (memo is unique in the journal), without touching the ledger. Refused with `payout_not_failed`, `payout_in_flight`, `commission_not_payable` or `no_payout_address`.
 - `GET /api/v1/affiliates/beneficiaries/:ref` → balances (`pending`, `available`, `withdrawn`), rate now, list of commissions with receipts.
 - `PUT /api/v1/affiliates/beneficiaries/:ref/wallet` body `{ address }` → registers the own wallet.
 - `POST /api/v1/affiliates/beneficiaries/:ref/withdrawals/simulate` body `{ kind, usd_units }` → lock.
@@ -160,7 +165,12 @@ silently dropped. Revisions are applied in blocks of 500 per job and the job res
 revisions remain, so a batch of up to 5,000 is drained in order. Every refused batch (token, key, signature, chain gap,
 framing, read-only replica, internal error) is recorded append-only in `affiliate_commission_rejections` with origin
 and key id when identifiable, the code, the technical detail, the HTTP status and the sha256 and size of the body
-received. Beneficiary ids `aff_...` are affiliates and `par_...` are partners paid by percentage.
+received (`capture = full`); a refusal before the body is read (413 by declared Content-Length, 415 media type) keeps the
+declared size (`declared`, stored as bigint, so a declared 3 GB is recorded; a value that is not even a safe integer is
+kept in `detail` with a null size) or nothing (`none`, for example chunked without Content-Length). The batch route
+accepts only `application/json` (with or without charset); any other media type, or no Content-Type, is 415
+`commission_content_type` before any validation, never 413. Beneficiary ids `aff_...` are affiliates and `par_...` are
+partners paid by percentage.
 
 ## 10. Review of task 347 (Codex, 2026-10-09) and what changed
 
@@ -221,3 +231,30 @@ suite. Core suite: 279 tests.
 5. Public page: tables scroll inside their card and the layout never exceeds the viewport (measured at 320, 390, 768 and
    1280 px: `document.scrollWidth == innerWidth`, no element outside the viewport except inside `.tbl-wrap`); the pilot
    card says commissions are converted when they reach PixSettle and counts imported ones separately. Core suite: 282 tests.
+
+## 13. Dedicated review of task 349, second pass (Codex, X-1060, X-1061, X-1062) and what changed
+
+1. C1, audit lost with a large Content-Length: a declared `Content-Length: 3000000000` was refused with 413 but the
+   rejection row failed to insert (`bytes` was `integer`) and the error was only logged. `bytes` is now `bigint`; a
+   declared value that is not a safe integer is recorded with `bytes = NULL` and the raw header in `detail`; a chunked
+   body without Content-Length that exceeds the limit is recorded as `capture = none`. Tested over real HTTP sockets
+   (not `app.inject`): 3,000,000,000 declared, 4 MiB + 1 chunked, a full body with its exact sha256, one row per refusal,
+   never the body or the token in the row.
+2. C2, wrong HTTP status for `text/plain`: Fastify's inherited `text/plain` parser turned a small body into a string and
+   `validateBatch` classified it as a size problem (413). The batch scope now removes all inherited content type parsers
+   and registers only `application/json`; any other media type (and a missing Content-Type) is 415
+   `commission_content_type` before validation, with the rejection recorded; `application/json; charset=utf-8` is
+   accepted and processed. A non-Buffer body reaching the handler is also refused with 415 (defence in depth).
+3. D1, stale verifier bundle: `web/public/verify.js` is rebuilt from the source with the pinned esbuild and committed; the
+   CI gate (`npm run build` then `git diff --exit-code -- public/verify.js`) passes, and the build is reproducible (same
+   sha256 on two consecutive builds).
+4. D2, on-chain proof of affiliate receipts: see section 5 (receipts). The verifier accepts the two affiliate types,
+   matches the log recipient against `recipient_sha256`, shows the nature of the commission or withdrawal instead of a Pix
+   step, and never shows the wallet. The public receipt page loads affiliate receipts from
+   `/pilot/api/affiliates/receipts/<rct_>` when `/r/<rct_>` has none, renders the commission or withdrawal details without
+   the wallet, and the affiliate page links each paid commission and wallet withdrawal to that page. Browser tests (fake
+   RPC): both types ok; tampered commitment or tampered log recipient fail; `to` embedded or invalid commitment is
+   malformed (fail, no RPC call); RPC down, no receipt yet or incomplete receipt are `unavailable` with the reason;
+   settlement and refund receipts unchanged. Web suite: 38 tests. Also: the obsolete `no_payout` code was removed from
+   section 6 (the code only raises `no_payout_address`).
+

@@ -42,7 +42,7 @@ async function load() {
       h('td', { class: 'strong' }, `US$ ${c.usd.usd}`),
       h('td', {}, h('div', {}, `R$ ${rate}`), h('div', { class: 'small muted' }, `${c.quote.source}${c.quote.fee_bps ? ` · fee ${c.quote.fee_bps / 100}%` : ''}${c.quote.mode === 'backfill' ? ' · imported (quoted later)' : ''}`)),
       h('td', {}, pill(c.status), c.reason_code ? h('div', { class: 'small muted' }, c.reason_code) : null),
-      h('td', {}, c.payout ? h('div', {}, explorerLink(c.payout.tx_hash), c.payout.receipt_id ? h('div', { class: 'small' }, h('a', { href: `/pilot/api/affiliates/receipts/${c.payout.receipt_id}` }, 'receipt')) : null, c.payout.hold_reason ? h('div', { class: 'small muted' }, c.payout.hold_reason) : null) : h('span', { class: 'muted' }, '-')),
+      h('td', {}, c.payout ? h('div', {}, explorerLink(c.payout.tx_hash), c.payout.receipt_id ? h('div', { class: 'small' }, h('a', { href: `/receipt/${c.payout.receipt_id}` }, 'receipt'), ' ', h('a', { class: 'muted', href: `/pilot/api/affiliates/receipts/${c.payout.receipt_id}` }, 'json')) : null, c.payout.hold_reason ? h('div', { class: 'small muted' }, c.payout.hold_reason) : null) : h('span', { class: 'muted' }, '-')),
     ))
   }
   if (!v.commissions.length) tb.append(h('tr', {}, h('td', { colspan: '6', class: 'muted' }, 'No commissions yet.')))
@@ -52,7 +52,7 @@ async function load() {
       h('td', {}, when(w.created_at)),
       h('td', {}, w.kind === 'pix' ? 'Pix' : 'own wallet'),
       h('td', {}, `US$ ${w.usd.usd}`),
-      h('td', {}, w.kind === 'pix' ? h('div', {}, h('div', { class: 'strong' }, `R$ ${w.net.brl}`), h('div', { class: 'small muted' }, `fee R$ ${w.fee.brl}`)) : explorerLink(w.payout?.tx_hash)),
+      h('td', {}, w.kind === 'pix' ? h('div', {}, h('div', { class: 'strong' }, `R$ ${w.net.brl}`), h('div', { class: 'small muted' }, `fee R$ ${w.fee.brl}`)) : h('div', {}, explorerLink(w.payout?.tx_hash), w.payout?.receipt_id ? h('div', { class: 'small' }, h('a', { href: `/receipt/${w.payout.receipt_id}` }, 'receipt')) : null)),
       h('td', {}, pill(w.status), h('div', { class: 'small muted' }, evidenceLabel[w.evidence] ?? ''), w.reason_code ? h('div', { class: 'small muted' }, w.reason_code) : null),
     ))
   }

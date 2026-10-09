@@ -1,12 +1,14 @@
 // Lote assinado -> revisões -> domínio: a ingestão nunca depende da cotação; a aplicação é idempotente, ordenada e explicada.
 import { describe, it, expect, afterEach } from 'vitest'
 import { createHash, randomUUID } from 'node:crypto'
+import { request as httpRequest } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { setup, settleAll } from './helpers.js'
 import { buildApp } from '../src/app.js'
 import { KEY, ev, batch } from './affiliates-batch-fixture.js'
 import { validateBatch } from '../src/affiliates/batches/batch.js'
 import { ingestCommissionBatch, applyCommissionRevisions, signCommissionReceipt, APPLY_TOPIC } from '../src/affiliates/batches/ingest.js'
-import { registerCommissionBatches, batchConfig, streamMap } from '../src/affiliates/batches/routes.js'
+import { registerCommissionBatches, batchConfig, streamMap, declaredLength } from '../src/affiliates/batches/routes.js'
 import { registerAffiliates } from '../src/affiliates/routes.js'
 import { SimulatedQuoteSource } from '../src/affiliates/quotes.js'
 import { configureAffiliateJournal } from '../src/affiliates/journal.js'
@@ -128,7 +130,7 @@ describe('ingestão por lote assinado alimenta o domínio', () => {
     const bad = await post(raw, { 'x-pixsettle-key-id': 'k_other' })
     expect(bad.statusCode).toBe(401); expect(bad.json().error.code).toBe('commission_key_invalid')
     // toda recusa fica gravada (só inserção): token inválido, cadeia, chave
-    const rej = (await e.db.query(`SELECT origin, key_id, code, http, capture, bytes, body_sha256 IS NOT NULL AS sha FROM affiliate_commission_rejections ORDER BY id`)).rows
+    const rej = (await e.db.query(`SELECT origin, key_id, code, http, capture, bytes::int AS bytes, body_sha256 IS NOT NULL AS sha FROM affiliate_commission_rejections ORDER BY id`)).rows
     expect(rej).toEqual([
       { origin: null, key_id: 'k_comtest', code: 'commission_unauthorized', http: 401, capture: 'full', bytes: raw.length, sha: true },
       { origin: 'src_test1', key_id: 'k_comtest', code: 'commission_chain_gap', http: 409, capture: 'full', bytes: batch([ev(2)]).length, sha: true },
@@ -141,7 +143,7 @@ describe('ingestão por lote assinado alimenta o domínio', () => {
     const big = Buffer.alloc(4 * 1024 * 1024 + 1, 0x20)
     const r413 = await post(big)
     expect(r413.statusCode).toBe(413)
-    const pre = (await e.db.query(`SELECT code, http, capture, bytes, body_sha256 FROM affiliate_commission_rejections ORDER BY id DESC LIMIT 2`)).rows.reverse()
+    const pre = (await e.db.query(`SELECT code, http, capture, bytes::int AS bytes, body_sha256 FROM affiliate_commission_rejections ORDER BY id DESC LIMIT 2`)).rows.reverse()
     expect(pre[0]).toMatchObject({ code: 'commission_content_type', http: 415, body_sha256: null }); expect(['declared', 'none']).toContain(pre[0].capture)
     expect(pre[1]).toMatchObject({ code: 'commission_batch_size', http: 413, body_sha256: null }); expect(pre[1].capture).toBe('declared'); expect(pre[1].bytes).toBe(big.length)
     await expect(e.db.query(`UPDATE affiliate_commission_revisions SET amount_minor=1`)).rejects.toThrow(/affiliate_append_only/)
@@ -149,7 +151,7 @@ describe('ingestão por lote assinado alimenta o domínio', () => {
     // sem chaves: 503 com motivo; módulo desligado: 404
     const app2 = buildApp(e.ctx, { asaasWebhookToken: 't', diagnosticsToken: 'd' }); registerCommissionBatches(app2, e.ctx, {})
     expect((await app2.inject({ method: 'POST', url: '/pilot/affiliates/v1/batches', headers: { 'content-type': 'application/json' }, payload: raw })).json().error.code).toBe('commission_not_configured')
-    expect((await e.db.query(`SELECT code, capture, bytes FROM affiliate_commission_rejections ORDER BY id DESC LIMIT 1`)).rows[0]).toEqual({ code: 'commission_not_configured', capture: 'full', bytes: raw.length })
+    expect((await e.db.query(`SELECT code, capture, bytes::int AS bytes FROM affiliate_commission_rejections ORDER BY id DESC LIMIT 1`)).rows[0]).toEqual({ code: 'commission_not_configured', capture: 'full', bytes: raw.length })
     const off = await setup(); drops.push(off.drop)
     const app3 = buildApp(off.ctx, { asaasWebhookToken: 't', diagnosticsToken: 'd' }); registerCommissionBatches(app3, off.ctx, envVars)
     expect((await app3.inject({ method: 'POST', url: '/pilot/affiliates/v1/batches', headers: { 'content-type': 'application/json' }, payload: raw })).statusCode).toBe(404)
@@ -202,3 +204,104 @@ describe('ingestão por lote assinado alimenta o domínio', () => {
     expect((await e.domain())[0]).toMatchObject({ status: 'settled' }) // o pagamento em voo confirma; a devolução fica para uma pessoa
   })
 })
+
+// Revisão 349 dedicada (X-1060, C): recusas por socket HTTP de verdade, não app.inject. Toda recusa deixa UMA linha honesta,
+// inclusive Content-Length acima de 2 GB (bigint), corpo chunked sem Content-Length e media types errados (415, nunca 413).
+describe('revisão 349 dedicada: auditoria de recusas por HTTP real (C1) e media type antes da validação (C2)', () => {
+  type Res = { status: number; body: string }
+  function send(port: number, headers: Record<string, string>, body: Buffer | null, chunked = false): Promise<Res> {
+    return new Promise((resolve, reject) => {
+      const req = httpRequest({ host: '127.0.0.1', port, method: 'POST', path: '/pilot/affiliates/v1/batches', headers }, res => {
+        let out = ''; res.setEncoding('utf8'); res.on('data', c => { out += c }); res.on('end', () => resolve({ status: res.statusCode ?? 0, body: out }))
+      })
+      req.on('error', reject)
+      if (body === null) req.end()
+      else if (chunked) { for (let i = 0; i < body.length; i += 65536) req.write(body.subarray(i, i + 65536)); req.end() }
+      else req.end(body)
+    })
+  }
+  it('declaredLength: ausente, inteiro, acima de 2 GB, não representável', () => {
+    expect(declaredLength(undefined)).toEqual({ present: false, bytes: null, raw: '' })
+    expect(declaredLength('1234')).toEqual({ present: true, bytes: 1234, raw: '1234' })
+    expect(declaredLength('3000000000')).toEqual({ present: true, bytes: 3000000000, raw: '3000000000' })
+    expect(declaredLength('99999999999999999999')).toMatchObject({ present: true, bytes: null })
+    expect(declaredLength('abc')).toMatchObject({ present: true, bytes: null })
+  })
+  it('C1: 413 por Content-Length 3 bilhões grava bytes=3000000000; chunked sem Content-Length grava capture none; corpo completo grava sha exato', async () => {
+    const e = await env()
+    const envVars = {
+      AFFILIATE_KEYS_JSON: JSON.stringify({ k_comtest: { env: 'AFFILIATE_KEY_T', origin: 'src_test1', stores: ['store_1'] } }),
+      AFFILIATE_KEY_T: KEY.secret.toString(), AFFILIATE_TOKENS_JSON: JSON.stringify([{ env: 'AFFILIATE_TOKEN_T', origin: 'src_test1' }]),
+      AFFILIATE_TOKEN_T: 'tok-' + 'x'.repeat(40), AFFILIATE_RECEIPT_KEY: RECEIPT_KEY.toString(), AFFILIATE_STREAMS_JSON: JSON.stringify({ 'src_test1|store_1': e.merchantId }),
+    }
+    const app = buildApp(e.ctx, { asaasWebhookToken: 't', diagnosticsToken: 'd' })
+    registerAffiliates(app, e.ctx, {}); registerCommissionBatches(app, e.ctx, envVars)
+    await app.listen({ host: '127.0.0.1', port: 0 }); drops.push(() => app.close())
+    const port = (app.server.address() as AddressInfo).port
+    const H = { 'content-type': 'application/json', authorization: `Bearer ${envVars.AFFILIATE_TOKEN_T}`, 'x-pixsettle-key-id': 'k_comtest' }
+    const rows = async (n: number) => (await e.db.query(`SELECT code, http, capture, bytes::text AS bytes, body_sha256, detail, origin, key_id FROM affiliate_commission_rejections ORDER BY id DESC LIMIT $1`, [n])).rows.reverse()
+    // 1) Content-Length declarado de 3 bilhões: 413 antes de ler qualquer byte; a linha existe e o tamanho declarado cabe (bigint)
+    const huge = await send(port, { ...H, 'content-length': '3000000000' }, null)
+    expect(huge.status).toBe(413); expect(JSON.parse(huge.body).error.code).toBe('commission_batch_size')
+    let r = await rows(1)
+    expect(r[0]).toMatchObject({ code: 'commission_batch_size', http: 413, capture: 'declared', bytes: '3000000000', body_sha256: null, key_id: 'k_comtest' })
+    // 2) chunked sem Content-Length acima de 4 MiB: 413 ao estourar; capture none (nada declarado, nada medido), bytes nulo
+    const big = Buffer.alloc(4 * 1024 * 1024 + 1, 0x20)
+    const ch = await send(port, { ...H, 'transfer-encoding': 'chunked' }, big, true)
+    expect(ch.status).toBe(413)
+    r = await rows(1)
+    expect(r[0]).toMatchObject({ code: 'commission_batch_size', http: 413, capture: 'none', bytes: null, body_sha256: null })
+    // 3) corpo completo recusado (token inválido): sha256 exato do corpo e tamanho medido, uma linha só, sem corpo nem token na linha
+    const raw = batch([ev(1)])
+    const unauthorized = await send(port, { ...H, authorization: 'Bearer nope-' + 'y'.repeat(36) }, raw)
+    expect(unauthorized.status).toBe(401)
+    r = await rows(1)
+    expect(r[0]).toMatchObject({ code: 'commission_unauthorized', http: 401, capture: 'full', bytes: String(raw.length), body_sha256: createHash('sha256').update(raw).digest('hex') })
+    expect(JSON.stringify(r[0])).not.toContain('nope-'); expect(JSON.stringify(r[0])).not.toContain(raw.toString('utf8').slice(0, 40))
+    // 4) Content-Length que nem é inteiro seguro: 413 pelo servidor; linha declarada com bytes nulo e o motivo no detalhe
+    const absurd = await send(port, { ...H, 'content-length': '99999999999999999999' }, null)
+    expect([400, 413]).toContain(absurd.status)
+    if (absurd.status === 413) {
+      r = await rows(1)
+      expect(r[0]).toMatchObject({ code: 'commission_batch_size', capture: 'declared', bytes: null, body_sha256: null })
+      expect(r[0].detail).toContain('não representável')
+    }
+    // uma linha por recusa: 3 ou 4 linhas no total, nenhuma a mais
+    const total = (await e.db.query(`SELECT count(*)::int AS n FROM affiliate_commission_rejections`)).rows[0].n
+    expect(total).toBe(absurd.status === 413 ? 4 : 3)
+  })
+  it('C2: text/plain e application/octet-stream são 415 commission_content_type (não 413); application/json com charset segue normal', async () => {
+    const e = await env()
+    const envVars = {
+      AFFILIATE_KEYS_JSON: JSON.stringify({ k_comtest: { env: 'AFFILIATE_KEY_T', origin: 'src_test1', stores: ['store_1'] } }),
+      AFFILIATE_KEY_T: KEY.secret.toString(), AFFILIATE_TOKENS_JSON: JSON.stringify([{ env: 'AFFILIATE_TOKEN_T', origin: 'src_test1' }]),
+      AFFILIATE_TOKEN_T: 'tok-' + 'x'.repeat(40), AFFILIATE_RECEIPT_KEY: RECEIPT_KEY.toString(), AFFILIATE_STREAMS_JSON: JSON.stringify({ 'src_test1|store_1': e.merchantId }),
+    }
+    const app = buildApp(e.ctx, { asaasWebhookToken: 't', diagnosticsToken: 'd' })
+    registerAffiliates(app, e.ctx, {}); registerCommissionBatches(app, e.ctx, envVars)
+    await app.listen({ host: '127.0.0.1', port: 0 }); drops.push(() => app.close())
+    const port = (app.server.address() as AddressInfo).port
+    const H = { authorization: `Bearer ${envVars.AFFILIATE_TOKEN_T}`, 'x-pixsettle-key-id': 'k_comtest' }
+    const raw = batch([ev(1)])
+    const small = Buffer.from('{"not":"a batch"}')
+    for (const ct of ['text/plain', 'text/plain; charset=utf-8', 'application/octet-stream', 'application/x-www-form-urlencoded']) {
+      const r = await send(port, { ...H, 'content-type': ct }, small)
+      expect(r.status, ct).toBe(415); expect(JSON.parse(r.body).error.code, ct).toBe('commission_content_type')
+      const row = (await e.db.query(`SELECT code, http, capture, bytes::text AS bytes, body_sha256, detail FROM affiliate_commission_rejections ORDER BY id DESC LIMIT 1`)).rows[0]
+      expect(row).toMatchObject({ code: 'commission_content_type', http: 415, capture: 'declared', bytes: String(small.length), body_sha256: null })
+      expect(row.detail).toContain(ct.split(';')[0])
+    }
+    // sem Content-Type: também 415, nunca o parser herdado
+    const none = await send(port, { ...H, 'content-length': String(small.length) }, small)
+    expect(none.status).toBe(415)
+    // JSON normal com charset: aceito e processado (200, lote aceito); repetição idêntica é replay
+    const okc = await send(port, { ...H, 'content-type': 'application/json; charset=utf-8' }, raw)
+    expect(okc.status, okc.body).toBe(200); expect(JSON.parse(okc.body)).toMatchObject({ result: 'accepted', accepted: 1 })
+    const again = await send(port, { ...H, 'content-type': 'application/json' }, raw)
+    expect(again.status).toBe(200)
+    // o outro core (rotas gerais) não perdeu o parser herdado: text/plain fora deste escopo continua tratado pelo Fastify
+    const total = (await e.db.query(`SELECT count(*)::int AS n FROM affiliate_commission_rejections`)).rows[0].n
+    expect(total).toBe(5)
+  })
+})
+
