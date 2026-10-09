@@ -9,6 +9,7 @@ import { executeRefund, reconcileRefund, issueRefundReceipt } from './flows/refu
 import { observeCharge, expireOrder } from './flows/sweep.js'
 import { judgeWithModel } from './copilot/judge.js'
 import { issueAffiliateReceipt } from './affiliates/receipts.js'
+import { applyCommissionRevisions, APPLY_TOPIC } from './affiliates/batches/ingest.js'
 
 export type Job = { id: string; topic: string; entity_id: string; payload: any; attempts: number }
 type Handler = (ctx: Ctx, job: Job) => Promise<void | { retryInMs: number; payload?: any }>
@@ -22,6 +23,13 @@ export const handlers: Record<string, Handler> = {
   broadcast_attempt: async (ctx, j) => (await broadcastAttempt(ctx, j.entity_id)) === 'wait' ? { retryInMs: TREASURY_WAIT_MS } : undefined,
   issue_receipt: (ctx, j) => issueSettlementReceipt(ctx, j.entity_id),
   issue_affiliate_receipt: (ctx, j) => issueAffiliateReceipt(ctx, j.entity_id), // fase 2: recibo de comissão/saque para carteira
+  // Fase 2: aplica ao domínio as revisões de comissão ingeridas por lote; cotação fora do ar ou corrente sem lojista = espera crescente com motivo.
+  [APPLY_TOPIC]: async (ctx, j) => {
+    const tryNo = Number(j.payload?.try ?? 0)
+    const [origin, store] = String(j.entity_id).split('|')
+    const r = await applyCommissionRevisions(ctx, origin ?? '', store ?? '')
+    if (r.retry) return { retryInMs: Math.min(300_000, 5_000 * 2 ** Math.min(tryNo, 6)), payload: { try: tryNo + 1 } }
+  },
   request_refund: async (ctx, j) => { await executeRefund(ctx, j.entity_id) },
   observe_charge: (ctx, j) => observeCharge(ctx, j.entity_id),
   expire_order: (ctx, j) => expireOrder(ctx, j.entity_id),

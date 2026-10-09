@@ -1,3 +1,8 @@
+DROP TABLE IF EXISTS affiliate_commission_applications;
+DROP TABLE IF EXISTS affiliate_commission_revisions;
+DROP TABLE IF EXISTS affiliate_commission_batches;
+DROP TABLE IF EXISTS affiliate_commission_streams;
+DROP FUNCTION IF EXISTS affiliate_append_only() CASCADE;
 DROP TABLE IF EXISTS affiliate_policies;
 DROP TABLE IF EXISTS affiliate_receipts;
 DROP TABLE IF EXISTS affiliate_withdrawals;

@@ -110,3 +110,51 @@ CREATE TABLE affiliate_policies (
   pool_address         text NULL,                          -- payouts go here with memo while the beneficiary has no wallet
   updated_at           timestamptz NOT NULL DEFAULT now()
 );
+
+-- Ingestão por lote assinado (produtor; contrato pixsettle-commission-batch/1). Revisões e lotes são só inserção.
+CREATE TABLE affiliate_commission_streams (
+  origin text NOT NULL CHECK (origin ~ '^src_[a-z0-9]{1,16}$'),
+  store text NOT NULL CHECK (store ~ '^store_[0-9]{1,3}$'),
+  last_batch_sha256 text CHECK (last_batch_sha256 ~ '^[0-9a-f]{64}$'),
+  updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (origin, store)
+);
+CREATE TABLE affiliate_commission_batches (
+  origin text NOT NULL, store text NOT NULL,
+  batch_sha256 text NOT NULL CHECK (batch_sha256 ~ '^[0-9a-f]{64}$'),
+  previous_batch_sha256 text CHECK (previous_batch_sha256 ~ '^[0-9a-f]{64}$'),
+  key_id text NOT NULL CHECK (key_id ~ '^k_[a-z0-9]{1,16}$'),
+  event_count integer NOT NULL CHECK (event_count BETWEEN 1 AND 5000),
+  accepted integer NOT NULL CHECK (accepted >= 0), unchanged integer NOT NULL CHECK (unchanged >= 0),
+  receipt jsonb NOT NULL CHECK (jsonb_typeof(receipt) = 'object'), committed_at timestamptz NOT NULL,
+  PRIMARY KEY (origin, store, batch_sha256), CHECK (accepted + unchanged = event_count),
+  FOREIGN KEY (origin, store) REFERENCES affiliate_commission_streams(origin, store)
+);
+CREATE TABLE affiliate_commission_revisions (
+  origin text NOT NULL, store text NOT NULL,
+  commission_id text NOT NULL CHECK (commission_id ~ '^com_[0-9a-f]{32}$'),
+  revision text NOT NULL CHECK (revision ~ '^[0-9a-f]{64}$'),
+  event_id text NOT NULL CHECK (event_id ~ '^cev_[0-9a-f]{64}$'),
+  order_id text NOT NULL CHECK (order_id ~ '^ord_[0-9a-f]{16}$'),
+  affiliate_id text NOT NULL CHECK (affiliate_id ~ '^(aff|par)_[0-9a-f]{32}$'),
+  amount_minor bigint NOT NULL CHECK (amount_minor >= 0 AND amount_minor <= 1000000000000),
+  status text NOT NULL CHECK (status IN ('pending','review','active','voided','lost')),
+  reason_code text, created_at timestamptz NOT NULL, source_updated_at timestamptz NOT NULL,
+  release_at timestamptz, released_at timestamptz, voided_at timestamptz,
+  event jsonb NOT NULL CHECK (jsonb_typeof(event) = 'object'), batch_sha256 text NOT NULL,
+  received_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (origin, store, commission_id, revision), UNIQUE (origin, store, event_id),
+  FOREIGN KEY (origin, store, batch_sha256) REFERENCES affiliate_commission_batches(origin, store, batch_sha256) DEFERRABLE INITIALLY DEFERRED
+);
+-- Resultado da aplicação de cada revisão ao domínio (uma linha por revisão aplicada ou falhada; retry não grava).
+CREATE TABLE affiliate_commission_applications (
+  origin text NOT NULL, store text NOT NULL, commission_id text NOT NULL, revision text NOT NULL,
+  event_id text NOT NULL, result text NOT NULL, domain_commission_id text NULL REFERENCES affiliate_commissions(id),
+  applied_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (origin, store, commission_id, revision)
+);
+CREATE FUNCTION affiliate_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION 'affiliate_append_only'; END;
+$$;
+CREATE TRIGGER affiliate_revisions_immutable BEFORE UPDATE OR DELETE ON affiliate_commission_revisions FOR EACH ROW EXECUTE FUNCTION affiliate_append_only();
+CREATE TRIGGER affiliate_batches_immutable BEFORE UPDATE OR DELETE ON affiliate_commission_batches FOR EACH ROW EXECUTE FUNCTION affiliate_append_only();
+CREATE TRIGGER affiliate_ledger_immutable BEFORE UPDATE OR DELETE ON affiliate_ledger FOR EACH ROW EXECUTE FUNCTION affiliate_append_only();

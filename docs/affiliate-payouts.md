@@ -97,4 +97,24 @@ digital dollars on the Tempo network.
 
 Real BRL to OUSD purchases (the merchant hub's route desk does that in batches), TIP-1022 virtual addresses
 per beneficiary (pool address with memo until then), regulatory sign-off on USD-denominated balances, and
-real affiliates on mainnet.
+real affiliates on mainnet. Customer money is never touched: refunds and cancellations that go back to the
+customer's wallet stay in BRL exactly as paid and are withdrawn through the merchant's existing Pix rail; only
+the affiliate or partner commission attached to that order is reversed here.
+
+## 9. Signed batch ingestion (producer contract)
+
+Besides the merchant-key API in section 6, the producer that already exports the pilot can post commissions as
+signed batches (`pixsettle-commission-batch/1`, events `pixsettle-commission-event/1`, type `commission.observed`)
+to `POST /pilot/affiliates/v1/batches`: exact canonical bytes with one trailing LF, HMAC of the batch with a
+key scoped to `commission`, Bearer token per origin, `X-Pixsettle-Key-Id`, strict chain by `previous_batch_sha256`
+(409 `commission_chain_gap`), exact replay returns the stored receipt with `x-pixsettle-replayed: true`, 423 when
+the stream is busy, 503 when the keys are not configured. Phase 1 stores revisions, batch and a signed receipt
+(`pixsettle-commission-receipt/1`) in append-only tables and never depends on a quote. Phase 2 (outbox job
+`apply_commission_revisions`) applies each new revision to the domain in order: first observation `pending` or
+`review` creates the commission (fixing the dollars at that moment), `active` releases it, `voided` or `lost` voids
+it with the producer's `reason_code`; an observation that is already voided on first sight creates nothing; an
+amount change after the dollars were fixed is recorded as `affiliate_amount_changed` for a human and leaves the
+commission untouched. Each revision gets exactly one application row (`created`, `released`, `voided`, `unchanged`,
+`skipped_*`, `failed:<code>`); a quote outage or a stream not yet mapped to a merchant (`AFFILIATE_STREAMS_JSON`,
+`{"src_odin|store_1": "mer_..."}`) is retried with the reason recorded, never silently dropped. Beneficiary ids
+`aff_...` are affiliates and `par_...` are partners paid by percentage.
