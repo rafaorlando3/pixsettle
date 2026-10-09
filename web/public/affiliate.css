@@ -8,11 +8,18 @@
 .aff-usd { font-size: 40px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
 .aff-brl { font-size: 18px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .aff-token { font-size: 11px; }
-.aff-kpis3 { grid-template-columns: repeat(3, 1fr); }
-.grid-aff { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; }
+.aff-kpis3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+/* minmax(0, ...) e min-width: 0: o conteúdo intrínseco (tabelas, códigos) nunca alarga a página; a tabela rola dentro do cartão. */
+.grid-aff { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 16px; }
+.aff-main > *, .grid-aff > *, .aff-hero > * { min-width: 0; }
+.aff-main .card { min-width: 0; overflow: hidden; }
+.tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+.tbl-wrap .tbl { min-width: 520px; }
+.aff-who, .aff-brl, .aff-token { overflow-wrap: anywhere; }
 .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid var(--line); }
 .pill.settled, .pill.paid { color: var(--ok); border-color: var(--ok); }
 .pill.pending, .pill.requested, .pill.settling, .pill.released { color: var(--muted); }
 .pill.voided, .pill.failed { color: var(--warn); border-color: var(--warn); }
 .strong { font-weight: 700; }
-@media (max-width: 900px) { .grid-aff { grid-template-columns: 1fr; } .aff-usd { font-size: 32px; } .aff-kpis3 { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .grid-aff { grid-template-columns: minmax(0, 1fr); } .aff-usd { font-size: 32px; } .aff-kpis3 { grid-template-columns: minmax(0, 1fr); } .tbl-wrap .tbl { min-width: 480px; } }
+@media (max-width: 420px) { .aff-main { padding: 12px 12px 32px; } .aff-usd { font-size: 28px; } .top .nav { display: none; } }

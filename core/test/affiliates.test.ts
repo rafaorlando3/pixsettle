@@ -548,3 +548,76 @@ describe('revisão 347 v4 (Codex X-1030): corrida da anulação, recibos por ví
     }
   })
 })
+
+describe('revisão 349 dedicada (Codex X-1037/X-1042/X-1044): vínculo lido sob a trava, primeira intenção tardia, lançador', () => {
+  it('1. pagamento refeito (S0 -> S1) com a reconciliação segurando S1 e a comissão: a anulação espera e decide sem impasse (sem 40P01)', async () => {
+    const e = await env()
+    const a = (await e.post('/api/v1/affiliates/commissions', commission())).json()
+    await e.post(`/api/v1/affiliates/commissions/${a.id}/release`)
+    const s0 = (await e.get(`/api/v1/affiliates/commissions/${a.id}`)).json().payout.settlement_id
+    await e.db.query(`UPDATE settlements SET status='failed', hold_reason='max_attempts' WHERE id=$1`, [s0]); await e.db.query(`DELETE FROM outbox WHERE entity_id=$1`, [s0])
+    const s1 = (await e.post(`/api/v1/affiliates/commissions/${a.id}/retry-payout`)).json().payout.settlement_id
+    expect(s1).not.toBe(s0)
+    // "reconciliação" segura S1 e depois a comissão (ordem do diário) e fica parada
+    const rec = await e.db.connect(); await rec.query('BEGIN')
+    await rec.query(`SELECT id FROM settlements WHERE id=$1 FOR UPDATE`, [s1])
+    await rec.query(`SELECT id FROM affiliate_commissions WHERE settlement_id=$1 FOR UPDATE`, [s1])
+    let done = false
+    const voidReq = e.post(`/api/v1/affiliates/commissions/${a.id}/void`, { reason_code: 'order_refunded' }).then(r => { done = true; return r })
+    await new Promise(r => setTimeout(r, 400)); expect(done).toBe(false)
+    await rec.query('COMMIT'); rec.release()
+    const r = await voidReq
+    expect(r.statusCode).toBe(200); expect(r.json()).toMatchObject({ status: 'voided', payout: { settlement_id: s1, status: 'failed', hold_reason: 'commission_voided' } })
+    await settleAll(e.ctx, e.chain); expect(e.chain.mined.length).toBe(0)
+    // mesma espera com uma tentativa de S1 já em voo: recusa 409, estado íntegro
+    const f = await env()
+    const b = (await f.post('/api/v1/affiliates/commissions', commission())).json()
+    await f.post(`/api/v1/affiliates/commissions/${b.id}/release`)
+    const t0 = (await f.get(`/api/v1/affiliates/commissions/${b.id}`)).json().payout.settlement_id
+    await f.db.query(`UPDATE settlements SET status='failed', hold_reason='max_attempts' WHERE id=$1`, [t0]); await f.db.query(`DELETE FROM outbox WHERE entity_id=$1`, [t0])
+    const t1 = (await f.post(`/api/v1/affiliates/commissions/${b.id}/retry-payout`)).json().payout.settlement_id
+    await drain(f.ctx, 50, ['settle']); await drain(f.ctx, 50, ['sign_attempt'])
+    const att = (await f.db.query(`SELECT id FROM settlement_attempts WHERE settlement_id=$1`, [t1])).rows[0].id
+    const w = await f.db.connect(); await w.query('BEGIN')
+    await w.query(`SELECT id FROM settlements WHERE id=$1 FOR UPDATE`, [t1]); await w.query(`SELECT id FROM settlement_attempts WHERE id=$1 FOR UPDATE`, [att])
+    await w.query(`UPDATE settlement_attempts SET status='broadcast_pending' WHERE id=$1`, [att])
+    const v2 = f.post(`/api/v1/affiliates/commissions/${b.id}/void`, { reason_code: 'order_refunded' })
+    await new Promise(r => setTimeout(r, 300)); await w.query('COMMIT'); w.release()
+    const r2 = await v2
+    expect(r2.statusCode).toBe(409); expect(r2.json().error.code).toBe('payout_in_flight')
+    expect((await f.get(`/api/v1/affiliates/commissions/${b.id}`)).json()).toMatchObject({ status: 'settling', payout: { settlement_id: t1, hold_reason: null } })
+    expect((await f.db.query(`SELECT count(*)::int AS n FROM settlement_attempts WHERE status='broadcast_pending'`)).rows[0].n).toBe(1)
+  })
+
+  it('B. liberada sem destino: quando o pool (ou a carteira) aparece, release ou retry criam exatamente UMA intenção, custódia fixa, sem crédito novo', async () => {
+    const e = await env()
+    await e.db.query(`UPDATE affiliate_policies SET pool_address=NULL WHERE merchant_id=$1`, [e.merchantId])
+    const a = (await e.post('/api/v1/affiliates/commissions', commission())).json()
+    const rel = (await e.post(`/api/v1/affiliates/commissions/${a.id}/release`)).json()
+    expect(rel).toMatchObject({ status: 'released', custody: 'pool', payout: null })
+    expect((await e.post(`/api/v1/affiliates/commissions/${a.id}/retry-payout`)).json().error.code).toBe('no_payout_address')
+    expect((await e.post(`/api/v1/affiliates/commissions/${a.id}/release`)).json().payout).toBeNull() // idempotente, ainda sem destino
+    // carteira cadastrada DEPOIS não muda a custódia (pool); só o pool do lojista destrava
+    await e.put(`/api/v1/affiliates/beneficiaries/${a.beneficiary_ref}/wallet`, { address: '0x000000000000000000000000000000000000bEEF' })
+    expect((await e.post(`/api/v1/affiliates/commissions/${a.id}/release`)).json()).toMatchObject({ custody: 'pool', payout: null })
+    await e.db.query(`UPDATE affiliate_policies SET pool_address='0x00000000000000000000000000000000000000A1' WHERE merchant_id=$1`, [e.merchantId])
+    const again = (await e.post(`/api/v1/affiliates/commissions/${a.id}/release`)).json()
+    expect(again).toMatchObject({ status: 'settling', custody: 'pool', payout: { status: 'intent_recorded', to: '0x00000000000000000000000000000000000000A1' } })
+    expect((await e.post(`/api/v1/affiliates/commissions/${a.id}/release`)).json().payout.settlement_id).toBe(again.payout.settlement_id) // uma intenção só
+    expect((await e.post(`/api/v1/affiliates/commissions/${a.id}/retry-payout`)).json().error.code).toBe('payout_not_failed')
+    expect((await e.db.query(`SELECT count(*)::int AS n FROM settlements WHERE kind='affiliate_payout'`)).rows[0].n).toBe(1)
+    expect((await e.db.query(`SELECT kind FROM affiliate_ledger ORDER BY id`)).rows.map(r => r.kind)).toEqual(['credit_pending', 'release'])
+    await settleAll(e.ctx, e.chain)
+    expect((await e.get(`/api/v1/affiliates/commissions/${a.id}`)).json().status).toBe('settled'); expect(e.chain.mined.length).toBe(1)
+    expect((await e.get(`/api/v1/affiliates/beneficiaries/${a.beneficiary_ref}`)).json().balances.available.units).toBe('9615384')
+    // o mesmo pelo retry-payout quando o destino chega
+    const g = await env()
+    await g.db.query(`UPDATE affiliate_policies SET pool_address=NULL WHERE merchant_id=$1`, [g.merchantId])
+    const b = (await g.post('/api/v1/affiliates/commissions', commission())).json()
+    await g.post(`/api/v1/affiliates/commissions/${b.id}/release`)
+    await g.db.query(`UPDATE affiliate_policies SET pool_address='0x00000000000000000000000000000000000000A1' WHERE merchant_id=$1`, [g.merchantId])
+    const rt = (await g.post(`/api/v1/affiliates/commissions/${b.id}/retry-payout`)).json()
+    expect(rt).toMatchObject({ status: 'settling', payout: { status: 'intent_recorded' } })
+    expect((await g.db.query(`SELECT count(*)::int AS n FROM settlements WHERE kind='affiliate_payout'`)).rows[0].n).toBe(1)
+  })
+})

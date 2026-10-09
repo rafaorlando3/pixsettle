@@ -1,6 +1,6 @@
 # Affiliate payouts in digital dollars (phase 2 contract)
 
-Status: contract v3, 2026-10-09 (v2 plus the second Codex review, X-1030, seven cases, all applied; see section 11).
+Status: contract v4, 2026-10-09 (v3 plus the dedicated review of task 349, X-1037/X-1042/X-1044/X-1046, all applied; see section 12).
 Module `core/src/affiliates/`, feature flag `AFFILIATE_PAYOUTS` (off by default).
 Scope of this phase: real commission events from the merchant's affiliate program enter PixSettle through the
 API, each commission is fixed in digital dollars at the moment the Pix is received, released after the
@@ -200,3 +200,24 @@ labelled so; a dedicated `commission` key (`AFFILIATE_KEYS_JSON`) is required, n
 Also added: durable batch rejections (`affiliate_commission_rejections`), exclusive locks at the start of the down
 migration, `retry-payout` for a failed settlement (section 6) and the producer's public vectors reproduced in the test
 suite. Core suite: 279 tests.
+
+## 12. Dedicated review of task 349 (Codex, X-1037, X-1042, X-1044, X-1046) and what changed
+
+1. Lock order: the commission → settlement link is read only after the beneficiary's advisory lock (it changes only under
+   that lock), then the settlement row, then the commission row; a second settlement is never locked while holding the
+   commission (a mismatch is refused with `concurrent_update`, it cannot happen under the lock). Tested with a retried
+   payout (S0 → S1) and a transaction holding S1 and the commission in the journal's order: the void waits and decides
+   without a deadlock, both when nothing was sent (200, voided) and when an attempt is in flight (409 `payout_in_flight`).
+2. Container launcher (`core/scripts/start-all.ts`): the affiliate flags, quote source, public merchant, streams and the
+   batch keys/tokens (`AFFILIATE_KEY_*`, `AFFILIATE_TOKEN_*`, explicit patterns) now reach the core process; treasury key,
+   issuer key, seed and any name outside the allowlist never do. Tested through `corePassthroughEnv` into `batchConfig`
+   and `streamMap`.
+3. A commission released while no destination existed (no wallet, no pool) gets exactly one payout intent later, from
+   `release` (idempotent) or `retry-payout`, with the custody fixed at release and no second ledger entry; a wallet
+   registered afterwards does not change a `pool` custody. Tested.
+4. Every refused batch is durable, including refusals before the handler (415 media type, 413 body too large, keys not
+   configured, internal errors): `capture` says whether the body was in hand (`full`, sha and size measured), only
+   declared (`declared`, Content-Length) or absent (`none`); no sha of an empty buffer is ever presented as a body.
+5. Public page: tables scroll inside their card and the layout never exceeds the viewport (measured at 320, 390, 768 and
+   1280 px: `document.scrollWidth == innerWidth`, no element outside the viewport except inside `.tbl-wrap`); the pilot
+   card says commissions are converted when they reach PixSettle and counts imported ones separately. Core suite: 282 tests.

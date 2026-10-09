@@ -128,18 +128,28 @@ describe('ingestão por lote assinado alimenta o domínio', () => {
     const bad = await post(raw, { 'x-pixsettle-key-id': 'k_other' })
     expect(bad.statusCode).toBe(401); expect(bad.json().error.code).toBe('commission_key_invalid')
     // toda recusa fica gravada (só inserção): token inválido, cadeia, chave
-    const rej = (await e.db.query(`SELECT origin, key_id, code, http, bytes FROM affiliate_commission_rejections ORDER BY id`)).rows
+    const rej = (await e.db.query(`SELECT origin, key_id, code, http, capture, bytes, body_sha256 IS NOT NULL AS sha FROM affiliate_commission_rejections ORDER BY id`)).rows
     expect(rej).toEqual([
-      { origin: null, key_id: 'k_comtest', code: 'commission_unauthorized', http: 401, bytes: raw.length },
-      { origin: 'src_test1', key_id: 'k_comtest', code: 'commission_chain_gap', http: 409, bytes: batch([ev(2)]).length },
-      { origin: 'src_test1', key_id: 'k_other', code: 'commission_key_invalid', http: 401, bytes: raw.length },
+      { origin: null, key_id: 'k_comtest', code: 'commission_unauthorized', http: 401, capture: 'full', bytes: raw.length, sha: true },
+      { origin: 'src_test1', key_id: 'k_comtest', code: 'commission_chain_gap', http: 409, capture: 'full', bytes: batch([ev(2)]).length, sha: true },
+      { origin: 'src_test1', key_id: 'k_other', code: 'commission_key_invalid', http: 401, capture: 'full', bytes: raw.length, sha: true },
     ])
     await expect(e.db.query(`DELETE FROM affiliate_commission_rejections`)).rejects.toThrow(/affiliate_append_only/)
+    // recusas ANTES do handler (415, 413) ficam gravadas com captura honesta: sem sha, tamanho só o declarado
+    const r415 = await post(raw, { 'content-type': 'application/octet-stream' })
+    expect(r415.statusCode).toBe(415)
+    const big = Buffer.alloc(4 * 1024 * 1024 + 1, 0x20)
+    const r413 = await post(big)
+    expect(r413.statusCode).toBe(413)
+    const pre = (await e.db.query(`SELECT code, http, capture, bytes, body_sha256 FROM affiliate_commission_rejections ORDER BY id DESC LIMIT 2`)).rows.reverse()
+    expect(pre[0]).toMatchObject({ code: 'commission_content_type', http: 415, body_sha256: null }); expect(['declared', 'none']).toContain(pre[0].capture)
+    expect(pre[1]).toMatchObject({ code: 'commission_batch_size', http: 413, body_sha256: null }); expect(pre[1].capture).toBe('declared'); expect(pre[1].bytes).toBe(big.length)
     await expect(e.db.query(`UPDATE affiliate_commission_revisions SET amount_minor=1`)).rejects.toThrow(/affiliate_append_only/)
     await expect(e.db.query(`DELETE FROM affiliate_commission_batches`)).rejects.toThrow(/affiliate_append_only/)
     // sem chaves: 503 com motivo; módulo desligado: 404
     const app2 = buildApp(e.ctx, { asaasWebhookToken: 't', diagnosticsToken: 'd' }); registerCommissionBatches(app2, e.ctx, {})
     expect((await app2.inject({ method: 'POST', url: '/pilot/affiliates/v1/batches', headers: { 'content-type': 'application/json' }, payload: raw })).json().error.code).toBe('commission_not_configured')
+    expect((await e.db.query(`SELECT code, capture, bytes FROM affiliate_commission_rejections ORDER BY id DESC LIMIT 1`)).rows[0]).toEqual({ code: 'commission_not_configured', capture: 'full', bytes: raw.length })
     const off = await setup(); drops.push(off.drop)
     const app3 = buildApp(off.ctx, { asaasWebhookToken: 't', diagnosticsToken: 'd' }); registerCommissionBatches(app3, off.ctx, envVars)
     expect((await app3.inject({ method: 'POST', url: '/pilot/affiliates/v1/batches', headers: { 'content-type': 'application/json' }, payload: raw })).statusCode).toBe(404)

@@ -54,22 +54,28 @@ export function registerCommissionBatches(app: FastifyInstance, ctx: Ctx, env: R
   const config = batchConfig(env)
   app.register(async scope => {
     scope.addContentTypeParser('application/json', { parseAs: 'buffer', bodyLimit: MAX_BATCH_BYTES }, (_req, body, done) => done(null, body))
-    scope.setErrorHandler((error: any, _req, reply) => {
-      if (error.code === 'FST_ERR_CTP_BODY_TOO_LARGE') return send(reply, 413, 'commission_batch_size', 'lote maior que 4 MiB')
-      if (error.code === 'FST_ERR_CTP_INVALID_MEDIA_TYPE') return send(reply, 415, 'commission_content_type', 'use application/json')
-      return send(reply, 503, 'commission_unavailable', 'ingestão temporariamente indisponível')
-    })
     // Toda recusa de lote vira uma linha durável (affiliate_commission_rejections): o produtor e uma pessoa veem o que foi recusado e por quê.
+    // Corpo inteiro em mãos = sha e tamanho medidos (capture full); corpo não lido (413/415/erro do parser, antes do handler) = só o
+    // Content-Length declarado (capture declared) ou nada (none); nunca o sha de um Buffer vazio apresentado como corpo.
     const rejected = async (req: any, http: number, code: string, detail: string | undefined, origin: string | null) => {
-      const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-      const keyId = String(req.headers['x-pixsettle-key-id'] ?? '').slice(0, 64) || null
+      const keyId = String(req.headers?.['x-pixsettle-key-id'] ?? '').slice(0, 64) || null
+      const body = Buffer.isBuffer(req.body) ? req.body : null
+      const declared = Number(req.headers?.['content-length'])
+      const capture = body ? 'full' : Number.isFinite(declared) && declared >= 0 ? 'declared' : 'none'
       try {
-        await ctx.db.query(`INSERT INTO affiliate_commission_rejections (origin, key_id, code, detail, http, body_sha256, bytes) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-          [origin, keyId, code, detail ?? null, http, createHash('sha256').update(body).digest('hex'), body.length])
+        await ctx.db.query(`INSERT INTO affiliate_commission_rejections (origin, key_id, code, detail, http, capture, body_sha256, bytes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [origin, keyId, code, detail ?? null, http, capture, body ? createHash('sha256').update(body).digest('hex') : null, body ? body.length : capture === 'declared' ? declared : null])
       } catch (e) { req.log.error({ err: e }, 'não gravou a recusa do lote') }
     }
+    scope.setErrorHandler(async (error: any, req, reply) => {
+      if (error.code === 'FST_ERR_CTP_BODY_TOO_LARGE') { await rejected(req, 413, 'commission_batch_size', 'lote maior que 4 MiB', null); return send(reply, 413, 'commission_batch_size', 'lote maior que 4 MiB') }
+      if (error.code === 'FST_ERR_CTP_INVALID_MEDIA_TYPE') { await rejected(req, 415, 'commission_content_type', String(req.headers['content-type'] ?? '').slice(0, 100), null); return send(reply, 415, 'commission_content_type', 'use application/json') }
+      req.log.error({ err: error }, 'ingestão de comissões falhou antes do handler')
+      await rejected(req, 503, 'commission_unavailable', String(error?.code ?? error?.message ?? '').slice(0, 200), null)
+      return send(reply, 503, 'commission_unavailable', 'ingestão temporariamente indisponível')
+    })
     scope.post('/batches', async (req, reply) => {
-      if (!config) return send(reply, 503, 'commission_not_configured', 'chaves de ingestão de comissões não configuradas')
+      if (!config) { await rejected(req, 503, 'commission_not_configured', undefined, null); return send(reply, 503, 'commission_not_configured', 'chaves de ingestão de comissões não configuradas') }
       if (ctx.affiliates?.writes === false) { await rejected(req, 403, 'commission_read_only', undefined, null); return send(reply, 403, 'commission_read_only', 'esta instalação é réplica pública somente leitura: lotes de comissões não são aceitos aqui') }
       const auth = /^Bearer ([\x21-\x7e]{32,512})$/.exec(String(req.headers.authorization ?? ''))?.[1]
       const token = auth ? config.tokens.find(t => timingSafeEqual(t.digest, digest(auth))) : undefined

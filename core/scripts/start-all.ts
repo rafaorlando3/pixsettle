@@ -22,11 +22,17 @@ const CORE_PASSTHROUGH = ['DATABASE_URL', 'ASAAS_WEBHOOK_TOKEN', 'DIAGNOSTICS_TO
     'COPILOT_MODE', 'COPILOT_PROVIDER', 'COPILOT_MODEL', 'COPILOT_API_KEY', 'COPILOT_BASE_URL',
     'COPILOT_BUDGET_CALLS_PER_DAY', 'PUBLIC_REPLAY_READ_ONLY', 'PILOT_V1_DISABLED', 'RENDER_GIT_COMMIT',
     'PILOT_SHADOW_KEYRING_JSON', 'PILOT_SHADOW_TOKENS_JSON', 'PILOT_SHADOW_PUBLIC',
-    'COPILOT_BUDGET_MICROS', 'COPILOT_CALL_RESERVE_MICROS', 'COPILOT_MAX_CALLS']
+    'COPILOT_BUDGET_MICROS', 'COPILOT_CALL_RESERVE_MICROS', 'COPILOT_MAX_CALLS',
+    // fase 2 (docs/affiliate-payouts.md): flags, cotação, lojista público, correntes e chaves/tokens de LOTE (HMAC do produtor e do recibo);
+    // só o core recebe isso; chave da tesouraria, do emissor e a semente nunca entram aqui
+    'AFFILIATE_PAYOUTS', 'AFFILIATE_SETTLE', 'AFFILIATE_QUOTE_SOURCE', 'AFFILIATE_SIM_PRICE4', 'AFFILIATE_LOCK_TTL_MS', 'AFFILIATE_PUBLIC_MERCHANT_ID',
+    'AFFILIATE_ALLOW_WRITES_ON_PUBLIC_REPLAY', 'AFFILIATE_STREAMS_JSON', 'AFFILIATE_KEYS_JSON', 'AFFILIATE_TOKENS_JSON', 'AFFILIATE_RECEIPT_KEY']
+/** Nomes dinâmicos permitidos (mesmas regras de batchConfig e do piloto); qualquer outro nome fica de fora, inclusive TREASURY_KEY/ISSUER_KEY/PIXSETTLE_SEED. */
+const CORE_PASSTHROUGH_PATTERNS = [/^PILOT_SHADOW_KEY_[A-Z0-9_]{1,47}$/, /^PILOT_SHADOW_TOKEN_[A-Z0-9_]{1,45}$/, /^AFFILIATE_KEY_[A-Z0-9_]{1,48}$/, /^AFFILIATE_TOKEN_[A-Z0-9_]{1,48}$/]
 
 export function corePassthroughEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
-  const shadowNames = Object.keys(env).filter(k => /^PILOT_SHADOW_KEY_[A-Z0-9_]{1,47}$/.test(k) || /^PILOT_SHADOW_TOKEN_[A-Z0-9_]{1,45}$/.test(k))
-  return Object.fromEntries([...CORE_PASSTHROUGH, ...shadowNames].map(k => [k, env[k]]))
+  const dynamicNames = Object.keys(env).filter(k => CORE_PASSTHROUGH_PATTERNS.some(rx => rx.test(k)))
+  return Object.fromEntries([...CORE_PASSTHROUGH, ...dynamicNames].map(k => [k, env[k]]))
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
