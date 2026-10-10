@@ -1,6 +1,6 @@
 # Affiliate payouts in digital dollars (phase 2 contract)
 
-Status: contract v6, 2026-10-09 (v5 plus E1 from the deploy attempt of the dedicated review of task 349, X-1085/X-1087/X-1088; see section 14).
+Status: contract v6, 2026-10-09 (v5 plus the quote-source change found during the v7 deploy; see section 14).
 Module `core/src/affiliates/`, feature flag `AFFILIATE_PAYOUTS` (off by default).
 Scope of this phase: real commission events from the merchant's affiliate program enter PixSettle through the
 API, each commission is fixed in digital dollars at the moment the Pix is received, released after the
@@ -160,7 +160,7 @@ revision that changes any field the commission fixed when it was born (amount, a
 creation date) is recorded as `affiliate_amount_changed` or `affiliate_identity_changed` for a human and leaves the
 commission untouched (nothing is released or voided on the old domain). Each revision gets exactly one application row
 (`created`, `released`, `voided`, `unchanged`, `skipped_*`, `failed:<code>`); a quote outage or a stream not yet mapped
-to a merchant (`AFFILIATE_STREAMS_JSON`, `{"src_odin|store_1": "mer_..."}`) is retried with the reason recorded, never
+to a merchant (`AFFILIATE_STREAMS_JSON`, `{"src_store|store_1": "mer_..."}`) is retried with the reason recorded, never
 silently dropped. Revisions are applied in blocks of 500 per job and the job reschedules itself immediately while
 revisions remain, so a batch of up to 5,000 is drained in order. Every refused batch (token, key, signature, chain gap,
 framing, read-only replica, internal error) is recorded append-only in `affiliate_commission_rejections` with origin
@@ -172,9 +172,9 @@ accepts only `application/json` (with or without charset); any other media type,
 `commission_content_type` before any validation, never 413. Beneficiary ids `aff_...` are affiliates and `par_...` are
 partners paid by percentage.
 
-## 10. Review of task 347 (Codex, 2026-10-09) and what changed
+## 10. First review (2026-10-09) and what changed
 
-The static review (`REVISAO-347-BASE.md`) blocked promotion with 13 findings; contract v2 applies all of them.
+The first static review blocked promotion with 13 findings; contract v2 applies all of them.
 P1-1 own-wallet double count → `custody` fixed at release, balances derived per custody. P1-2 void during settling →
 state-safe void: hold before void, signed attempt suspended, `payout_in_flight` once sent. P1-3 negative balance →
 `withdrawal_in_progress`. P1-4 settle switch → only `AFFILIATE_SETTLE=1` settles; writes on the read-only replica need
@@ -191,7 +191,7 @@ exports the pilot; the merchant-key API (section 6) is the path for the merchant
 same domain functions. The 23 `commission.observed` events already collected privately will enter as `backfill` and be
 labelled so; a dedicated `commission` key (`AFFILIATE_KEYS_JSON`) is required, never the pilot HMAC.
 
-## 11. Second review (Codex, X-1030, 2026-10-09) and what changed
+## 11. Second review (2026-10-09) and what changed
 
 1. Void vs. broadcast race: void now takes the settlement lock in the journal's order (beneficiary advisory lock, settlement,
    commission) before reading attempts; `payout_in_flight` once `broadcast_pending` is committed. Tested with a
@@ -211,7 +211,7 @@ Also added: durable batch rejections (`affiliate_commission_rejections`), exclus
 migration, `retry-payout` for a failed settlement (section 6) and the producer's public vectors reproduced in the test
 suite. Core suite: 279 tests.
 
-## 12. Dedicated review of task 349 (Codex, X-1037, X-1042, X-1044, X-1046) and what changed
+## 12. Third review, before release (2026-10-09) and what changed
 
 1. Lock order: the commission → settlement link is read only after the beneficiary's advisory lock (it changes only under
    that lock), then the settlement row, then the commission row; a second settlement is never locked while holding the
@@ -232,7 +232,7 @@ suite. Core suite: 279 tests.
    1280 px: `document.scrollWidth == innerWidth`, no element outside the viewport except inside `.tbl-wrap`); the pilot
    card says commissions are converted when they reach PixSettle and counts imported ones separately. Core suite: 282 tests.
 
-## 13. Dedicated review of task 349, second pass (Codex, X-1060, X-1061, X-1062) and what changed
+## 13. Fourth review, before release (2026-10-09) and what changed
 
 1. C1, audit lost with a large Content-Length: a declared `Content-Length: 3000000000` was refused with 413 but the
    rejection row failed to insert (`bytes` was `integer`) and the error was only logged. `bytes` is now `bigint`; a
@@ -258,7 +258,7 @@ suite. Core suite: 279 tests.
    settlement and refund receipts unchanged. Web suite: 38 tests. Also: the obsolete `no_payout` code was removed from
    section 6 (the code only raises `no_payout_address`).
 
-## 14. Deploy attempt of v7 (Codex, X-1085, X-1087, X-1088) and what changed (E1, v8)
+## 14. Deploy attempt of v7 and what changed (quote source, v8)
 
 - Observed on Render (attempt 4 of v7): every gate passed except the quote: `api.binance.com` answers HTTP 451 (unavailable
   for legal reasons) from that cloud region, so `/pilot/api/affiliates` returned `rate_now.unavailable` and the automatic
