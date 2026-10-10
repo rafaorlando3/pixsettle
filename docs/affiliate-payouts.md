@@ -385,5 +385,24 @@ each with a test that fails on v7.1 (negative control) and passes now.
 - Limits that stay open (not changed here): launch evidence (transaction hashes and amounts) is declared by the merchant;
   this service checks shape, ratio, time and band, not the chain receipt (the merchant checks arrival on Tempo before
   sending it). A rehearsal pointed at the production database would leave simulated-rate commissions there; binding the
-  database to one profile (mode, chain, treasury) at boot is proposed as a release gate, not implemented in v7.2.
+  database to one profile (mode, chain, treasury) at boot is proposed as a release gate, not implemented in v7.2 (done in
+  v7.3, §18).
+
+## 18. Database bound to the instance profile (2026-10-10, contract v7.3)
+
+Closes the open limit of §17: a rehearsal (simulated quote) must never write into the production database, and the
+production instance must never serve from a rehearsal database, another chain's or another treasury's.
+
+- Migration 016 adds `instance_profile` (one row, `id = 1`): `mode` (`production` or `rehearsal`), `chain_id`, `token`,
+  `treasury` (lowercase hex) and `claimed_at`. The down migration refuses while the row exists.
+- `startAffiliatesProduction` migrates and then calls `claimDatabaseProfile` before serving: the first boot writes the
+  profile; later boots compare and refuse any change with `database_profile_mismatch` (mode, chain, token or treasury;
+  the address case does not matter). A database that has `orders` rows (demo data; the production instance never writes
+  orders) is never claimed (`database_has_demo_data`). The claim runs under a table lock, so two concurrent boots with
+  different profiles end with one claim and one refusal. On any refusal the pool is closed and nothing is served.
+- `/healthz` shows `database_profile` (`mode`, `claimed_at`).
+- Changing the binding (for example a new treasury address) is a manual, recorded step on the database, never automatic.
+- Tests: `core/test/affiliates-instance-profile.test.ts` (5: rehearsal then production and the reverse, other treasury or
+  chain, demo data, concurrent claims, down migration). Negative controls: without the boot claim the 3 boot tests fail;
+  comparing without the mode, the reverse-boot and the concurrent-claim tests fail.
 
