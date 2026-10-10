@@ -4,6 +4,8 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { createHash, randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { privateKeyToAccount } from 'viem/accounts'
+import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { productionConfigFromEnv, startAffiliatesProduction, AddressOnlyChainGateway, TEMPO_MAINNET_USDC, ProductionConfigError } from '../src/affiliates/production.js'
 import { provisionMerchant } from '../src/affiliates/merchant-provision.js'
 import { createPool } from '../src/db.js'
@@ -60,6 +62,40 @@ describe('produção dos afiliados: configuração', () => {
     }
     // ensaio: testnet e cotação simulada só com PRODUCTION_REHEARSAL=1
     expect(productionConfigFromEnv(base({ CHAIN_ID: '42431', TOKEN: '0x20c0000000000000000000000000000000000000', AFFILIATE_QUOTE_SOURCE: 'simulated', PRODUCTION_REHEARSAL: '1' })).chainId).toBe(42431)
+  })
+
+  // v7.2 (revisão X-1205, F2): ensaio e cotação simulada nunca convivem com liquidação, nem com assinante válido.
+  const SIGNER = { SETTLEMENT_URL: 'http://127.0.0.1:7401', SETTLEMENT_HMAC_SECRET: 'h'.repeat(64), ISSUER_ADDRESS: TREASURY }
+  it('F2 recusa ensaio com liquidação e cotação simulada com liquidação (o contraexemplo da revisão incluído)', () => {
+    const cases: Array<[Record<string, string | undefined>, string]> = [
+      // o contraexemplo: CHAIN_ID=4217 + PRODUCTION_REHEARSAL=1 + cotação simulada + SETTLE=1, com assinante e emissor válidos
+      [{ PRODUCTION_REHEARSAL: '1', AFFILIATE_QUOTE_SOURCE: 'simulated', AFFILIATE_SETTLE: '1', ...SIGNER }, 'rehearsal_settle_forbidden'],
+      [{ PRODUCTION_REHEARSAL: '1', AFFILIATE_SETTLE: '1', ...SIGNER }, 'rehearsal_settle_forbidden'],
+      [{ CHAIN_ID: '42431', TOKEN: '0x20c0000000000000000000000000000000000000', PRODUCTION_REHEARSAL: '1', AFFILIATE_QUOTE_SOURCE: 'simulated', AFFILIATE_SETTLE: '1', ...SIGNER }, 'rehearsal_settle_forbidden'],
+      [{ AFFILIATE_QUOTE_SOURCE: 'simulated', AFFILIATE_SETTLE: '1', ...SIGNER }, 'simulated_quote_settle_forbidden'],
+      [{ AFFILIATE_QUOTE_SOURCE: 'SIMULATED', AFFILIATE_SETTLE: '1', ...SIGNER }, 'simulated_quote_settle_forbidden'],
+    ]
+    for (const [over, code] of cases) {
+      let got: unknown = null
+      try { productionConfigFromEnv(base(over)) } catch (e) { got = e }
+      expect(got, JSON.stringify(over)).toBeInstanceOf(ProductionConfigError)
+      expect((got as ProductionConfigError).code, JSON.stringify(over)).toBe(code)
+    }
+    // controles: o ensaio com a liquidação desligada continua subindo (mainnet e testnet); produção real com assinante também
+    expect(productionConfigFromEnv(base({ PRODUCTION_REHEARSAL: '1', AFFILIATE_QUOTE_SOURCE: 'simulated' }))).toMatchObject({ chainId: 4217, settle: false, settlement: null })
+    expect(productionConfigFromEnv(base({ PRODUCTION_REHEARSAL: '1', AFFILIATE_QUOTE_SOURCE: 'simulated', AFFILIATE_SETTLE: '0' })).settle).toBe(false)
+    expect(productionConfigFromEnv(base({ AFFILIATE_SETTLE: '1', ...SIGNER })).settle).toBe(true)
+  })
+
+  it('F2 o boot recusa antes do banco: nenhuma migração roda com a configuração proibida', async () => {
+    const url = await freshUrl()
+    await expect(startAffiliatesProduction(base({ DATABASE_URL: url, PRODUCTION_REHEARSAL: '1', AFFILIATE_QUOTE_SOURCE: 'simulated', AFFILIATE_SETTLE: '1', ...SIGNER, PORT: '0', HOST: '127.0.0.1' })))
+      .rejects.toThrow(/rehearsal_settle_forbidden/)
+    const c = new pg.Client({ connectionString: url }); await c.connect()
+    try {
+      const t = (await c.query(`SELECT to_regclass('public.schema_migrations') AS m, to_regclass('public.affiliate_commissions') AS a`)).rows[0]
+      expect(t).toEqual({ m: null, a: null })
+    } finally { await c.end() }
   })
 
   it('a tesouraria só com endereço nunca assina', async () => {
@@ -144,5 +180,57 @@ describe('produção dos afiliados: launcher', () => {
     expect(JSON.stringify(p.core)).not.toContain(ISSUER_KEY.slice(2))
     // e o core aceita essa configuração (assinante local, emissor definido)
     expect(productionConfigFromEnv({ ...p.core, DATABASE_URL: 'postgres://x' }).settle).toBe(true)
+  })
+
+  // v7.2 (revisão X-1205, F3): antes, o filtro do CORE_ENV descartava estas variáveis em silêncio e o plano subia.
+  it('F3 recusa flag proibida no ambiente ORIGINAL, antes do filtro, com o mesmo código do core', () => {
+    const addr = privateKeyToAccount(TREASURY_KEY).address
+    const keys = { TREASURY_KEY, ISSUER_KEY, TREASURY_ADDRESS: addr, TOKEN: TEMPO_MAINNET_USDC }
+    const cases: Array<[Record<string, string | undefined>, string]> = [
+      [{ DEMO_MODE: '1' }, 'demo_mode_forbidden'],
+      [{ PIXSETTLE_SEED: 's'.repeat(40) }, 'seed_forbidden'],
+      [{ AFFILIATE_PUBLIC_MERCHANT_ID: 'mer_x' }, 'public_read_forbidden'],
+      [{ AFFILIATE_STREAMS_JSON: '{}' }, 'producer_batches_forbidden'],
+      [{ AFFILIATE_KEY_SRC1: 'k' }, 'producer_batches_forbidden'],
+      [{ AFFILIATE_TOKEN_SRC1: 't' }, 'producer_batches_forbidden'],
+      [{ AFFILIATE_KEYS_JSON: '{}' }, 'producer_batches_forbidden'],
+      [{ AFFILIATE_TOKENS_JSON: '{}' }, 'producer_batches_forbidden'],
+      [{ DEMO_MODE: '1', AFFILIATE_SETTLE: '1', ...keys }, 'demo_mode_forbidden'],
+      // o contraexemplo da F2 também no launcher, com chave válida da tesouraria: recusa antes de derivar a chave
+      [{ PRODUCTION_REHEARSAL: '1', AFFILIATE_QUOTE_SOURCE: 'simulated', AFFILIATE_SETTLE: '1', ...keys }, 'rehearsal_settle_forbidden'],
+      [{ AFFILIATE_QUOTE_SOURCE: 'simulated', AFFILIATE_SETTLE: '1', ...keys }, 'simulated_quote_settle_forbidden'],
+      // o que o core recusaria no boot é recusado já no plano (nada sobe, nem o assinante com a chave)
+      [{ CHAIN_ID: '1' }, 'chain_id_invalid'],
+      [{ CHAIN_ID: '42431', AFFILIATE_SETTLE: '1', ...keys }, 'chain_id_invalid'],
+      [{ DATABASE_URL: undefined }, 'database_url_missing'],
+      [{ AFFILIATE_QUOTE_SOURCE: 'simulated' }, 'quote_source_invalid'],
+      [{ PIXSETTLE_PROFILE: 'demo' }, 'profile_missing'],
+    ]
+    for (const [over, code] of cases) {
+      let got: unknown = null
+      try { productionLaunchPlan(base(over), 'h'.repeat(64)) } catch (e) { got = e }
+      expect(got, JSON.stringify(Object.keys(over))).toBeInstanceOf(ProductionConfigError)
+      expect((got as ProductionConfigError).code, JSON.stringify(Object.keys(over))).toBe(code)
+    }
+    // controle: o ensaio com a liquidação desligada continua planejando só o core, com a flag do ensaio repassada
+    const r = productionLaunchPlan(base({ PRODUCTION_REHEARSAL: '1', AFFILIATE_QUOTE_SOURCE: 'simulated', AFFILIATE_SIM_PRICE4: '52130' }))
+    expect(r.signer).toBeNull()
+    expect(r.core).toMatchObject({ PRODUCTION_REHEARSAL: '1', AFFILIATE_QUOTE_SOURCE: 'simulated' })
+  })
+
+  it('F3 o launcher de verdade sai com o código antes de subir qualquer processo', () => {
+    const script = fileURLToPath(new URL('../scripts/start-production.ts', import.meta.url))
+    const addr = privateKeyToAccount(TREASURY_KEY).address
+    const env = {
+      PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '',
+      ...base({ PRODUCTION_REHEARSAL: '1', AFFILIATE_QUOTE_SOURCE: 'simulated', AFFILIATE_SETTLE: '1', TREASURY_KEY, ISSUER_KEY, TREASURY_ADDRESS: addr, TOKEN: TEMPO_MAINNET_USDC, SETTLEMENT_PORT: '7999' }),
+    } as Record<string, string>
+    const t0 = Date.now()
+    const r = spawnSync(process.execPath, ['--import', 'tsx', script], { env, encoding: 'utf8', timeout: 60_000 })
+    expect(r.status).toBe(1)
+    expect(r.stderr).toMatch(/rehearsal_settle_forbidden/)
+    expect(r.stderr + r.stdout).not.toMatch(/saiu|ouvindo/) // nenhum filho subiu (assinante ou core)
+    expect(r.stderr + r.stdout).not.toContain(TREASURY_KEY.slice(2)) // e a chave não aparece na saída
+    expect(Date.now() - t0).toBeLessThan(60_000)
   })
 })

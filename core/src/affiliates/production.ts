@@ -46,16 +46,34 @@ export class ProductionConfigError extends Error {
   constructor(readonly code: string, message: string) { super(`${code}: ${message}`) }
 }
 
+const failWith = (code: string, message: string): never => { throw new ProductionConfigError(code, message) }
+
+/**
+ * v7.2 (revisão X-1205, F2/F3): combinações proibidas com dinheiro real, decididas sobre o ambiente ORIGINAL. O launcher chama
+ * isto ANTES de filtrar as variáveis que repassa ao core (filtrar não pode esconder uma flag proibida) e antes de subir
+ * qualquer processo; o core chama de novo no boot, antes do banco. Chave privada fica de fora daqui: o launcher recebe a
+ * chave de propósito (AFFILIATE_SETTLE=1) e o core recusa chave à parte (key_in_core_forbidden).
+ */
+export function assertNoForbiddenProductionFlags(env: Record<string, string | undefined>): void {
+  if (env.DEMO_MODE === '1') failWith('demo_mode_forbidden', 'DEMO_MODE=1 não convive com dinheiro real: produção e demo são instâncias separadas')
+  if (env.PIXSETTLE_SEED) failWith('seed_forbidden', 'PIXSETTLE_SEED é da demo; em produção nenhuma chave ou tesouraria é derivada de semente')
+  if (env.AFFILIATE_PUBLIC_MERCHANT_ID) failWith('public_read_forbidden', 'leitura pública (AFFILIATE_PUBLIC_MERCHANT_ID) é do piloto da demo; dados reais não ficam públicos')
+  if (env.AFFILIATE_STREAMS_JSON || Object.keys(env).some(k => /^AFFILIATE_(KEY|TOKEN)_/.test(k)) || env.AFFILIATE_KEYS_JSON || env.AFFILIATE_TOKENS_JSON)
+    failWith('producer_batches_forbidden', 'lotes do produtor ficam fora da produção: um escritor por lojista (a API do Hub)')
+  // Ensaio nunca liquida, em rede nenhuma: PRODUCTION_REHEARSAL=1 só com AFFILIATE_SETTLE desligado.
+  if (env.PRODUCTION_REHEARSAL === '1' && env.AFFILIATE_SETTLE === '1')
+    failWith('rehearsal_settle_forbidden', 'ensaio (PRODUCTION_REHEARSAL=1) nunca liquida: suba o ensaio com AFFILIATE_SETTLE=0')
+  // Cotação simulada nunca convive com liquidação (dinheiro saindo com preço inventado), mesmo fora do ensaio.
+  if ((env.AFFILIATE_QUOTE_SOURCE ?? '').toLowerCase() === 'simulated' && env.AFFILIATE_SETTLE === '1')
+    failWith('simulated_quote_settle_forbidden', 'cotação simulada não convive com AFFILIATE_SETTLE=1: liquidação só com binance_usdtbrl')
+}
+
 /** Lê e valida o ambiente de produção. Qualquer ambiguidade vira erro com código e motivo (nunca um padrão silencioso). */
 export function productionConfigFromEnv(env: Record<string, string | undefined>): ProductionConfig {
-  const fail = (code: string, message: string): never => { throw new ProductionConfigError(code, message) }
+  const fail = failWith
   if (env.PIXSETTLE_PROFILE !== PRODUCTION_PROFILE) fail('profile_missing', `PIXSETTLE_PROFILE precisa ser ${PRODUCTION_PROFILE}`)
-  if (env.DEMO_MODE === '1') fail('demo_mode_forbidden', 'DEMO_MODE=1 não convive com dinheiro real: produção e demo são instâncias separadas')
-  if (env.PIXSETTLE_SEED) fail('seed_forbidden', 'PIXSETTLE_SEED é da demo; em produção nenhuma chave ou tesouraria é derivada de semente')
+  assertNoForbiddenProductionFlags(env)
   if (env.TREASURY_KEY || env.ISSUER_KEY) fail('key_in_core_forbidden', 'chave privada não entra no core: só o assinante (settlement/) recebe chave, pelo launcher de produção')
-  if (env.AFFILIATE_PUBLIC_MERCHANT_ID) fail('public_read_forbidden', 'leitura pública (AFFILIATE_PUBLIC_MERCHANT_ID) é do piloto da demo; dados reais não ficam públicos')
-  if (env.AFFILIATE_STREAMS_JSON || Object.keys(env).some(k => /^AFFILIATE_(KEY|TOKEN)_/.test(k)) || env.AFFILIATE_KEYS_JSON || env.AFFILIATE_TOKENS_JSON)
-    fail('producer_batches_forbidden', 'lotes do produtor ficam fora da produção: um escritor por lojista (a API do Hub)')
   const chainId = Number(env.CHAIN_ID ?? '')
   if (chainId !== TEMPO_MAINNET_CHAIN_ID && !(chainId === TEMPO_TESTNET_CHAIN_ID && env.PRODUCTION_REHEARSAL === '1'))
     fail('chain_id_invalid', `CHAIN_ID precisa ser ${TEMPO_MAINNET_CHAIN_ID} (Tempo mainnet); ${TEMPO_TESTNET_CHAIN_ID} só em ensaio com PRODUCTION_REHEARSAL=1`)

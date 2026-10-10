@@ -9,6 +9,9 @@ export type BuyRate = { rateNum: bigint; rateDen: bigint }
 /** Cotação de VENDA: centavos por unidade do token = rate_num / rate_den. */
 export type SellRate = { rateNum: bigint; rateDen: bigint }
 
+/** v7.2: o valor convertido ficou abaixo de uma unidade do token; o serviço transforma em erro de domínio (422), nunca 500. */
+export class UsdBelowOneUnitError extends Error {}
+
 /** Fixa o valor em dólar de uma comissão: desconta a taxa de conversão (bps) e converte, para baixo. */
 export function fixUsdUnits(amountMinor: bigint, feeBps: number, rate: BuyRate): { usdUnits: bigint; feeMinor: bigint } {
   if (amountMinor <= 0n) throw new Error('amount_minor deve ser positivo')
@@ -17,7 +20,7 @@ export function fixUsdUnits(amountMinor: bigint, feeBps: number, rate: BuyRate):
   const feeMinor = (amountMinor * BigInt(feeBps)) / BPS // para baixo: a taxa nunca é cobrada a mais
   const net = amountMinor - feeMinor
   const usdUnits = (net * rate.rateNum) / rate.rateDen
-  if (usdUnits <= 0n) throw new Error('valor em dólar ficou zero: comissão menor que uma unidade do token')
+  if (usdUnits <= 0n) throw new UsdBelowOneUnitError('valor em dólar ficou zero: comissão menor que uma unidade do token')
   return { usdUnits, feeMinor }
 }
 

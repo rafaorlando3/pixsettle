@@ -7,6 +7,7 @@ import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { privateKeyToAccount } from 'viem/accounts'
 import type { Hex } from 'viem'
+import { assertNoForbiddenProductionFlags, productionConfigFromEnv } from '../src/affiliates/production.js'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const NET = ['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'TZ']
@@ -17,13 +18,19 @@ const CORE_ENV = ['PIXSETTLE_PROFILE', 'CHAIN_ID', 'TREASURY_ADDRESS', 'TOKEN', 
 
 export type LaunchPlan = { signer: Record<string, string> | null; core: Record<string, string> }
 
-/** Plano puro (testável): quem sobe, com quais variáveis. Recusa chave que não bate com o endereço publicado. */
+/**
+ * Plano puro (testável): quem sobe, com quais variáveis. Recusa chave que não bate com o endereço publicado.
+ * v7.2 (revisão X-1205, F3): as flags proibidas são conferidas no ambiente ORIGINAL, antes do filtro do CORE_ENV (filtrar não
+ * esconde DEMO_MODE, leitura pública, lotes do produtor nem ensaio com liquidação), e o ambiente que o core vai receber é
+ * validado inteiro pela mesma função do boot antes de o plano voltar: nada sobe (assinante ou core) com configuração recusada.
+ */
 export function productionLaunchPlan(env: Record<string, string | undefined>, hmac = randomBytes(32).toString('hex')): LaunchPlan {
-  if (env.PIXSETTLE_SEED) throw new Error('seed_forbidden: PIXSETTLE_SEED é da demo; produção não deriva chave nem tesouraria')
+  assertNoForbiddenProductionFlags(env)
   const pick = (names: string[]) => Object.fromEntries(names.map(k => [k, env[k]]).filter(([, v]) => v !== undefined && v !== '')) as Record<string, string>
   const core = pick(CORE_ENV)
   if (env.AFFILIATE_SETTLE !== '1') {
     if (env.TREASURY_KEY || env.ISSUER_KEY) throw new Error('key_without_settle: chave presente com AFFILIATE_SETTLE desligado; tire a chave do ambiente (o core não assina)')
+    productionConfigFromEnv(core)
     return { signer: null, core }
   }
   const treasuryKey = env.TREASURY_KEY as Hex | undefined, issuerKey = env.ISSUER_KEY as Hex | undefined
@@ -33,10 +40,9 @@ export function productionLaunchPlan(env: Record<string, string | undefined>, hm
   if (!env.TOKEN || !env.CHAIN_ID) throw new Error('signer_chain_missing: CHAIN_ID e TOKEN obrigatórios para assinar')
   const port = env.SETTLEMENT_PORT ?? '7401'
   const signer = { PORT: port, SETTLEMENT_HMAC_SECRET: hmac, TREASURY_KEY: treasuryKey, ISSUER_KEY: issuerKey, TOKEN: env.TOKEN, CHAIN_ID: env.CHAIN_ID, FAUCET_TOPUP: '0', ...(env.TEMPO_RPC ? { TEMPO_RPC: env.TEMPO_RPC } : {}) }
-  return {
-    signer,
-    core: { ...core, SETTLEMENT_URL: `http://127.0.0.1:${port}`, SETTLEMENT_HMAC_SECRET: hmac, ISSUER_ADDRESS: env.ISSUER_ADDRESS ?? privateKeyToAccount(issuerKey).address },
-  }
+  const coreEnv = { ...core, SETTLEMENT_URL: `http://127.0.0.1:${port}`, SETTLEMENT_HMAC_SECRET: hmac, ISSUER_ADDRESS: env.ISSUER_ADDRESS ?? privateKeyToAccount(issuerKey).address }
+  productionConfigFromEnv(coreEnv) // o core recusaria no boot; recusar aqui evita subir o assinante com a chave à toa
+  return { signer, core: coreEnv }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

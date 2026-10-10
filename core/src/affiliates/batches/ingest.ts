@@ -118,7 +118,8 @@ export async function applyCommissionRevisions(ctx: Ctx, origin: string, store: 
     let commissionId: string | null = null
     try {
       const prior = (await ctx.db.query(
-        `SELECT c.id, c.status, c.amount_minor, c.order_ref, c.occurred_at, b.beneficiary_ref, b.kind FROM affiliate_commissions c JOIN affiliate_beneficiaries b ON b.id=c.beneficiary_id WHERE c.merchant_id=$1 AND c.source_event_id=$2`, [merchantId, r.commission_id])).rows[0]
+        // v7.2: compara com o valor com que a comissão nasceu; um ajuste pela API não vira "valor mudou" na revisão do lote
+        `SELECT c.id, c.status, COALESCE(c.created_amount_minor, c.amount_minor) AS amount_minor, c.order_ref, c.occurred_at, b.beneficiary_ref, b.kind FROM affiliate_commissions c JOIN affiliate_beneficiaries b ON b.id=c.beneficiary_id WHERE c.merchant_id=$1 AND c.source_event_id=$2`, [merchantId, r.commission_id])).rows[0]
       const changed = prior ? immutableDiff(prior, r) : []
       if (prior && changed.length) {
         // Campos imutáveis mudaram depois de a comissão nascer (valor, afiliado, pedido, tipo ou data): nada é liberado nem anulado

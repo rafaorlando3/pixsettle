@@ -19,7 +19,9 @@ const err = (reply: FastifyReply, status: number, code: string, message: string,
   reply.code(status).send({ error: { code, message, details } })
 const amountOf = (a: any): bigint | null => (typeof a?.amount === 'string' && /^\d{1,18}$/.test(a.amount) && a.currency === 'BRL' && (a.scale ?? 2) === 2 ? BigInt(a.amount) : null)
 const unitsOf = (u: any): bigint | null => (typeof u === 'string' && /^\d{1,30}$/.test(u) ? BigInt(u) : null)
-const dateOf = (s: any, fallback: Date): Date => (typeof s === 'string' && s ? new Date(s) : fallback)
+// v7.2: ausente (ou vazio) usa a hora do servidor; presente tem que ser texto de data válido. Qualquer outra coisa (número,
+// objeto, texto que não é data) vira data inválida e o serviço responde 422 invalid_occurred_at antes de qualquer transação.
+const dateOf = (s: any, fallback: Date): Date => (s === undefined || s === null || s === '' ? fallback : typeof s === 'string' ? new Date(s) : new Date(Number.NaN))
 /** Inteiro positivo vindo como número inteiro ou texto de dígitos (os clientes mandam dos dois jeitos); qualquer outra coisa = null. */
 const posInt = (v: any): bigint | null => (typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? BigInt(v) : typeof v === 'string' && /^[1-9]\d{0,29}$/.test(v) ? BigInt(v) : null)
 /** v4: `quote` opcional do corpo. Só `mode: launch` existe; erro de forma é 422 com código estável, antes de qualquer efeito. */

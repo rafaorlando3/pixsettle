@@ -9,7 +9,7 @@ import canonicalizeLib from 'canonicalize'
 import { withTx, txLock, recordTransition, enqueue, type Tx } from '../db.js'
 import { DomainError } from '../flows/orders.js'
 import type { Ctx } from '../context.js'
-import { fixUsdUnits, pixNet, fmtUsd, fmtBrl } from './money.js'
+import { fixUsdUnits as fixUsdUnitsRaw, UsdBelowOneUnitError, pixNet, fmtUsd, fmtBrl, type BuyRate } from './money.js'
 import type { UsdQuote } from './quotes.js'
 
 export type BeneficiaryKind = 'affiliate' | 'partner_percent'
@@ -78,6 +78,14 @@ export function assertLaunchQuote(ctx: Ctx, q: LaunchQuote, live: UsdQuote | nul
 
 const newId = (p: 'ben' | 'com' | 'qlk' | 'wdr' | 'stl' | 'rct') => `${p}_${ulid()}`
 /** Memo de 32 bytes: o id (30 caracteres) + 2 bytes zero; um pagamento refeito usa o sufixo "-N" nos 2 bytes finais (memo é único no diário). */
+/** v7.2 (revisão X-1205, limite de arredondamento): valor abaixo de uma unidade do token é 422 com código, nunca 500. */
+function fixUsdUnits(amountMinor: bigint, feeBps: number, rate: BuyRate) {
+  try { return fixUsdUnitsRaw(amountMinor, feeBps, rate) } catch (e) {
+    if (e instanceof UsdBelowOneUnitError) throw new DomainError('usd_below_one_unit', 'o valor em dólar fica abaixo de uma unidade do token (US$ 0,000001); para zerar a comissão, anule', 422)
+    throw e
+  }
+}
+
 const memoOf = (id: string, attempt = 1) => '0x' + Buffer.concat([Buffer.from(id, 'ascii'), attempt === 1 ? Buffer.alloc(32 - id.length) : Buffer.from(`-${attempt}`.slice(-(32 - id.length)), 'ascii')]).toString('hex')
 const memoPrefix = (id: string) => '0x' + Buffer.from(id, 'ascii').toString('hex')
 const benKey = (beneficiaryId: string) => `affiliate:${beneficiaryId}`
@@ -122,8 +130,13 @@ async function beneficiaryOf(tx: Tx, merchantId: string, ref: string) {
   return b
 }
 
+/** v7.2: valor com que a comissão nasceu (imutável); o ajuste muda amount_minor, nunca este. */
+export const createdAmountOf = (c: any): bigint => BigInt(c.created_amount_minor ?? c.amount_minor)
+
 const sameContent = (c: any, input: CommissionInput, beneficiaryRef: string, kind: string) =>
-  c.beneficiary_ref === beneficiaryRef && c.b_kind === kind && BigInt(c.amount_minor) === input.amountMinor &&
+  // v7.2: a idempotência compara com o valor ORIGINAL; repetir a criação original depois de um ajuste é 200 sem efeito,
+  // e repetir com o valor ajustado é conteúdo diferente (409): o ajuste nunca vira uma criação nova.
+  c.beneficiary_ref === beneficiaryRef && c.b_kind === kind && createdAmountOf(c) === input.amountMinor &&
   (c.order_ref ?? null) === (input.orderRef ?? null) && new Date(c.occurred_at).getTime() === input.occurredAt.getTime() &&
   // v4: a cotação do lançamento faz parte do conteúdo: mesma prova = mesma comissão; com e sem lançamento nunca se confundem
   (input.launch ? c.quote_mode === 'launch' && c.quote_hash === launchQuoteHash(input.launch) : c.quote_mode !== 'launch')
@@ -158,8 +171,8 @@ export async function createCommission(ctx: Ctx, merchantId: string, input: Comm
     const { usdUnits } = fixUsdUnits(input.amountMinor, feeBps, rate)
     const id = newId('com')
     await tx.query(
-      `INSERT INTO affiliate_commissions (id, merchant_id, beneficiary_id, source_event_id, order_ref, amount_minor, fee_bps, usd_units, rate_num, rate_den, quote_source, quote_at, quote_hash, quote_mode, quote_evidence, status, occurred_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending',$16)`,
+      `INSERT INTO affiliate_commissions (id, merchant_id, beneficiary_id, source_event_id, order_ref, amount_minor, created_amount_minor, fee_bps, usd_units, rate_num, rate_den, quote_source, quote_at, quote_hash, quote_mode, quote_evidence, status, occurred_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending',$16)`,
       [id, merchantId, b.id, input.sourceEventId, input.orderRef ?? null, input.amountMinor.toString(), feeBps, usdUnits.toString(),
         rate.rateNum.toString(), rate.rateDen.toString(), launch ? launch.source : quote.source, launch ? launch.at : quote.at,
         launch ? launchQuoteHash(launch) : quote.hash, quoteMode, launch ? JSON.stringify(launchQuoteObject(launch).evidence) : null, input.occurredAt],
@@ -173,6 +186,11 @@ export async function createCommission(ctx: Ctx, merchantId: string, input: Comm
   })
   const row = await findBySource(ctx, merchantId, input.sourceEventId)
   return { created, commission: projectCommission(row) }
+}
+
+/** v7.2: data inválida é 422 com código, decidida antes de qualquer transação (nunca 500, nunca aceita como "sem efeito"). */
+function assertValidDate(d: Date) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) throw new DomainError('invalid_occurred_at', 'occurred_at inválido')
 }
 
 function assertSame(existing: any, input: CommissionInput) {
@@ -219,6 +237,7 @@ async function recordPayoutIntent(tx: Tx, ctx: Ctx, aff: NonNullable<Ctx['affili
  */
 export async function releaseCommission(ctx: Ctx, merchantId: string, commissionId: string, occurredAt: Date) {
   const aff = affiliatesOn(ctx)
+  assertValidDate(occurredAt)
   await withTx(ctx.db, async tx => {
     const c = await lockCommissionAndSettlement(tx, merchantId, commissionId)
     if (c.status !== 'pending') {
@@ -254,6 +273,7 @@ export async function adjustCommission(ctx: Ctx, merchantId: string, commissionI
   affiliatesOn(ctx)
   if (!/^[a-z0-9_]{2,64}$/.test(reasonCode)) throw new DomainError('invalid_reason_code', 'reason_code deve ser um código simples (a-z, 0-9, _)')
   if (newAmountMinor <= 0n) throw new DomainError('invalid_amount', 'o valor ajustado tem que ser positivo (para zerar, anule a comissão)')
+  assertValidDate(occurredAt) // v7.2: antes da transação, então nem o caminho sem efeito (mesmo valor) aceita data inválida
   await withTx(ctx.db, async tx => {
     const c = await lockCommissionAndSettlement(tx, merchantId, commissionId)
     if (c.status !== 'pending') throw new DomainError('commission_not_pending', `comissão está ${c.status}; só pendente pode ser ajustada`, 409)
@@ -280,6 +300,7 @@ export async function adjustCommission(ctx: Ctx, merchantId: string, commissionI
 export async function voidCommission(ctx: Ctx, merchantId: string, commissionId: string, reasonCode: string, occurredAt: Date) {
   affiliatesOn(ctx)
   if (!/^[a-z0-9_]{2,64}$/.test(reasonCode)) throw new DomainError('invalid_reason_code', 'reason_code deve ser um código simples (a-z, 0-9, _)')
+  assertValidDate(occurredAt)
   // Toda recusa é decidida ANTES de qualquer efeito e devolvida para fora da transação (nada fica gravado, só a exceção durável abaixo).
   const refusal = await withTx(ctx.db, async tx => {
     const c = await lockCommissionAndSettlement(tx, merchantId, commissionId)
@@ -547,6 +568,8 @@ export function projectCommission(c: any) {
     id: c.id, source_event_id: c.source_event_id, order_ref: c.order_ref, beneficiary_ref: c.beneficiary_ref, kind: c.b_kind,
     status: c.status, reason_code: c.reason_code, custody: c.custody,
     amount: { amount: String(c.amount_minor), currency: 'BRL', scale: 2, brl: fmtBrl(BigInt(c.amount_minor)) },
+    // v7.2: valor com que a comissão nasceu (igual a amount até um ajuste); é com ele que a criação se repete
+    original_amount: { amount: createdAmountOf(c).toString(), currency: 'BRL', scale: 2, brl: fmtBrl(createdAmountOf(c)) },
     usd: { units: usd.toString(), scale: 6, usd: fmtUsd(usd) },
     quote: { rate_num: String(c.rate_num), rate_den: String(c.rate_den), source: c.quote_source, at: iso(c.quote_at), hash: c.quote_hash, fee_bps: c.fee_bps, mode: c.quote_mode,
       ...(c.quote_mode === 'launch' && c.quote_evidence ? { evidence: c.quote_evidence } : {}) },

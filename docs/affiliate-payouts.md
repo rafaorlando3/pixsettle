@@ -334,8 +334,10 @@ NEXT commissions pay it down before they are credited).
   (to zero a commission, void it). Repeating the same amount is 200 with no effect (idempotent by value).
 - The dollar amount is recomputed with the SAME formula and inputs as the fixing (`fixUsdUnits` with the commission's own
   `fee_bps`, `rate_num` and `rate_den`, rounding down), so a client can predict it exactly. The difference is written to the
-  ledger as an `adjustment` entry (negative units, `op_key adjust:<id>:<amount>`) and the transition records from/to,
-  units, delta, reason and time.
+  ledger as an `adjustment` entry (non-positive units: zero when rounding keeps the same dollar amount; `op_key
+  adjust:<id>:<amount>`) and the transition records from/to, units, delta, reason and time. A new amount whose dollars
+  would round to zero units is `422 usd_below_one_unit` (v7.2), and an invalid `occurred_at` is `422 invalid_occurred_at`
+  before any transaction (v7.2, §17).
 - `GET /api/v1/affiliates/summary` and `/healthz` declare `adjust` in `capabilities` (always on with this version).
 - Owed-amount offsets on the client side use `reason_code: debt_offset`: a whole commission pays the owed amount by a
   `void` with that reason (never credited), part of it by an `adjust` to the largest amount whose dollars fit in what is
@@ -343,4 +345,45 @@ NEXT commissions pay it down before they are credited).
   rule; this service keeps the dollar ledger exact.
 - Tests: `core/test/affiliates-adjust.test.ts` (2) plus the capability expectations in the launch-quote and production
   tests; the Odin client covers the offsets end to end against this server in its live contract test.
+
+## 17. Review fixes before production (2026-10-10, contract v7.2)
+
+Review X-1205 of v7/v7.1 did not approve production: two P1 and two P2 findings plus a rounding limit. All five are fixed,
+each with a test that fails on v7.1 (negative control) and passes now.
+
+- F1 (P1), create stays idempotent after an adjust. Migration 015 adds `created_amount_minor`: the amount the commission
+  was CREATED with, written once and never changed (a check keeps `0 < amount_minor <= created_amount_minor`). Existing
+  rows are backfilled from the creation transition (its JSON carries `amount_minor`), falling back to the current amount;
+  the down migration refuses while any commission is adjusted. Create idempotency compares the request with the ORIGINAL
+  amount (plus beneficiary, kind, order, time and launch evidence, as before): repeating the original create after one or
+  more adjusts is `200` with the same id, the adjusted amount and no new ledger row or transition; a create with the
+  adjusted value, or any other value, is `409 idempotency_conflict` (an adjust never turns into a new creation). The same
+  holds for launch commissions (same evidence repeats; another value, or no evidence, is 409). Producer batch revisions
+  compare with the original amount too, so an API adjust is not reported as `affiliate_amount_changed`. The merchant view
+  adds `original_amount` (same shape as `amount`); the public allow-list is unchanged.
+- F2 (P1), rehearsal and simulated quotes never settle. `assertNoForbiddenProductionFlags` (shared by the core and the
+  launcher) refuses `PRODUCTION_REHEARSAL=1` with `AFFILIATE_SETTLE=1` (`rehearsal_settle_forbidden`, any chain) and a
+  simulated quote source with `AFFILIATE_SETTLE=1` (`simulated_quote_settle_forbidden`), even with a valid signer and
+  issuer. The core checks it before opening the database (no migration runs on refusal). Rehearsal with settlement off
+  keeps working on 4217 and 42431.
+- F3 (P2), the launcher validates the original environment. Before filtering what it passes to the core, the launcher
+  runs the same forbidden-flag check on its OWN environment (`DEMO_MODE`, demo seed, public merchant, producer batch keys,
+  tokens and streams, rehearsal or simulated quote with settlement), then validates the exact environment the core will
+  receive with `productionConfigFromEnv` before returning the plan, so nothing is spawned (neither the signer with the key
+  nor the core) on a refused configuration. Refusals carry the same codes as the core.
+- F4 (P2), invalid dates are 422. `adjust`, `release` and `void` validate `occurred_at` before any transaction, including
+  their no-op paths (same amount, already released, already voided): `422 invalid_occurred_at`, nothing changes. Absent or
+  empty keeps the server time; a non-string value (number, object, boolean) is invalid.
+- Rounding limit: a conversion that would round to zero token units (only reachable with an extreme rate) is
+  `422 usd_below_one_unit` in create and adjust, never a generic 500 and never a zero-dollar commission.
+- Tests: `core/test/affiliates-adjust.test.ts` (9: original replay after adjust, launch replay, fixed orders, an 8-round
+  race of create replays, adjust and release with ledger and settlement invariants, migration backfill and refusing down,
+  invalid dates on every path, rounding limit), `core/test/affiliates-production.test.ts` (11: the review counterexample in
+  the core and in the launcher, boot refused before any table exists, every forbidden flag through the launcher plan, and
+  the real launcher process exiting with the code before spawning anything), and the rollback order in
+  `core/test/affiliates.test.ts`.
+- Limits that stay open (not changed here): launch evidence (transaction hashes and amounts) is declared by the merchant;
+  this service checks shape, ratio, time and band, not the chain receipt (the merchant checks arrival on Tempo before
+  sending it). A rehearsal pointed at the production database would leave simulated-rate commissions there; binding the
+  database to one profile (mode, chain, treasury) at boot is proposed as a release gate, not implemented in v7.2.
 

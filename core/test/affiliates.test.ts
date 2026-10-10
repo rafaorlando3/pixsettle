@@ -406,7 +406,9 @@ describe('revisão 347 (Codex, 09/10): custódia, anulação segura, chaves, pro
   it('P1-6 a migração reversa recusa apagar estado econômico', async () => {
     const e = await env()
     await e.post('/api/v1/affiliates/commissions', commission())
-    // v4: a 014 (cotação do lançamento) é a última; sem comissão do lançamento ela volta, e aí a 013 recusa
+    // v7.2: a 015 (valor original) é a última; sem comissão ajustada ela volta; a 014 (cotação do lançamento) volta sem
+    // comissão do lançamento, e aí a 013 recusa
+    await rollback(e.db, '015_affiliate_created_amount.sql')
     await rollback(e.db, '014_affiliate_launch_quote.sql')
     await expect(rollback(e.db, '013_affiliate_payouts.sql')).rejects.toThrow(/refusing to drop/)
     expect((await e.db.query(`SELECT count(*)::int AS n FROM affiliate_commissions`)).rows[0].n).toBe(1)
@@ -556,8 +558,8 @@ describe('revisão 347 v4 (Codex X-1030): corrida da anulação, recibos por ví
     await A.db.query(`INSERT INTO settlements (id, order_id, kind, beneficiary_ref, chain_id, token, sender, recipient, amount_units, memo, status) VALUES ($1,NULL,'affiliate_payout',$2,$3,$4,$5,$6,$7,$8,'confirmed')`,
       [sB.id, ref, sB.chain_id, sB.token, sB.sender, sB.recipient, String(sB.amount_units), sB.memo])
     const cB = (await B.db.query(`SELECT * FROM affiliate_commissions`)).rows[0]
-    await A.db.query(`INSERT INTO affiliate_commissions (id, merchant_id, beneficiary_id, source_event_id, amount_minor, usd_units, rate_num, rate_den, quote_source, quote_at, quote_hash, status, occurred_at, settlement_id)
-      VALUES ($1,'mer_B','ben_B',$2,$3,$4,$5,$6,$7,$8,$9,'settled',$10,$11)`, [cB.id, cB.source_event_id, cB.amount_minor, cB.usd_units, cB.rate_num, cB.rate_den, cB.quote_source, cB.quote_at, cB.quote_hash, cB.occurred_at, sB.id])
+    await A.db.query(`INSERT INTO affiliate_commissions (id, merchant_id, beneficiary_id, source_event_id, amount_minor, created_amount_minor, usd_units, rate_num, rate_den, quote_source, quote_at, quote_hash, status, occurred_at, settlement_id)
+      VALUES ($1,'mer_B','ben_B',$2,$3,$12,$4,$5,$6,$7,$8,$9,'settled',$10,$11)`, [cB.id, cB.source_event_id, cB.amount_minor, cB.usd_units, cB.rate_num, cB.rate_den, cB.quote_source, cB.quote_at, cB.quote_hash, cB.occurred_at, sB.id, cB.created_amount_minor])
     const rcB = (await B.db.query(`SELECT * FROM affiliate_receipts`)).rows[0]
     await A.db.query(`INSERT INTO affiliate_receipts (id, settlement_id, commission_id, digest_hex, envelope) VALUES ($1,$2,$3,$4,$5)`, [rcB.id, sB.id, cB.id, rcB.digest_hex, JSON.stringify(rcB.envelope)])
     // no banco de A: lojista A e lojista B têm a mesma ref; o recibo de B não aparece para A (API nem público), e o de A segue visível
