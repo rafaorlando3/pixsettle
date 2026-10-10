@@ -1,6 +1,6 @@
 # Affiliate payouts in digital dollars (phase 2 contract)
 
-Status: contract v5, 2026-10-09 (v4 plus the second pass of the dedicated review of task 349, X-1060/X-1061/X-1062, all applied; see section 13).
+Status: contract v6, 2026-10-09 (v5 plus E1 from the deploy attempt of the dedicated review of task 349, X-1085/X-1087/X-1088; see section 14).
 Module `core/src/affiliates/`, feature flag `AFFILIATE_PAYOUTS` (off by default).
 Scope of this phase: real commission events from the merchant's affiliate program enter PixSettle through the
 API, each commission is fixed in digital dollars at the moment the Pix is received, released after the
@@ -257,4 +257,24 @@ suite. Core suite: 279 tests.
    malformed (fail, no RPC call); RPC down, no receipt yet or incomplete receipt are `unavailable` with the reason;
    settlement and refund receipts unchanged. Web suite: 38 tests. Also: the obsolete `no_payout` code was removed from
    section 6 (the code only raises `no_payout_address`).
+
+## 14. Deploy attempt of v7 (Codex, X-1085, X-1087, X-1088) and what changed (E1, v8)
+
+- Observed on Render (attempt 4 of v7): every gate passed except the quote: `api.binance.com` answers HTTP 451 (unavailable
+  for legal reasons) from that cloud region, so `/pilot/api/affiliates` returned `rate_now.unavailable` and the automatic
+  rollback restored 5686a760. The same was reproduced from a second cloud region on 2026-10-09: `api.binance.com` 451,
+  `data-api.binance.vision` 200 with a fresh USDTBRL book.
+- E1: the default quote endpoint is now Binance's public market-data service, documented for unauthenticated market data
+  (`https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol=USDTBRL`): same path, same symbol, same bid/ask contract
+  (buy at ask, sell at bid, integer arithmetic, hash over both sides and the time), same cache and stale tolerance. No key,
+  no authorization header, no proxy, no host hopping.
+- `AFFILIATE_QUOTE_URL` (optional, passed through by the launcher) may point the source at another official Binance host
+  with the identical path and symbol (for example `api-gcp.binance.com`); anything else is a configuration error declared at
+  boot, never ignored. A quote failure now carries the provider's HTTP status (`rate_now.provider_http_status` in the
+  aggregate and the beneficiary view, `httpStatus` in the failure) so a block like 451 is visible as such.
+- Tests: all fresh and failed calls go to the public data URL without headers; 451, timeout, invalid JSON and an inverted
+  book never produce a quote; the last good quote is reused only within the tolerance and with its explicit age, then the
+  current failure is returned with its status; the factory uses the public data URL by default and validates the override.
+  An opt-in live test (`AFFILIATE_QUOTE_LIVE=1`) fetches a fresh USDTBRL quote from the public service. The Render proof
+  (aggregate 200 with `rate_now.source = binance_usdtbrl`, `age_s` between 0 and 600 on a cold boot) is the deploy smoke.
 

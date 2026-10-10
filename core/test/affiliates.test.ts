@@ -9,7 +9,7 @@ import { configureAffiliateJournal } from '../src/affiliates/journal.js'
 import { resumeAffiliateSettlements } from '../src/affiliates/service.js'
 import { drain } from '../src/outbox.js'
 import { rollback } from '../src/rollback.js'
-import { SimulatedQuoteSource, BinanceUsdtBrlQuoteSource, parsePrice4, makeQuote } from '../src/affiliates/quotes.js'
+import { SimulatedQuoteSource, BinanceUsdtBrlQuoteSource, parsePrice4, makeQuote, quoteSourceFromEnv, BINANCE_PUBLIC_DATA_URL } from '../src/affiliates/quotes.js'
 import { fixUsdUnits, pixNet, ratesFromPrice4, fmtUsd, fmtBrl } from '../src/affiliates/money.js'
 import { signReceipt, verifyEnvelope } from '../../settlement/src/receipt.js'
 
@@ -58,16 +58,55 @@ describe('dinheiro: conversão fixada e saque exato (inteiros, para baixo)', () 
   it('preço com 4 casas e cotação da Binance com cache, lado pior e falha explicada', async () => {
     expect(parsePrice4('5.2')).toBe(52000n); expect(parsePrice4('5.20004')).toBe(52000n); expect(parsePrice4('abc')).toBeNull()
     let calls = 0
+    const requestedUrls: string[] = []
     const ok = JSON.stringify({ bidPrice: '5.1900', askPrice: '5.2100' })
-    const fetchImpl = (async () => { calls++; return new Response(calls === 1 ? ok : 'down', { status: calls === 1 ? 200 : 503 }) }) as unknown as typeof fetch
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => { requestedUrls.push(String(input)); expect((init?.headers as any) ?? {}).toEqual({}); calls++; return new Response(calls === 1 ? ok : 'down', { status: calls === 1 ? 200 : 503 }) }) as unknown as typeof fetch
     const src = new BinanceUsdtBrlQuoteSource({ fetchImpl, maxAgeMs: 1000, staleOkMs: 5000 })
     const t0 = new Date('2026-10-09T12:00:00Z')
     const q1 = await src.quote(t0); expect(q1.ok && q1.quote.price4).toBe(52100n) // compra pelo ask
     expect(q1.ok && q1.quote.sell.rateNum).toBe(51900n) // venda pelo bid
     const q2 = await src.quote(new Date(t0.getTime() + 500)); expect(calls).toBe(1); expect(q2.ok && q2.quote.ageS).toBe(0)
     const q3 = await src.quote(new Date(t0.getTime() + 3000)); expect(calls).toBe(2); expect(q3.ok && q3.quote.ageS).toBe(3) // fora do ar: última boa, com idade
-    const q4 = await src.quote(new Date(t0.getTime() + 9000)); expect(q4).toMatchObject({ ok: false, code: 'quote_unavailable' }); expect(!q4.ok && q4.detail).toMatch(/HTTP 503/)
+    const q4 = await src.quote(new Date(t0.getTime() + 9000)); expect(q4).toMatchObject({ ok: false, code: 'quote_unavailable', httpStatus: 503 }); expect(!q4.ok && q4.detail).toMatch(/HTTP 503/)
+    // E1 (v8): toda chamada, fresca ou com erro, vai ao serviço público de dados da Binance, sem chave e sem cabeçalho de autorização
+    expect(requestedUrls).toEqual(Array(3).fill('https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol=USDTBRL'))
+    expect(src.url).toBe(BINANCE_PUBLIC_DATA_URL)
     expect(makeQuote('simulated', 52000n, t0).hash).toHaveLength(64)
+  })
+  it('E1 (v8): 451, tempo esgotado, JSON inválido ou ask < bid nunca viram cotação; sem última boa é quote_unavailable com o status HTTP', async () => {
+    const t0 = new Date('2026-10-09T12:00:00Z')
+    const mk = (fn: () => Promise<Response>) => new BinanceUsdtBrlQuoteSource({ fetchImpl: fn as unknown as typeof fetch, maxAgeMs: 1000, staleOkMs: 5000 })
+    const r451 = await mk(async () => new Response('<html>Unavailable For Legal Reasons</html>', { status: 451 })).quote(t0)
+    expect(r451).toMatchObject({ ok: false, code: 'quote_unavailable', httpStatus: 451 }); expect(!r451.ok && r451.detail).toMatch(/HTTP 451/)
+    const rTimeout = await mk(async () => { throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' }) }).quote(t0)
+    expect(rTimeout).toMatchObject({ ok: false, code: 'quote_unavailable' }); expect(!rTimeout.ok && rTimeout.httpStatus).toBeUndefined(); expect(!rTimeout.ok && rTimeout.detail).toMatch(/timeout/)
+    const rJson = await mk(async () => new Response('not json', { status: 200 })).quote(t0)
+    expect(rJson).toMatchObject({ ok: false, code: 'quote_unavailable', httpStatus: 200 })
+    const rInverted = await mk(async () => new Response(JSON.stringify({ bidPrice: '5.30', askPrice: '5.20' }), { status: 200 })).quote(t0)
+    expect(rInverted).toMatchObject({ ok: false, code: 'quote_unavailable' }); expect(!rInverted.ok && rInverted.detail).toMatch(/bid\/ask/)
+    // última boa só dentro da tolerância, com idade explícita; depois dela, falha de novo com o status atual
+    let n = 0
+    const flaky = mk(async () => { n++; return n === 1 ? new Response(JSON.stringify({ bidPrice: '5.10', askPrice: '5.12' }), { status: 200 }) : new Response('blocked', { status: 451 }) })
+    expect(await flaky.quote(t0)).toMatchObject({ ok: true })
+    const stale = await flaky.quote(new Date(t0.getTime() + 4000)); expect(stale.ok && stale.quote.ageS).toBe(4)
+    const dead = await flaky.quote(new Date(t0.getTime() + 6000)); expect(dead).toMatchObject({ ok: false, httpStatus: 451 })
+  })
+  it('E1 (v8): a fábrica AFFILIATE_QUOTE_SOURCE=binance_usdtbrl usa o serviço público de dados; AFFILIATE_QUOTE_URL só aceita outro host oficial da Binance com o mesmo caminho', () => {
+    const def = quoteSourceFromEnv({ AFFILIATE_QUOTE_SOURCE: 'binance_usdtbrl' }) as BinanceUsdtBrlQuoteSource
+    expect(def.name).toBe('binance_usdtbrl'); expect(def.url).toBe('https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol=USDTBRL')
+    const gcp = quoteSourceFromEnv({ AFFILIATE_QUOTE_SOURCE: 'binance_usdtbrl', AFFILIATE_QUOTE_URL: 'https://api-gcp.binance.com/api/v3/ticker/bookTicker?symbol=USDTBRL' }) as BinanceUsdtBrlQuoteSource
+    expect(gcp.url).toBe('https://api-gcp.binance.com/api/v3/ticker/bookTicker?symbol=USDTBRL')
+    for (const bad of ['http://data-api.binance.vision/api/v3/ticker/bookTicker?symbol=USDTBRL', 'https://evil.example/api/v3/ticker/bookTicker?symbol=USDTBRL', 'https://data-api.binance.vision/api/v3/ticker/bookTicker?symbol=BTCBRL', 'https://data-api.binance.vision.evil.example/api/v3/ticker/bookTicker?symbol=USDTBRL'])
+      expect(() => quoteSourceFromEnv({ AFFILIATE_QUOTE_SOURCE: 'binance_usdtbrl', AFFILIATE_QUOTE_URL: bad })).toThrow(/AFFILIATE_QUOTE_URL inválida/)
+    expect((quoteSourceFromEnv({ AFFILIATE_QUOTE_SOURCE: 'binance_usdtbrl', AFFILIATE_QUOTE_URL: '  ' }) as BinanceUsdtBrlQuoteSource).url).toBe(BINANCE_PUBLIC_DATA_URL)
+    expect(quoteSourceFromEnv({}).name).toBe('simulated')
+  })
+  // Prova ao vivo, só quando pedida (AFFILIATE_QUOTE_LIVE=1): o serviço público responde USDTBRL fresco, sem chave. Na Render é o smoke do Codex que prova.
+  it.skipIf(process.env.AFFILIATE_QUOTE_LIVE !== '1')('E1 (v8) ao vivo: data-api.binance.vision devolve USDTBRL fresco com bid <= ask', async () => {
+    const src = new BinanceUsdtBrlQuoteSource()
+    const r = await src.quote(new Date())
+    expect(r.ok, r.ok ? 'ok' : r.detail).toBe(true)
+    if (r.ok) { expect(r.quote.ageS).toBe(0); expect(r.quote.price4 > 10000n && r.quote.price4 < 200000n).toBe(true); expect(r.quote.sell.rateNum <= r.quote.price4).toBe(true) }
   })
 })
 

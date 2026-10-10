@@ -533,7 +533,7 @@ export async function beneficiaryView(ctx: Ctx, merchantId: string, ref: string,
       paid_to_own_wallet: usdOf(bal.paidToWallet),
       in_flight_to_own_wallet: usdOf(bal.inFlightToWallet),
     },
-    rate_now: q.ok ? { price4: q.quote.price4.toString(), brl_per_usd: (Number(q.quote.price4) / 10_000).toFixed(4), source: q.quote.source, at: q.quote.at.toISOString(), age_s: q.quote.ageS } : { unavailable: q.detail },
+    rate_now: q.ok ? { price4: q.quote.price4.toString(), brl_per_usd: (Number(q.quote.price4) / 10_000).toFixed(4), source: q.quote.source, at: q.quote.at.toISOString(), age_s: q.quote.ageS } : { unavailable: q.detail, provider_http_status: q.httpStatus ?? null },
     commissions, withdrawals,
   }
 }
@@ -567,7 +567,7 @@ export async function aggregateView(ctx: Ctx, merchantId: string) {
     usd_settled_on_chain: { units: r.usd_settled, usd: fmtUsd(BigInt(r.usd_settled)) },
     withdrawals: { total: w.withdrawals, pix_requested: w.pix_requested, pix_paid_declared: w.pix_paid_declared, wallet_settled: w.wallet_settled, brl_paid_declared: fmtBrl(BigInt(w.brl_paid_minor)) },
     exceptions_for_human: exceptions, sample_refs: sample, // pseudônimos do lojista público: páginas públicas de exemplo
-    rate_now: q.ok ? { brl_per_usd: (Number(q.quote.price4) / 10_000).toFixed(4), source: q.quote.source, at: q.quote.at.toISOString(), age_s: q.quote.ageS } : { unavailable: q.detail },
+    rate_now: q.ok ? { brl_per_usd: (Number(q.quote.price4) / 10_000).toFixed(4), source: q.quote.source, at: q.quote.at.toISOString(), age_s: q.quote.ageS } : { unavailable: q.detail, provider_http_status: q.httpStatus ?? null },
     currency: { symbol: 'USD', token: ctx.chain.token, chain_id: ctx.chain.chainId, chain_env: chainEnv(ctx) },
     evidence: { pix: 'declared_by_merchant', wallet: 'chain_confirmed', settlement: settleOn(ctx.affiliates) ? 'enabled' : 'disabled' },
   }
