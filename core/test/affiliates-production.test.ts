@@ -100,7 +100,7 @@ describe('produção dos afiliados: de ponta a ponta pelo HTTP (ensaio com cota�
     const H = { authorization: `Bearer ${key}`, 'content-type': 'application/json' }
 
     const h = await (await fetch(`${at}/healthz`)).json()
-    expect(h).toMatchObject({ ok: true, profile: 'affiliates_production', chain_id: 4217, token: TEMPO_MAINNET_USDC, treasury: TREASURY, settle: false, launch_quote: true, capabilities: ['launch_quote'] })
+    expect(h).toMatchObject({ ok: true, profile: 'affiliates_production', chain_id: 4217, token: TEMPO_MAINNET_USDC, treasury: TREASURY, settle: false, launch_quote: true, capabilities: ['launch_quote', 'adjust'] })
     expect(JSON.stringify(h)).not.toMatch(/key|secret|seed/i)
 
     const quote = { mode: 'launch', rate_num: 39_884_516, rate_den: 20_848, source: 'conversao_real', at: new Date(Date.now() - 600_000).toISOString(), evidence: { brl_paid_minor: 20_848, usd_units_received: 39_884_516, tx: ['0x' + 'ab'.repeat(32)] } }
@@ -114,7 +114,7 @@ describe('produção dos afiliados: de ponta a ponta pelo HTTP (ensaio com cota�
     expect(rel.payout).toMatchObject({ hold_reason: 'affiliate_settle_off', to: TREASURY }) // pool = a própria tesouraria; nada vai para a rede
     expect(rel.payout.tx_hash).toBeNull()
     const sum = await (await fetch(`${at}/api/v1/affiliates/summary`, { headers: H })).json()
-    expect(sum).toMatchObject({ contract: 'v4', capabilities: ['launch_quote'], evidence: { settlement: 'disabled' }, currency: { chain_id: 4217, chain_env: 'mainnet', token: TEMPO_MAINNET_USDC } })
+    expect(sum).toMatchObject({ contract: 'v4', capabilities: ['launch_quote', 'adjust'], evidence: { settlement: 'disabled' }, currency: { chain_id: 4217, chain_env: 'mainnet', token: TEMPO_MAINNET_USDC } })
     expect((await fetch(`${at}/pilot/api/affiliates`)).status).toBe(404) // sem leitura pública
     expect((await fetch(`${at}/api/v1/affiliates/batches`, { method: 'POST', headers: H, body: '{}' })).status).toBe(404) // sem lotes do produtor
     expect((await fetch(`${at}/api/v1/orders`, { method: 'POST', headers: H, body: '{}' })).status).toBe(404) // sem a API de pedidos da demo

@@ -135,11 +135,11 @@ describe('contrato v4: cotação do lançamento', () => {
     await e.post('/api/v1/affiliates/commissions', commission())
     const s = (await e.get('/api/v1/affiliates/summary')).json()
     expect(s.contract).toBe('v4')
-    expect(s.capabilities).toEqual(['launch_quote'])
+    expect(s.capabilities).toEqual(['launch_quote', 'adjust'])
     expect(s.rate_now.price4).toBe('52130')
     expect(s.quote_modes).toEqual({ backfill: 1, launch: 1, at_pix: 0 })
     const off = await env({ launch: false })
-    expect((await off.get('/api/v1/affiliates/summary')).json().capabilities).toEqual([])
+    expect((await off.get('/api/v1/affiliates/summary')).json().capabilities).toEqual(['adjust'])
   })
 
   it('a migração reversa recusa apagar comissão do lançamento', async () => {

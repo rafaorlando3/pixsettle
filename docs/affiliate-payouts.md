@@ -115,6 +115,7 @@ digital dollars on the Tempo network.
 - `POST /api/v1/affiliates/commissions` body `{ source_event_id, beneficiary_ref, kind, order_ref, amount: {amount, currency: 'BRL', scale: 2}, occurred_at }` → 201 commission; 200 when the same `source_event_id` already exists with the same content (decided under a lock per event id, so concurrent repeats create one); 409 `idempotency_conflict` when the content differs (beneficiary, kind, amount, order or date): the fixed commission never changes.
 - `beneficiary_ref` must be opaque by construction: `^(aff|par|afl|ben)_[0-9a-f]{12,64}$`; anything else (a name, CPF, e-mail or Pix key) is refused with `invalid_beneficiary_ref`.
 - `POST /api/v1/affiliates/commissions/:id/release` and `/void` body `{ reason_code, occurred_at }`.
+- `POST /api/v1/affiliates/commissions/:id/adjust` body `{ amount: {amount, currency: 'BRL', scale: 2}, reason_code, occurred_at }` (v7.1): lowers a PENDING commission at its own fixed rate and fee; see section 16.
 - `POST /api/v1/affiliates/commissions/:id/retry-payout`: when the send journal gave up on a payout (`settlements.status = failed`, for example after the maximum number of reverted attempts) and no attempt may have reached the network, records a new settlement intent for the same commission with the same memo plus a `-N` suffix (memo is unique in the journal), without touching the ledger. Refused with `payout_not_failed`, `payout_in_flight`, `commission_not_payable` or `no_payout_address`.
 - `GET /api/v1/affiliates/beneficiaries/:ref` → balances (`pending`, `available`, `withdrawn`), rate now, list of commissions with receipts.
 - `PUT /api/v1/affiliates/beneficiaries/:ref/wallet` body `{ address }` → registers the own wallet.
@@ -320,4 +321,26 @@ before the switch become dollars at the rate of a REAL conversion made by the me
 - Tests: `core/test/affiliates-launch-quote.test.ts` (7) and `core/test/affiliates-production.test.ts` (7, including an
   HTTP end-to-end boot on a fresh database); the merchant client (Odin) runs its own live contract test against this
   profile.
+
+## 16. Adjust before release (2026-10-10, contract v7.1)
+
+Context: two merchant rules lower a commission after it was fixed and before it is released: the per-order cap of the
+merchant (recomputed at release) and the "owed amount" rule (a commission voided after its dollars already left, by a Pix
+withdrawal or an on-chain payout, is never charged to the beneficiary's wallet; the merchant keeps an owed amount and the
+NEXT commissions pay it down before they are credited).
+
+- `POST /api/v1/affiliates/commissions/:id/adjust` with `{ amount, reason_code, occurred_at }`. Only `pending`; only
+  lowers (`409 adjust_increase_refused`); `409 commission_not_pending` otherwise; zero or negative is `invalid_amount`
+  (to zero a commission, void it). Repeating the same amount is 200 with no effect (idempotent by value).
+- The dollar amount is recomputed with the SAME formula and inputs as the fixing (`fixUsdUnits` with the commission's own
+  `fee_bps`, `rate_num` and `rate_den`, rounding down), so a client can predict it exactly. The difference is written to the
+  ledger as an `adjustment` entry (negative units, `op_key adjust:<id>:<amount>`) and the transition records from/to,
+  units, delta, reason and time.
+- `GET /api/v1/affiliates/summary` and `/healthz` declare `adjust` in `capabilities` (always on with this version).
+- Owed-amount offsets on the client side use `reason_code: debt_offset`: a whole commission pays the owed amount by a
+  `void` with that reason (never credited), part of it by an `adjust` to the largest amount whose dollars fit in what is
+  left. The owed amount itself, the withdrawal block and the 90-day write-off live in the merchant (Odin), which owns the
+  rule; this service keeps the dollar ledger exact.
+- Tests: `core/test/affiliates-adjust.test.ts` (2) plus the capability expectations in the launch-quote and production
+  tests; the Odin client covers the offsets end to end against this server in its live contract test.
 

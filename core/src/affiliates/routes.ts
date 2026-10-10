@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto'
 import type { Ctx } from '../context.js'
 import { DomainError } from '../flows/orders.js'
 import {
-  createCommission, releaseCommission, voidCommission, retryCommissionPayout, registerWallet, simulateWithdrawal, createWithdrawal, markWithdrawal,
+  createCommission, releaseCommission, voidCommission, adjustCommission, retryCommissionPayout, registerWallet, simulateWithdrawal, createWithdrawal, markWithdrawal,
   beneficiaryView, commissionView, withdrawalView, aggregateView, REF, type BeneficiaryKind, type LaunchQuote,
 } from './service.js'
 
@@ -89,6 +89,12 @@ export function registerAffiliates(app: FastifyInstance, ctx: Ctx, opts: Affilia
     releaseCommission(ctx, merchantId, String((req.params as any).id), dateOf((req.body as any)?.occurred_at, ctx.now()))))
   app.post('/api/v1/affiliates/commissions/:id/void', write(async (req, _reply, merchantId) =>
     voidCommission(ctx, merchantId, String((req.params as any).id), String((req.body as any)?.reason_code ?? ''), dateOf((req.body as any)?.occurred_at, ctx.now()))))
+  app.post('/api/v1/affiliates/commissions/:id/adjust', write(async (req, reply, merchantId) => {
+    const b = req.body as any
+    const amount = amountOf(b?.amount)
+    if (!amount) return err(reply, 422, 'invalid_body', 'esperado amount {amount: "centavos", currency: "BRL", scale: 2} e reason_code')
+    return adjustCommission(ctx, merchantId, String((req.params as any).id), amount, String(b?.reason_code ?? ''), dateOf(b?.occurred_at, ctx.now()))
+  }))
   app.post('/api/v1/affiliates/commissions/:id/retry-payout', write(async (req, _reply, merchantId) => retryCommissionPayout(ctx, merchantId, String((req.params as any).id))))
 
   app.get('/api/v1/affiliates/beneficiaries/:ref', guarded(async (req, _reply, merchantId) => beneficiaryView(ctx, merchantId, String((req.params as any).ref))))

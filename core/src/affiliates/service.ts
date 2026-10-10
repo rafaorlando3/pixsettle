@@ -245,6 +245,33 @@ export async function releaseCommission(ctx: Ctx, merchantId: string, commission
 }
 
 /**
+ * v7.1 (10/10/2026): AJUSTE para baixo antes da liberação, pela MESMA cotação fixada (teto por pedido do lojista ou
+ * abatimento de um valor devido pelo beneficiário). Só reduz, só pendente; repetir o mesmo valor é 200 sem efeito; pedir
+ * mais que o atual é 409. O dólar recalculado sai da mesma fórmula da fixação (taxa e cotação da própria comissão, para
+ * baixo) e a diferença fica gravada no razão como `adjustment` (negativa), com o motivo.
+ */
+export async function adjustCommission(ctx: Ctx, merchantId: string, commissionId: string, newAmountMinor: bigint, reasonCode: string, occurredAt: Date) {
+  affiliatesOn(ctx)
+  if (!/^[a-z0-9_]{2,64}$/.test(reasonCode)) throw new DomainError('invalid_reason_code', 'reason_code deve ser um código simples (a-z, 0-9, _)')
+  if (newAmountMinor <= 0n) throw new DomainError('invalid_amount', 'o valor ajustado tem que ser positivo (para zerar, anule a comissão)')
+  await withTx(ctx.db, async tx => {
+    const c = await lockCommissionAndSettlement(tx, merchantId, commissionId)
+    if (c.status !== 'pending') throw new DomainError('commission_not_pending', `comissão está ${c.status}; só pendente pode ser ajustada`, 409)
+    const current = BigInt(c.amount_minor)
+    if (newAmountMinor === current) return // idempotente: mesmo valor, nada muda
+    if (newAmountMinor > current) throw new DomainError('adjust_increase_refused', 'ajuste só reduz o valor fixado; nunca aumenta', 409)
+    const { usdUnits } = fixUsdUnits(newAmountMinor, Number(c.fee_bps), { rateNum: BigInt(c.rate_num), rateDen: BigInt(c.rate_den) })
+    const delta = usdUnits - BigInt(c.usd_units)
+    await tx.query(`UPDATE affiliate_commissions SET amount_minor=$2, usd_units=$3, updated_at=now() WHERE id=$1`, [c.id, newAmountMinor.toString(), usdUnits.toString()])
+    await tx.query(`INSERT INTO affiliate_ledger (beneficiary_id, kind, usd_units, ref_kind, ref_id, op_key) VALUES ($1,'adjustment',$2,'commission',$3,$4)`,
+      [c.beneficiary_id, delta.toString(), c.id, `adjust:${c.id}:${newAmountMinor}`])
+    await recordTransition(tx, 'affiliate_commission', c.id, 'pending', 'pending', 'api',
+      JSON.stringify({ adjust: { from_minor: current.toString(), to_minor: newAmountMinor.toString(), usd_units: usdUnits.toString(), delta_units: delta.toString(), reason_code: reasonCode, at: occurredAt.toISOString() } }))
+  })
+  return commissionView(ctx, merchantId, commissionId)
+}
+
+/**
  * 4. Anulação (cancelamento, estorno, MED, fraude), segura por estado:
  *  pending: anula. released: anula se o disponível continuar >= 0 (saque Pix em andamento = recusa com exceção).
  *  settling: se nenhuma tentativa pode ter saído, segura a liquidação e anula (tentativa assinada fica suspensa pelo diário);
@@ -637,5 +664,5 @@ export async function aggregateView(ctx: Ctx, merchantId: string) {
 
 /** v4: capacidades declaradas no summary. `launch_quote` só com AFFILIATE_LAUNCH_QUOTE=1. */
 export function affiliateCapabilities(ctx: Ctx): string[] {
-  return [...(ctx.affiliates?.launchQuote ? ['launch_quote'] : [])]
+  return [...(ctx.affiliates?.launchQuote ? ['launch_quote'] : []), 'adjust']
 }
