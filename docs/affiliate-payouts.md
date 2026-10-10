@@ -1,6 +1,6 @@
 # Affiliate payouts in digital dollars (phase 2 contract)
 
-Status: contract v6, 2026-10-09 (v5 plus the quote-source change found during the v7 deploy; see section 14).
+Status: contract v7, 2026-10-10 (v6 plus the launch quote, declared capabilities and the production profile for real money; see section 15).
 Module `core/src/affiliates/`, feature flag `AFFILIATE_PAYOUTS` (off by default).
 Scope of this phase: real commission events from the merchant's affiliate program enter PixSettle through the
 API, each commission is fixed in digital dollars at the moment the Pix is received, released after the
@@ -277,4 +277,47 @@ suite. Core suite: 279 tests.
   current failure is returned with its status; the factory uses the public data URL by default and validates the override.
   An opt-in live test (`AFFILIATE_QUOTE_LIVE=1`) fetches a fresh USDTBRL quote from the public service. The Render proof
   (aggregate 200 with `rate_now.source = binance_usdtbrl`, `age_s` between 0 and 600 on a cold boot) is the deploy smoke.
+
+## 15. Launch quote, capabilities and the production profile (2026-10-10, contract v7)
+
+Context: the merchant moves its whole affiliate program to digital dollars at once. Commissions that were born in BRL
+before the switch become dollars at the rate of a REAL conversion made by the merchant on launch day, never presented as
+"quoted at Pix time".
+
+- Wire formats, as implemented (and now pinned by a client contract test run against this server): money goes as
+  strings of digits (`amount.amount`, `usd_units`); responses carry objects (`usd.units`, `balances.*.units`,
+  `net.amount`, `fee.amount`, `rate_now.price4`, `evidence.settlement`). Clients normalize in one place.
+- `POST /api/v1/affiliates/commissions` accepts an optional `quote` object. The only mode is `launch`:
+  `{ mode: 'launch', rate_num, rate_den, source, at, evidence: { brl_paid_minor, usd_units_received, tx: [hash] } }` where
+  `rate_num` = token units that reached the treasury and `rate_den` = BRL cents paid (units per cent, the same format as
+  the buy rate). Numbers may be JSON integers or digit strings. Refusals, all before any effect, all 422 with a stable
+  code: `launch_quote_disabled` (instance without `AFFILIATE_LAUNCH_QUOTE=1`), `invalid_quote_mode`,
+  `invalid_launch_quote` (rate must equal the evidence exactly; source `^[a-z0-9_]{3,40}$`; 1 to 10 transaction hashes of
+  64 hex), `launch_quote_future` (more than 5 minutes ahead), `launch_quote_stale` (older than 7 days) and
+  `launch_quote_out_of_band` (more than 10% away from the live buy quote).
+- Fixing: `usd_units = floor(amount_minor × rate_num / rate_den)`, `fee_bps = 0` (the route cost is already inside a real
+  conversion), `quote_mode = 'launch'`, `quote_source = source`, `quote_at = at`, `quote_hash = sha256(JCS(quote))`, and
+  the evidence kept in `quote_evidence` (migration 014; a check ties `launch` to the evidence; the down migration refuses
+  while any launch commission exists). The merchant view shows `quote.evidence`; the public allow-list does not.
+- Idempotency covers the quote: same evidence = same commission (200); a different evidence, or launch versus non-launch
+  for the same `source_event_id`, is `409 idempotency_conflict`.
+- `GET /api/v1/affiliates/summary` now declares `contract: 'v4'` (API generation) and `capabilities` (`launch_quote` only
+  when enabled), shows `rate_now.price4`, and counts `quote_modes.launch`.
+- Production profile (`core/src/affiliates/production.ts`, launcher `core/scripts/start-production.ts`): a separate
+  instance that serves only the merchant API for affiliates. It refuses to boot on any ambiguity: profile missing,
+  `DEMO_MODE=1`, a demo seed, a private key in the core, a public merchant, producer batch keys or streams (one writer per
+  merchant), `CHAIN_ID` other than 4217 (42431 only with `PRODUCTION_REHEARSAL=1`), a missing or zero `TREASURY_ADDRESS`, a
+  token that is not TIP-20, no `DATABASE_URL`, a simulated quote source (rehearsal only), or `AFFILIATE_SETTLE=1` without the
+  local signer and issuer address. The treasury is an address only (custody outside the server); with settlement off the
+  chain gateway refuses every signing call, releases record the intent with `affiliate_settle_off`, balances and Pix
+  withdrawals work, and `/healthz` shows profile, chain, token, treasury, settle, capabilities and quote source (no
+  secrets). With `AFFILIATE_SETTLE=1` the launcher requires `TREASURY_KEY` and `ISSUER_KEY`, refuses a key that does not
+  belong to the published `TREASURY_ADDRESS`, starts the signer with `CHAIN_ID` (the signer now picks Tempo mainnet 4217 or
+  Moderato by `CHAIN_ID`, mainnet requires an explicit `TOKEN`, faucet only on Moderato) and gives the core only the
+  address and the HMAC.
+- Merchant provisioning without the key: `core/scripts/affiliates-merchant.ts --name --key-sha256 --pool` stores the
+  sha256 of the merchant key (never the key) and the pool (the treasury address), idempotent by id.
+- Tests: `core/test/affiliates-launch-quote.test.ts` (7) and `core/test/affiliates-production.test.ts` (7, including an
+  HTTP end-to-end boot on a fresh database); the merchant client (Odin) runs its own live contract test against this
+  profile.
 

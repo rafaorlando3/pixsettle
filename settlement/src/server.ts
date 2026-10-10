@@ -2,7 +2,8 @@
 // Só escuta em 127.0.0.1 e só aceita chamadas com HMAC (método, rota, timestamp, nonce, sha256 do corpo).
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createHmac, createHash, timingSafeEqual } from 'node:crypto'
-import { tempoModerato } from 'viem/chains'
+import { tempoModerato, tempo } from 'viem/chains'
+import type { Chain } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import type { Hex } from 'viem'
 import { TempoChain, TIP20_ABI, type TransferIntent } from './chain.js'
@@ -65,21 +66,33 @@ export function buildServer(cfg: ServerConfig, chain = new TempoChain(tempoModer
   })
 }
 
+/** Rede do assinante pelo CHAIN_ID (revisão do Codex X-1196: nada fixo na Moderato). Outra rede = recusa no boot. */
+export function chainForId(chainId: number): Chain {
+  if (chainId === tempoModerato.id) return tempoModerato
+  if (chainId === tempo.id) return tempo
+  throw new Error(`CHAIN_ID ${chainId} não suportado pelo assinante (use ${tempo.id} Tempo mainnet ou ${tempoModerato.id} Moderato)`)
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   const need = (k: string) => { const v = process.env[k]; if (!v) { console.error(`variável ${k} ausente`); process.exit(1) } return v }
+  const chainId = Number(process.env.CHAIN_ID ?? tempoModerato.id)
+  const mainnet = chainId === tempo.id
+  // Na mainnet o token tem que vir explícito (nada de padrão de testnet com dinheiro real).
+  if (mainnet && !process.env.TOKEN) { console.error('variável TOKEN ausente (obrigatória na mainnet)'); process.exit(1) }
   const cfg: ServerConfig = {
     port: Number(process.env.PORT ?? 7401), hmacSecret: need('SETTLEMENT_HMAC_SECRET'),
     treasuryKey: need('TREASURY_KEY') as Hex, issuerKey: need('ISSUER_KEY') as Hex,
     token: (process.env.TOKEN ?? '0x20c0000000000000000000000000000000000000') as Hex, rpcUrl: process.env.TEMPO_RPC,
   }
-  buildServer(cfg).listen(cfg.port, '127.0.0.1', () => console.log(`settlement ouvindo em 127.0.0.1:${cfg.port}`))
+  const chain = chainForId(chainId)
+  buildServer(cfg, new TempoChain(chain, cfg.rpcUrl)).listen(cfg.port, '127.0.0.1', () => console.log(`settlement ouvindo em 127.0.0.1:${cfg.port} (rede ${chain.id})`))
   // Testnet: mantém a tesouraria com pathUSD do faucet (tempo_fundAddress). Nunca em outra rede.
   const min = BigInt(process.env.TREASURY_MIN_UNITS ?? '50000000') // 50 pathUSD
   const topUp = async () => {
     try { console.log(await ensureFunded(new TempoChain(tempoModerato, cfg.rpcUrl), privateKeyToAccount(cfg.treasuryKey).address, cfg.token, min)) }
     catch (e) { console.error('faucet:', (e as Error).message) }
   }
-  if (process.env.FAUCET_TOPUP !== '0') { void topUp(); setInterval(topUp, 3_600_000).unref() }
+  if (!mainnet && process.env.FAUCET_TOPUP !== '0') { void topUp(); setInterval(topUp, 3_600_000).unref() }
 }
 
 /** Abastece pelo faucet da testnet se o saldo estiver abaixo do mínimo. Recusa qualquer rede que não seja a Moderato. */

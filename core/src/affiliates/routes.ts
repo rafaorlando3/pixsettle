@@ -9,7 +9,7 @@ import type { Ctx } from '../context.js'
 import { DomainError } from '../flows/orders.js'
 import {
   createCommission, releaseCommission, voidCommission, retryCommissionPayout, registerWallet, simulateWithdrawal, createWithdrawal, markWithdrawal,
-  beneficiaryView, commissionView, withdrawalView, aggregateView, REF, type BeneficiaryKind,
+  beneficiaryView, commissionView, withdrawalView, aggregateView, REF, type BeneficiaryKind, type LaunchQuote,
 } from './service.js'
 
 export type AffiliateRouteOptions = { /** piloto público: lojista dono dos dados exibidos em /pilot/api/affiliates; null = leitura pública desligada */ publicMerchantId?: string | null }
@@ -20,6 +20,22 @@ const err = (reply: FastifyReply, status: number, code: string, message: string,
 const amountOf = (a: any): bigint | null => (typeof a?.amount === 'string' && /^\d{1,18}$/.test(a.amount) && a.currency === 'BRL' && (a.scale ?? 2) === 2 ? BigInt(a.amount) : null)
 const unitsOf = (u: any): bigint | null => (typeof u === 'string' && /^\d{1,30}$/.test(u) ? BigInt(u) : null)
 const dateOf = (s: any, fallback: Date): Date => (typeof s === 'string' && s ? new Date(s) : fallback)
+/** Inteiro positivo vindo como número inteiro ou texto de dígitos (os clientes mandam dos dois jeitos); qualquer outra coisa = null. */
+const posInt = (v: any): bigint | null => (typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? BigInt(v) : typeof v === 'string' && /^[1-9]\d{0,29}$/.test(v) ? BigInt(v) : null)
+/** v4: `quote` opcional do corpo. Só `mode: launch` existe; erro de forma é 422 com código estável, antes de qualquer efeito. */
+function launchQuoteOf(q: any): { ok: true; quote: LaunchQuote | null } | { ok: false; code: string; message: string } {
+  if (q === undefined || q === null) return { ok: true, quote: null }
+  if (typeof q !== 'object' || Array.isArray(q)) return { ok: false, code: 'invalid_launch_quote', message: 'quote deve ser um objeto' }
+  if (q.mode !== 'launch') return { ok: false, code: 'invalid_quote_mode', message: 'quote.mode só aceita "launch" (sem quote, a cotação é a da recepção)' }
+  const rateNum = posInt(q.rate_num), rateDen = posInt(q.rate_den)
+  const ev = q.evidence ?? {}
+  const paid = posInt(ev.brl_paid_minor), received = posInt(ev.usd_units_received)
+  const at = typeof q.at === 'string' ? new Date(q.at) : new Date(NaN)
+  const tx = Array.isArray(ev.tx) ? ev.tx.map((t: any) => String(t).toLowerCase()) : null
+  if (!rateNum || !rateDen || !paid || !received || !tx || typeof q.source !== 'string' || Number.isNaN(at.getTime()))
+    return { ok: false, code: 'invalid_launch_quote', message: 'quote de lançamento precisa de rate_num, rate_den, source, at e evidence {brl_paid_minor, usd_units_received, tx[]}' }
+  return { ok: true, quote: { rateNum, rateDen, source: q.source, at, evidence: { brlPaidMinor: paid, usdUnitsReceived: received, tx } } }
+}
 const RECEIPT_ID = /^rct_[0-9A-Z]{26}$/
 
 export const affiliateWritesAllowed = (ctx: Ctx) => ctx.affiliates?.writes !== false
@@ -59,9 +75,12 @@ export function registerAffiliates(app: FastifyInstance, ctx: Ctx, opts: Affilia
     const b = req.body as any
     const amount = amountOf(b?.amount)
     if (!amount) return err(reply, 422, 'invalid_body', 'esperado amount {amount: "centavos", currency: "BRL", scale: 2}')
+    const lq = launchQuoteOf(b?.quote)
+    if (!lq.ok) return err(reply, 422, lq.code, lq.message)
     const r = await createCommission(ctx, merchantId, {
       sourceEventId: String(b?.source_event_id ?? ''), beneficiaryRef: String(b?.beneficiary_ref ?? ''), kind: String(b?.kind ?? 'affiliate') as BeneficiaryKind,
       orderRef: b?.order_ref == null ? null : String(b.order_ref).slice(0, 128), amountMinor: amount, occurredAt: dateOf(b?.occurred_at, ctx.now()),
+      launch: lq.quote,
     })
     return reply.code(r.created ? 201 : 200).send(r.commission)
   }))

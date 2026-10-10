@@ -46,6 +46,8 @@ export type Ctx = {
     streams?: Record<string, string>
     /** revisões aplicadas por job (padrão 500); o restante é reagendado na hora */
     applyBlock?: number
+    /** contrato v4: aceitar a cotação do LANÇAMENTO (conversão real informada pelo lojista)? AFFILIATE_LAUNCH_QUOTE=1 */
+    launchQuote?: boolean
   }
 }
 

@@ -4,6 +4,8 @@
 // anulação segura por estado da liquidação; anulação nunca deixa saldo negativo; pseudônimos opacos obrigatórios;
 // idempotência sob trava com conflito de conteúdo; cotação de importação marcada como tal; projeções públicas por lista permitida.
 import { ulid } from 'ulid'
+import { createHash } from 'node:crypto'
+import canonicalizeLib from 'canonicalize'
 import { withTx, txLock, recordTransition, enqueue, type Tx } from '../db.js'
 import { DomainError } from '../flows/orders.js'
 import type { Ctx } from '../context.js'
@@ -25,6 +27,53 @@ const MAYBE_SENT = ['broadcast_pending', 'broadcast_sent', 'unknown', 'manual_re
 export type CommissionInput = {
   sourceEventId: string; beneficiaryRef: string; kind: BeneficiaryKind; orderRef?: string | null
   amountMinor: bigint; occurredAt: Date
+  /** Contrato v4: cotação do LANÇAMENTO (conversão real informada pelo lojista); ausente = cotação na recepção, como sempre. */
+  launch?: LaunchQuote | null
+}
+
+/**
+ * Contrato v4 (10/10/2026): cotação do lançamento. Comissões que nasceram em reais ANTES do dólar viram dólar pela cotação de
+ * uma conversão REAL do lojista: `rateNum` = unidades do token que chegaram na tesouraria, `rateDen` = centavos pagos (unidades
+ * por centavo, o mesmo formato da cotação de compra). Sem taxa de conversão extra: o custo da rota já está dentro da conversão.
+ */
+export type LaunchQuote = {
+  rateNum: bigint; rateDen: bigint; source: string; at: Date
+  evidence: { brlPaidMinor: bigint; usdUnitsReceived: bigint; tx: string[] }
+}
+/** Conversão de no máximo 7 dias, hora no máximo 5 min no futuro, e a no máximo 10% da cotação viva (erro de digitação vira recusa). */
+export const LAUNCH_MAX_AGE_MS = 7 * 24 * 3_600_000
+export const LAUNCH_FUTURE_SKEW_MS = 5 * 60_000
+export const LAUNCH_MAX_DEVIATION_BPS = 1_000n
+const canonicalize = canonicalizeLib as unknown as (v: unknown) => string | undefined
+const LAUNCH_SOURCE = /^[a-z0-9_]{3,40}$/
+const TX_HASH = /^(0x)?[0-9a-f]{64}$/
+
+/** O objeto da cotação do lançamento, canônico (o hash e a idempotência dependem só dele). */
+export function launchQuoteObject(q: LaunchQuote) {
+  return {
+    mode: 'launch', rate_num: q.rateNum.toString(), rate_den: q.rateDen.toString(), source: q.source, at: q.at.toISOString(),
+    evidence: { brl_paid_minor: q.evidence.brlPaidMinor.toString(), usd_units_received: q.evidence.usdUnitsReceived.toString(), tx: [...q.evidence.tx] },
+  }
+}
+export const launchQuoteHash = (q: LaunchQuote) => createHash('sha256').update(canonicalize(launchQuoteObject(q)) as string).digest('hex')
+
+/** Recusa antes de qualquer efeito: desligada, velha, no futuro, prova incoerente ou longe demais da cotação viva. */
+export function assertLaunchQuote(ctx: Ctx, q: LaunchQuote, live: UsdQuote | null) {
+  if (!ctx.affiliates?.launchQuote) throw new DomainError('launch_quote_disabled', 'esta instalação não aceita a cotação do lançamento (AFFILIATE_LAUNCH_QUOTE)', 422)
+  if (q.rateNum <= 0n || q.rateDen <= 0n) throw new DomainError('invalid_launch_quote', 'rate_num e rate_den devem ser positivos')
+  if (q.evidence.usdUnitsReceived !== q.rateNum || q.evidence.brlPaidMinor !== q.rateDen) throw new DomainError('invalid_launch_quote', 'a cotação tem que ser exatamente a prova: rate_num = unidades recebidas e rate_den = centavos pagos')
+  if (!LAUNCH_SOURCE.test(q.source)) throw new DomainError('invalid_launch_quote', 'source deve ser um código simples (a-z, 0-9, _; 3 a 40)')
+  if (q.evidence.tx.length < 1 || q.evidence.tx.length > 10 || q.evidence.tx.some(t => !TX_HASH.test(t))) throw new DomainError('invalid_launch_quote', 'evidence.tx deve ter de 1 a 10 hashes de transação (64 hexadecimais)')
+  const now = ctx.now().getTime()
+  if (Number.isNaN(q.at.getTime())) throw new DomainError('invalid_launch_quote', 'at inválido')
+  if (q.at.getTime() > now + LAUNCH_FUTURE_SKEW_MS) throw new DomainError('launch_quote_future', 'a hora da conversão está no futuro', 422)
+  if (q.at.getTime() < now - LAUNCH_MAX_AGE_MS) throw new DomainError('launch_quote_stale', 'a conversão tem mais de 7 dias: faça uma conversão nova', 422)
+  if (live) {
+    // R$ por dólar com 4 casas: lançamento = centavos x 1e8 / unidades; viva = price4 do lado da compra
+    const launchPrice4 = (q.rateDen * 100_000_000n) / q.rateNum
+    const diff = launchPrice4 > live.price4 ? launchPrice4 - live.price4 : live.price4 - launchPrice4
+    if (diff * 10_000n > live.price4 * LAUNCH_MAX_DEVIATION_BPS) throw new DomainError('launch_quote_out_of_band', `a cotação do lançamento (R$ ${(Number(launchPrice4) / 10_000).toFixed(4)}) está a mais de 10% da cotação viva (R$ ${(Number(live.price4) / 10_000).toFixed(4)}, ${live.source})`, 422)
+  }
 }
 
 const newId = (p: 'ben' | 'com' | 'qlk' | 'wdr' | 'stl' | 'rct') => `${p}_${ulid()}`
@@ -75,7 +124,9 @@ async function beneficiaryOf(tx: Tx, merchantId: string, ref: string) {
 
 const sameContent = (c: any, input: CommissionInput, beneficiaryRef: string, kind: string) =>
   c.beneficiary_ref === beneficiaryRef && c.b_kind === kind && BigInt(c.amount_minor) === input.amountMinor &&
-  (c.order_ref ?? null) === (input.orderRef ?? null) && new Date(c.occurred_at).getTime() === input.occurredAt.getTime()
+  (c.order_ref ?? null) === (input.orderRef ?? null) && new Date(c.occurred_at).getTime() === input.occurredAt.getTime() &&
+  // v4: a cotação do lançamento faz parte do conteúdo: mesma prova = mesma comissão; com e sem lançamento nunca se confundem
+  (input.launch ? c.quote_mode === 'launch' && c.quote_hash === launchQuoteHash(input.launch) : c.quote_mode !== 'launch')
 
 /** 3. Comissão nasce em dólar: cotação fixada na recepção (marcada at_pix ou backfill), taxa descontada, arredondado para baixo. */
 export async function createCommission(ctx: Ctx, merchantId: string, input: CommissionInput) {
@@ -90,8 +141,10 @@ export async function createCommission(ctx: Ctx, merchantId: string, input: Comm
   const quick = await findBySource(ctx, merchantId, input.sourceEventId)
   if (quick) { assertSame(quick, input); return { created: false, commission: projectCommission(quick) } }
   const quote = await freshQuote(ctx)
+  const launch = input.launch ?? null
+  if (launch) assertLaunchQuote(ctx, launch, quote)
   const now = ctx.now()
-  const quoteMode = Math.abs(now.getTime() - input.occurredAt.getTime()) <= AT_PIX_WINDOW_MS ? 'at_pix' : 'backfill'
+  const quoteMode = launch ? 'launch' : Math.abs(now.getTime() - input.occurredAt.getTime()) <= AT_PIX_WINDOW_MS ? 'at_pix' : 'backfill'
   const created = await withTx(ctx.db, async tx => {
     await txLock(tx, idemKey(merchantId, input.sourceEventId))
     const again = (await tx.query(`SELECT c.*, b.beneficiary_ref, b.kind AS b_kind FROM affiliate_commissions c JOIN affiliate_beneficiaries b ON b.id=c.beneficiary_id WHERE c.merchant_id=$1 AND c.source_event_id=$2`, [merchantId, input.sourceEventId])).rows[0]
@@ -99,18 +152,23 @@ export async function createCommission(ctx: Ctx, merchantId: string, input: Comm
     const b = await ensureBeneficiary(tx, merchantId, input.beneficiaryRef, input.kind)
     await txLock(tx, benKey(b.id))
     const policy = await policyOf(tx, merchantId)
-    const { usdUnits } = fixUsdUnits(input.amountMinor, policy.conversion_fee_bps, quote.buy)
+    // v4: no lançamento a cotação é a da conversão real (custo da rota já dentro); sem taxa de conversão extra, sempre para baixo
+    const feeBps = launch ? 0 : policy.conversion_fee_bps
+    const rate = launch ? { rateNum: launch.rateNum, rateDen: launch.rateDen } : quote.buy
+    const { usdUnits } = fixUsdUnits(input.amountMinor, feeBps, rate)
     const id = newId('com')
     await tx.query(
-      `INSERT INTO affiliate_commissions (id, merchant_id, beneficiary_id, source_event_id, order_ref, amount_minor, fee_bps, usd_units, rate_num, rate_den, quote_source, quote_at, quote_hash, quote_mode, status, occurred_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending',$15)`,
-      [id, merchantId, b.id, input.sourceEventId, input.orderRef ?? null, input.amountMinor.toString(), policy.conversion_fee_bps, usdUnits.toString(),
-        quote.buy.rateNum.toString(), quote.buy.rateDen.toString(), quote.source, quote.at, quote.hash, quoteMode, input.occurredAt],
+      `INSERT INTO affiliate_commissions (id, merchant_id, beneficiary_id, source_event_id, order_ref, amount_minor, fee_bps, usd_units, rate_num, rate_den, quote_source, quote_at, quote_hash, quote_mode, quote_evidence, status, occurred_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending',$16)`,
+      [id, merchantId, b.id, input.sourceEventId, input.orderRef ?? null, input.amountMinor.toString(), feeBps, usdUnits.toString(),
+        rate.rateNum.toString(), rate.rateDen.toString(), launch ? launch.source : quote.source, launch ? launch.at : quote.at,
+        launch ? launchQuoteHash(launch) : quote.hash, quoteMode, launch ? JSON.stringify(launchQuoteObject(launch).evidence) : null, input.occurredAt],
     )
     await tx.query(`INSERT INTO affiliate_ledger (beneficiary_id, kind, usd_units, ref_kind, ref_id, op_key) VALUES ($1,'credit_pending',$2,'commission',$3,$4)`,
       [b.id, usdUnits.toString(), id, `credit:${id}`])
     await recordTransition(tx, 'affiliate_commission', id, null, 'pending', 'api',
-      JSON.stringify({ amount_minor: input.amountMinor.toString(), usd_units: usdUnits.toString(), quote: quote.source, price4: quote.price4.toString(), age_s: quote.ageS, quote_mode: quoteMode }))
+      JSON.stringify({ amount_minor: input.amountMinor.toString(), usd_units: usdUnits.toString(), quote: launch ? launch.source : quote.source, price4: quote.price4.toString(), age_s: quote.ageS, quote_mode: quoteMode,
+        ...(launch ? { launch: { rate_num: launch.rateNum.toString(), rate_den: launch.rateDen.toString(), at: launch.at.toISOString(), tx: launch.evidence.tx, live_price4: quote.price4.toString() } } : {}) }))
     return true
   })
   const row = await findBySource(ctx, merchantId, input.sourceEventId)
@@ -118,7 +176,7 @@ export async function createCommission(ctx: Ctx, merchantId: string, input: Comm
 }
 
 function assertSame(existing: any, input: CommissionInput) {
-  if (!sameContent(existing, input, input.beneficiaryRef, input.kind)) throw new DomainError('idempotency_conflict', 'source_event_id já existe com conteúdo diferente (beneficiário, valor, tipo, pedido ou data); a comissão fixada não muda', 409)
+  if (!sameContent(existing, input, input.beneficiaryRef, input.kind)) throw new DomainError('idempotency_conflict', 'source_event_id já existe com conteúdo diferente (beneficiário, valor, tipo, pedido, data ou cotação do lançamento); a comissão fixada não muda', 409)
 }
 
 async function findBySource(ctx: Ctx, merchantId: string, sourceEventId: string) {
@@ -463,7 +521,8 @@ export function projectCommission(c: any) {
     status: c.status, reason_code: c.reason_code, custody: c.custody,
     amount: { amount: String(c.amount_minor), currency: 'BRL', scale: 2, brl: fmtBrl(BigInt(c.amount_minor)) },
     usd: { units: usd.toString(), scale: 6, usd: fmtUsd(usd) },
-    quote: { rate_num: String(c.rate_num), rate_den: String(c.rate_den), source: c.quote_source, at: iso(c.quote_at), hash: c.quote_hash, fee_bps: c.fee_bps, mode: c.quote_mode },
+    quote: { rate_num: String(c.rate_num), rate_den: String(c.rate_den), source: c.quote_source, at: iso(c.quote_at), hash: c.quote_hash, fee_bps: c.fee_bps, mode: c.quote_mode,
+      ...(c.quote_mode === 'launch' && c.quote_evidence ? { evidence: c.quote_evidence } : {}) },
     occurred_at: iso(c.occurred_at), released_at: iso(c.released_at), voided_at: iso(c.voided_at),
     payout: c.settlement_id ? { settlement_id: c.settlement_id, status: c.s_status, hold_reason: c.hold_reason, to: c.recipient, memo: c.memo, tx_hash: c.tx_hash ?? null, receipt_id: c.receipt_id ?? null } : null,
     trace: { source_event_id: c.source_event_id, commission_id: c.id, settlement_id: c.settlement_id ?? null, tx_hash: c.tx_hash ?? null, receipt_id: c.receipt_id ?? null },
@@ -474,7 +533,8 @@ export function projectCommission(c: any) {
 export function publicCommission(c: any) {
   const p = projectCommission(c)
   return {
-    id: p.id, status: p.status, reason_code: p.reason_code, custody: p.custody, amount: p.amount, usd: p.usd, quote: p.quote,
+    id: p.id, status: p.status, reason_code: p.reason_code, custody: p.custody, amount: p.amount, usd: p.usd,
+    quote: { rate_num: p.quote.rate_num, rate_den: p.quote.rate_den, source: p.quote.source, at: p.quote.at, hash: p.quote.hash, fee_bps: p.quote.fee_bps, mode: p.quote.mode },
     occurred_at: p.occurred_at, released_at: p.released_at, voided_at: p.voided_at,
     payout: p.payout ? { status: p.payout.status, hold_reason: p.payout.hold_reason, memo: p.payout.memo, tx_hash: p.payout.tx_hash, receipt_id: p.payout.receipt_id } : null,
   }
@@ -546,7 +606,7 @@ export async function aggregateView(ctx: Ctx, merchantId: string) {
             count(*) FILTER (WHERE c.status='pending')::int AS pending, count(*) FILTER (WHERE c.status='released')::int AS released,
             count(*) FILTER (WHERE c.status='settling')::int AS settling, count(*) FILTER (WHERE c.status='settled')::int AS settled,
             count(*) FILTER (WHERE c.status='voided')::int AS voided, count(*) FILTER (WHERE c.status='failed')::int AS failed,
-            count(*) FILTER (WHERE c.quote_mode='backfill')::int AS backfill,
+            count(*) FILTER (WHERE c.quote_mode='backfill')::int AS backfill, count(*) FILTER (WHERE c.quote_mode='launch')::int AS launch,
             coalesce(sum(c.usd_units) FILTER (WHERE c.status='settled'),0)::text AS usd_settled
        FROM affiliate_commissions c WHERE c.merchant_id=$1`, [merchantId])).rows[0]
   const w = (await ctx.db.query(
@@ -563,12 +623,19 @@ export async function aggregateView(ctx: Ctx, merchantId: string) {
     beneficiaries: r.beneficiaries, commissions: r.commissions,
     brl: { amount: r.brl_minor, brl: fmtBrl(BigInt(r.brl_minor)) }, usd: { units: r.usd_units, usd: fmtUsd(BigInt(r.usd_units)) },
     by_status: { pending: r.pending, released: r.released, settling: r.settling, settled: r.settled, voided: r.voided, failed: r.failed },
-    quote_modes: { backfill: r.backfill, at_pix: r.commissions - r.backfill },
+    quote_modes: { backfill: r.backfill, launch: r.launch, at_pix: r.commissions - r.backfill - r.launch },
     usd_settled_on_chain: { units: r.usd_settled, usd: fmtUsd(BigInt(r.usd_settled)) },
     withdrawals: { total: w.withdrawals, pix_requested: w.pix_requested, pix_paid_declared: w.pix_paid_declared, wallet_settled: w.wallet_settled, brl_paid_declared: fmtBrl(BigInt(w.brl_paid_minor)) },
     exceptions_for_human: exceptions, sample_refs: sample, // pseudônimos do lojista público: páginas públicas de exemplo
-    rate_now: q.ok ? { brl_per_usd: (Number(q.quote.price4) / 10_000).toFixed(4), source: q.quote.source, at: q.quote.at.toISOString(), age_s: q.quote.ageS } : { unavailable: q.detail, provider_http_status: q.httpStatus ?? null },
+    rate_now: q.ok ? { price4: q.quote.price4.toString(), brl_per_usd: (Number(q.quote.price4) / 10_000).toFixed(4), source: q.quote.source, at: q.quote.at.toISOString(), age_s: q.quote.ageS } : { unavailable: q.detail, provider_http_status: q.httpStatus ?? null },
     currency: { symbol: 'USD', token: ctx.chain.token, chain_id: ctx.chain.chainId, chain_env: chainEnv(ctx) },
     evidence: { pix: 'declared_by_merchant', wallet: 'chain_confirmed', settlement: settleOn(ctx.affiliates) ? 'enabled' : 'disabled' },
+    // v4: o que esta instalação sabe fazer (o cliente confere antes de usar; lista vazia = contrato antigo)
+    contract: 'v4', capabilities: affiliateCapabilities(ctx),
   }
+}
+
+/** v4: capacidades declaradas no summary. `launch_quote` só com AFFILIATE_LAUNCH_QUOTE=1. */
+export function affiliateCapabilities(ctx: Ctx): string[] {
+  return [...(ctx.affiliates?.launchQuote ? ['launch_quote'] : [])]
 }

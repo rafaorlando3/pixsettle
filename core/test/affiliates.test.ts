@@ -406,6 +406,8 @@ describe('revisão 347 (Codex, 09/10): custódia, anulação segura, chaves, pro
   it('P1-6 a migração reversa recusa apagar estado econômico', async () => {
     const e = await env()
     await e.post('/api/v1/affiliates/commissions', commission())
+    // v4: a 014 (cotação do lançamento) é a última; sem comissão do lançamento ela volta, e aí a 013 recusa
+    await rollback(e.db, '014_affiliate_launch_quote.sql')
     await expect(rollback(e.db, '013_affiliate_payouts.sql')).rejects.toThrow(/refusing to drop/)
     expect((await e.db.query(`SELECT count(*)::int AS n FROM affiliate_commissions`)).rows[0].n).toBe(1)
     expect((await e.db.query(`SELECT count(*)::int AS n FROM schema_migrations WHERE name='013_affiliate_payouts.sql'`)).rows[0].n).toBe(1)
@@ -466,7 +468,7 @@ describe('revisão 347 (Codex, 09/10): custódia, anulação segura, chaves, pro
     expect(live.quote.mode).toBe('at_pix')
     const old = (await e.post('/api/v1/affiliates/commissions', commission({ source_event_id: 'rwd_old', occurred_at: '2026-10-01T10:00:00.000Z' }))).json()
     expect(old.quote.mode).toBe('backfill')
-    expect((await e.get('/api/v1/affiliates/summary')).json().quote_modes).toEqual({ at_pix: 1, backfill: 1 })
+    expect((await e.get('/api/v1/affiliates/summary')).json().quote_modes).toEqual({ at_pix: 1, backfill: 1, launch: 0 })
   })
 })
 

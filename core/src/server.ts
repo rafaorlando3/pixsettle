@@ -65,6 +65,7 @@ export async function startCore(env: CoreEnv = process.env) {
       quotes: quoteSourceFromEnv(env), settle: env.AFFILIATE_SETTLE === '1',
       writes: env.PUBLIC_REPLAY_READ_ONLY !== '1' || env.AFFILIATE_ALLOW_WRITES_ON_PUBLIC_REPLAY === '1',
       lockTtlMs: Number(env.AFFILIATE_LOCK_TTL_MS ?? 120_000), streams: streamMap(env),
+      launchQuote: env.AFFILIATE_LAUNCH_QUOTE === '1',
     } : undefined,
   }
   // Uma só autorização para liquidar comissões (rotas, apply, resume, advance, sign e broadcast): AFFILIATE_SETTLE=1 E escritas aceitas.
