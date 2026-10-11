@@ -260,11 +260,20 @@ export async function bindDatabaseProfile(db: Db, profile: InstanceProfile): Pro
     }
   }
   await assertClaimable(db) // recusa sem escrever
-  return withTx(db, async tx => {
+  return withBindTx(db, async tx => {
     if (state.kind !== 'current') await tx.query(IDENTITY_SQL)
     await tx.query('LOCK TABLE instance_profile IN SHARE ROW EXCLUSIVE MODE')
     const again = (await tx.query('SELECT * FROM instance_profile WHERE id = 1')).rows[0]
-    if (again) { const have = readRow(again); assertSameProfile(have, want); return { ...have, claimedNow: false } }
+    if (again) {
+      // v7.5.2 (X-1282, BANCO 2): uma linha gravada por fora entre a leitura inicial e a trava passa pelas MESMAS conferências
+      // do banco preso (adotada, identidade, selo, cobertura); qualquer falta desfaz a transação inteira
+      const have = readRow(again)
+      assertSameProfile(have, want)
+      const now = await identityState(tx)
+      refuseBadIdentity(now)
+      await assertBoundIntact(tx, now, have)
+      return { ...have, claimedNow: false }
+    }
     // escritor que não usa a trava do boot (código antigo): fica parado até o fim desta transação e depois esbarra na guarda
     const tables = await appTables(tx)
     if (tables.length) await tx.query(`LOCK TABLE ${tables.map(t => `public.${ident(t)}`).join(', ')} IN SHARE ROW EXCLUSIVE MODE`)
@@ -280,6 +289,28 @@ export async function bindDatabaseProfile(db: Db, profile: InstanceProfile): Pro
     if (gaps.length) throw new InstanceProfileError('database_profile_guard_missing', `ao prender, tabela(s) sem a guarda em O ou A: ${gaps.join(', ')}; nada foi preso`)
     return { ...want, claimedAt: new Date(ins.claimed_at).toISOString(), claimedNow: true, adopted: false }
   })
+}
+
+/**
+ * v7.5.2 (X-1282, BANCO 3): a transação que prende é sempre READ COMMITTED, declarado no BEGIN e conferido: cada comando
+ * depois das travas enxerga o que um escritor antigo confirmou enquanto esperávamos (com REPEATABLE READ herdado do banco, a
+ * recontagem depois do LOCK usaria a foto do primeiro comando e prenderia um banco com dado).
+ */
+async function withBindTx<T>(db: Db, fn: (tx: Tx) => Promise<T>): Promise<T> {
+  const tx = await db.connect()
+  try {
+    await tx.query('BEGIN ISOLATION LEVEL READ COMMITTED')
+    const iso = String((await tx.query('SHOW transaction_isolation')).rows[0]?.transaction_isolation ?? '')
+    if (iso !== 'read committed') throw new InstanceProfileError('database_bind_isolation', `a transação que prende ficou em ${iso || 'isolamento desconhecido'}; precisa ser read committed`)
+    const out = await fn(tx)
+    await tx.query('COMMIT')
+    return out
+  } catch (err) {
+    try { await tx.query('ROLLBACK') } catch { /* conexão pode ter caído; o erro original importa */ }
+    throw err
+  } finally {
+    tx.release()
+  }
 }
 
 /** Liga a guarda de escrita em toda tabela que ainda não a tem (fim do boot; sem efeito quando todas já têm). */

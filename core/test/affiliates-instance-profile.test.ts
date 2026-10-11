@@ -777,3 +777,72 @@ describe('v7.5.1 (X-1282): gatilho com o nome da guarda só vale se for a guarda
     await boot(env(url, REHEARSAL))
   }, 180_000)
 })
+
+// ---------- v7.5.2 (X-1282, condições do BANCO): releitura sob a trava, isolamento do vínculo e mais controles da H2 ----------
+describe('v7.5.2 (X-1282 BANCO): o vínculo confere a linha que aparece sob a trava e é sempre READ COMMITTED', () => {
+  it('linha gravada por fora entre a leitura inicial e a trava (adotada, ou nativa sem selo) passa pelas conferências do banco preso: recusa e desfaz tudo', async () => {
+    for (const adopted of [true, false]) {
+      const name = adopted ? 'linha adotada' : 'linha nativa sem selo'
+      const url = await legacyDb(async () => undefined) // migrate solto: tabelas vazias e a tabela do perfil da 016, sem linha
+      const e = await client(url)
+      try {
+        await e.query('BEGIN')
+        await e.query(`INSERT INTO instance_profile (id, mode, chain_id, token, treasury, quote_source, adopted) VALUES (1, 'rehearsal', 4217, $1, $2, 'simulated', $3)`, [TEMPO_MAINNET_USDC, TREASURY.toLowerCase(), adopted])
+        const p = startAffiliatesProduction(env(url, REHEARSAL))
+        p.catch(() => undefined)
+        await waitWaiting(url, `l.locktype = 'relation' AND l.relation = 'instance_profile'::regclass`, 1) // o vínculo parou na tabela do perfil
+        await e.query('COMMIT')
+        await expect(p, name).rejects.toThrow(adopted ? /database_profile_adopted/ : /database_profile_guard_missing: impressão selada ausente/)
+      } finally { await e.end() }
+      expect((await stateOf(url)).kind, name).toBe('upgrade') // a identidade instalada na transação foi desfeita junto
+      expect((await guardCounts(url)).guards, name).toBe(0)
+      expect(await profileRows(url), name).toEqual([{ mode: 'rehearsal', chain_id: 4217, token: TEMPO_MAINNET_USDC, treasury: TREASURY.toLowerCase(), quote_source: 'simulated', adopted }])
+      const before = await snapshot(url)
+      await expect(startAffiliatesProduction(env(url, REHEARSAL)), name).rejects.toThrow(adopted ? /database_profile_adopted/ : /database_identity_not_current/)
+      expect(await snapshot(url), name).toEqual(before)
+    }
+  }, 120_000)
+
+  it('banco com REPEATABLE READ como padrão: o vínculo declara READ COMMITTED e o escritor antigo que confirma enquanto esperamos é visto (recusa, nada preso)', async () => {
+    const url = await freshUrl()
+    const dbname = new URL(url).pathname.slice(1)
+    const a = new pg.Client({ connectionString: ADMIN }); await a.connect(); await a.query(`ALTER DATABASE ${dbname} SET default_transaction_isolation = 'repeatable read'`); await a.end()
+    { const db = createPool(url); await migrate(db); await db.end() }
+    expect((await q(url, 'SHOW default_transaction_isolation'))[0]!.default_transaction_isolation).toBe('repeatable read')
+    const w = await client(url)
+    await w.query('BEGIN'); await w.query(MER)
+    const p = startAffiliatesProduction(env(url, REHEARSAL))
+    p.catch(() => undefined)
+    await waitWaiting(url, `l.locktype = 'relation' AND l.relation = 'merchants'::regclass AND l.mode = 'ShareRowExclusiveLock'`, 1)
+    await w.query('COMMIT'); await w.end()
+    await expect(p).rejects.toThrow(/database_profile_missing_with_data/)
+    expect(await profileRows(url)).toEqual([])
+    expect((await guardCounts(url)).guards).toBe(0)
+  }, 60_000)
+
+  it('H2, controles: foto antiga sem perfil recusa também UPDATE, DELETE, TRUNCATE e em SERIALIZABLE; foto antiga COM o perfil certo escreve; sessão depois do vínculo com perfil escreve e sem perfil não', async () => {
+    const url = await freshUrl()
+    const open = async (iso: string, profile?: InstanceProfile) => { const c = await client(url, profile); await c.query(`BEGIN ISOLATION LEVEL ${iso}`); await c.query('SELECT 1'); return c }
+    const stale = {
+      update: await open('REPEATABLE READ'), delete: await open('REPEATABLE READ'), truncate: await open('REPEATABLE READ'),
+      serializable: await open('SERIALIZABLE'), declared: await open('REPEATABLE READ', REH),
+    }
+    try {
+      await boot(env(url, REHEARSAL)) // prende (linha, selo, guarda) e migra, em outras sessões
+      await expect(stale.update.query(`UPDATE merchants SET name = 'x'`)).rejects.toThrow(/legacy_writer_refused: UPDATE em merchants/)
+      await expect(stale.delete.query(`DELETE FROM merchants`)).rejects.toThrow(/legacy_writer_refused: DELETE em merchants/)
+      await expect(stale.truncate.query(`TRUNCATE affiliate_ledger`)).rejects.toThrow(/legacy_writer_refused: TRUNCATE em affiliate_ledger/)
+      await expect(stale.serializable.query(MER)).rejects.toThrow(/legacy_writer_refused: INSERT em merchants/)
+      await stale.declared.query(MER) // controle positivo: a foto antiga não importa para quem declara o perfil certo
+      await stale.declared.query('COMMIT')
+    } finally { for (const c of Object.values(stale)) await c.end() }
+    expect((await q(url, `SELECT count(*)::int AS n FROM merchants`))[0]!.n).toBe(1)
+    const after = await client(url, REH), legacy = await client(url)
+    try {
+      await after.query('BEGIN ISOLATION LEVEL REPEATABLE READ'); await after.query(`UPDATE merchants SET name = 'depois'`); await after.query('COMMIT')
+      await legacy.query('BEGIN ISOLATION LEVEL REPEATABLE READ')
+      await expect(legacy.query(`UPDATE merchants SET name = 'antigo'`)).rejects.toThrow(/legacy_writer_refused/)
+    } finally { await after.end(); await legacy.end() }
+    expect((await q(url, `SELECT name FROM merchants`))[0]!.name).toBe('depois')
+  }, 60_000)
+})

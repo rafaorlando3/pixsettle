@@ -547,6 +547,15 @@ upgrades or repairs a bound database (repair is a manual, recorded operation; pr
   that always lets writes through, or an immutability function that returns NEW, refuses a bound database with
   `database_identity_not_current`. Out of scope, as before: a session that changes its own `search_path` or declares the
   public fingerprint on purpose; the guard stops old code by accident, it is not access control.
+- v7.5.2 (conditions listed in the X-1282 database review, both reproduced before the fix): (1) a profile row written by an
+  outside session between the first read and the bind's lock is now checked exactly like a bound database (adopted,
+  identity, seal, guard coverage) inside the bind transaction, which rolls back on any gap (before, the re-read only compared
+  the profile and returned, so an adopted row slipped through); (2) the bind transaction is always `BEGIN ISOLATION LEVEL
+  READ COMMITTED`, checked with `SHOW transaction_isolation`: on a database whose default is REPEATABLE READ, the recount
+  after the locks used the first statement's snapshot and bound a database where an old writer had just committed a row.
+  H2 also gained controls: a pre-bind snapshot without the profile is refused for UPDATE, DELETE, TRUNCATE and under
+  SERIALIZABLE; a pre-bind snapshot WITH the right profile writes; after the bind, a declared session writes and an
+  undeclared one does not.
 - Tests: `core/test/affiliates-instance-profile.test.ts`, block "v7.5 (X-1277)": B1 in both identities and through the
   merchant tool; B3 through the core, the launcher and the tool, with the catalog and the data unchanged and no guard
   installed; removed protection (no seal, different seal, null seal, table without guard) refused with the database
