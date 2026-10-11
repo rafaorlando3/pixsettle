@@ -1,11 +1,13 @@
-// v7.3 (10/10/2026; revisões X-1211 e X-1212) e v7.4 (11/10/2026; revisão X-1222): vínculo do banco com o perfil da
-// instância de produção dos afiliados. O perfil é (modo, rede, token, tesouraria, política de cotação).
+// v7.3 (10/10/2026; revisões X-1211 e X-1212), v7.4 (11/10/2026; revisão X-1222) e v7.5 (11/10/2026; revisão X-1277):
+// vínculo do banco com o perfil da instância de produção dos afiliados. O perfil é (modo, rede, token, tesouraria, política de cotação).
 // Ordem do boot, nesta ordem e sem exceção, tudo sob a trava de sessão do boot:
 //   1. leitura do catálogo e da linha do perfil, sem escrever nada: identidade desatualizada (016 da primeira v7.3) ou
 //      adulterada é recusada; perfil gravado diferente é recusado; banco sem perfil e com qualquer dado é recusado (nunca
 //      adotado: não existe adoção de legado na v7.4);
-//   2. só então escreve: banco NOVO e vazio é preso numa transação (identidade, trava das tabelas, segunda conferência de
-//      que está vazio, a linha do perfil e a guarda de escrita); banco já preso a ESTE perfil só ganha a identidade nova;
+//   2. só então escreve, e só num banco NOVO e vazio, numa transação (identidade, trava das tabelas, segunda conferência de
+//      que está vazio, a linha do perfil, o selo da impressão e a guarda de escrita). v7.5 (X-1277): banco já preso só sobe
+//      com a identidade atual completa e intacta (selo igual à linha, guarda ligada em O ou A em toda tabela, linha nunca
+//      adotada); identidade de versão anterior, adotada ou desmontada é recusada só lendo: o boot não atualiza nem conserta;
 //   3. depois as migrações de negócio (cada tabela nova nasce com a guarda), o servidor, o worker e qualquer processo com chave.
 // A linha do perfil recusa UPDATE, DELETE e TRUNCATE por gatilho e a guarda de escrita recusa sessão que não declarou o
 // perfil (código antigo). Dono ou superusuário do banco ainda pode apagar tabela ou desligar gatilho: operação manual,
@@ -23,7 +25,7 @@ export class InstanceProfileError extends Error {
   constructor(readonly code: string, message: string) { super(`${code}: ${message}`) }
 }
 
-/** Identidade v7.4 (superconjunto da 016): executada pelo boot só num banco novo ou num banco preso a este mesmo perfil. */
+/** Identidade v7.5 (superconjunto da 016): executada pelo boot SÓ na transação que prende um banco novo. */
 const IDENTITY_SQL = readFileSync(new URL('../../migrations/identity/instance_profile.sql', import.meta.url), 'utf8')
 
 /** Tabelas do trilho dos afiliados (as demais são da demo do concurso). */
@@ -63,23 +65,31 @@ export async function withBootLock<T>(db: Db, fn: () => Promise<T>): Promise<T> 
 export type IdentityState =
   | { kind: 'absent' }
   | { kind: 'current' }
-  /** banco preso pela v7.3 corrigida (b8cc379): falta o gatilho de TRUNCATE e a guarda de escrita */
+  /** identidade de versão anterior ou incompleta (v7.3 corrigida b8cc379, v7.4 sem o selo, peça removida). Banco sem linha:
+   *  o boot instala a identidade nova junto com a linha (banco vazio). Banco COM linha: recusado (v7.5, X-1277 B3). */
   | { kind: 'upgrade'; missing: string[] }
   /** tabela criada pela 016 da primeira v7.3 (8ec4b9d), sem quote_source/adopted */
   | { kind: 'outdated'; missing: string[] }
-  /** proteção removida ou desligada (gatilho do perfil ausente ou desligado, guarda desligada) */
+  /** proteção removida, desligada ou em modo réplica (gatilho do perfil ausente ou fora de O/A, guarda fora de O/A) */
   | { kind: 'tampered'; detail: string }
 
 const PROFILE_COLUMNS = ['adopted', 'chain_id', 'claimed_at', 'id', 'mode', 'quote_source', 'token', 'treasury']
 
-/** v7.4 (X-1222, K2/K6): estado da identidade, SÓ lendo o catálogo (nenhuma escrita, nem em banco que será recusado). */
+/** Estados de gatilho que disparam numa sessão normal (origem/local): O (origem) e A (sempre). R só dispara em réplica e D
+ *  está desligado: os dois contam como proteção fora do ar (v7.5, X-1277 K5). */
+const FIRES = new Set(['O', 'A'])
+const triggerMode = (e: string) => (e === 'D' ? 'desligado (D)' : e === 'R' ? 'em modo réplica (R), não dispara na origem' : `no estado ${e}`)
+
+/** v7.4 (X-1222, K2/K6) e v7.5 (X-1277 K5): estado da identidade, SÓ lendo o catálogo (nenhuma escrita, nem em banco que será recusado). */
 export async function identityState(q: Db | Tx): Promise<IdentityState> {
   const base = (await q.query(`SELECT to_regclass('public.instance_profile')::oid AS rel,
       to_regprocedure('public.instance_profile_fingerprint()') IS NOT NULL AS fp_fn,
       to_regprocedure('public.instance_profile_write_guard()') IS NOT NULL AS guard_fn,
       to_regprocedure('public.instance_profile_guard_install()') IS NOT NULL AS installer_fn,
-      (SELECT count(*)::int FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace ns ON ns.oid = c.relnamespace
-        WHERE ns.nspname = 'public' AND t.tgname = 'instance_profile_write_guard' AND t.tgenabled = 'D') AS guards_off`)).rows[0]
+      to_regprocedure('public.instance_profile_sealed_fingerprint()') IS NOT NULL AS sealed_fn,
+      to_regprocedure('public.instance_profile_seal()') IS NOT NULL AS seal_fn,
+      (SELECT string_agg(c.relname::text || ':' || t.tgenabled::text, ',' ORDER BY c.relname) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace ns ON ns.oid = c.relnamespace
+        WHERE ns.nspname = 'public' AND t.tgname = 'instance_profile_write_guard' AND t.tgenabled NOT IN ('O', 'A')) AS guards_off`)).rows[0]
   if (base.rel === null) return { kind: 'absent' }
   const cols = (await q.query(`SELECT attname::text AS a FROM pg_attribute WHERE attrelid = $1 AND attnum > 0 AND NOT attisdropped`, [base.rel])).rows.map(r => r.a as string)
   const missingCols = PROFILE_COLUMNS.filter(c => !cols.includes(c))
@@ -89,14 +99,21 @@ export async function identityState(q: Db | Tx): Promise<IdentityState> {
   }
   const trg = new Map((await q.query(`SELECT tgname::text AS n, tgenabled::text AS e FROM pg_trigger WHERE tgrelid = $1 AND NOT tgisinternal`, [base.rel])).rows.map(r => [r.n as string, r.e as string]))
   const immutable = trg.get('instance_profile_immutable')
-  if (!immutable || immutable === 'D') return { kind: 'tampered', detail: `gatilho instance_profile_immutable ${immutable ? 'desligado' : 'ausente'}` }
-  if (trg.get('instance_profile_no_truncate') === 'D') return { kind: 'tampered', detail: 'gatilho instance_profile_no_truncate desligado' }
-  if (base.guards_off > 0) return { kind: 'tampered', detail: `${base.guards_off} gatilho(s) instance_profile_write_guard desligado(s)` }
+  if (!immutable) return { kind: 'tampered', detail: 'gatilho instance_profile_immutable ausente' }
+  if (!FIRES.has(immutable)) return { kind: 'tampered', detail: `gatilho instance_profile_immutable ${triggerMode(immutable)}` }
+  const noTruncate = trg.get('instance_profile_no_truncate')
+  if (noTruncate !== undefined && !FIRES.has(noTruncate)) return { kind: 'tampered', detail: `gatilho instance_profile_no_truncate ${triggerMode(noTruncate)}` }
+  if (base.guards_off) {
+    const list = String(base.guards_off).split(',').map(x => { const [t, e] = x.split(':'); return `${t} ${triggerMode(e!)}` })
+    return { kind: 'tampered', detail: `guarda de escrita fora do ar: ${list.join('; ')}` }
+  }
   const missing = [
-    ...(trg.has('instance_profile_no_truncate') ? [] : ['instance_profile_no_truncate']),
+    ...(noTruncate !== undefined ? [] : ['instance_profile_no_truncate']),
     ...(base.fp_fn ? [] : ['instance_profile_fingerprint()']),
     ...(base.guard_fn ? [] : ['instance_profile_write_guard()']),
     ...(base.installer_fn ? [] : ['instance_profile_guard_install()']),
+    ...(base.sealed_fn ? [] : ['instance_profile_sealed_fingerprint()']),
+    ...(base.seal_fn ? [] : ['instance_profile_seal()']),
   ]
   return missing.length ? { kind: 'upgrade', missing } : { kind: 'current' }
 }
@@ -108,6 +125,39 @@ function refuseBadIdentity(state: IdentityState): void {
   if (state.kind === 'tampered') {
     throw new InstanceProfileError('database_profile_guard_missing', `${state.detail}; o vínculo do banco perdeu a proteção e nada sobe até um reparo manual registrado`)
   }
+}
+
+/**
+ * v7.5 (X-1277): banco COM linha só sobe com a identidade atual, completa e intacta. Tudo só lendo; qualquer falta recusa e o
+ * banco fica igual (nada é atualizado nem consertado no boot: reparo é gesto manual registrado).
+ *  - B1: linha adotada (adopted = true, da adoção que a b8cc379 oferecia) não prova a origem dos dados: recusa;
+ *  - B3: identidade de versão anterior ou incompleta (estado `upgrade`): recusa, em vez de atualizar com uma janela sem guarda;
+ *  - H2: impressão selada ausente ou diferente da linha: recusa;
+ *  - toda tabela do esquema public (menos a do perfil) com a guarda em O ou A: tabela sem guarda recusa.
+ */
+async function assertBoundIntact(q: Db | Tx, state: IdentityState, have: { adopted: boolean }): Promise<void> {
+  if (have.adopted) {
+    throw new InstanceProfileError('database_profile_adopted', 'banco preso por ADOÇÃO de legado (adopted = true, caminho da b8cc379 que não existe mais): o perfil igual não prova a origem do que já estava gravado. Use um banco novo; o Hub reenvia pela API')
+  }
+  if (state.kind === 'upgrade') {
+    throw new InstanceProfileError('database_identity_not_current', `banco preso com identidade de versão anterior ou incompleta (falta ${state.missing.join(', ')}): esta versão não atualiza nem conserta identidade de banco preso no boot. Use um banco novo (atualizar é gesto manual registrado)`)
+  }
+  const seal = (await q.query(`SELECT instance_profile_sealed_fingerprint() AS sealed, instance_profile_fingerprint() AS fp`)).rows[0]
+  if (!seal.sealed || seal.sealed !== seal.fp) {
+    throw new InstanceProfileError('database_profile_guard_missing', `impressão selada ${seal.sealed ? 'diferente da linha do perfil' : 'ausente'}; o vínculo do banco perdeu a proteção e nada sobe até um reparo manual registrado`)
+  }
+  const bare = await unguardedTables(q)
+  if (bare.length) {
+    throw new InstanceProfileError('database_profile_guard_missing', `tabela(s) sem a guarda de escrita: ${bare.join(', ')}; o vínculo do banco perdeu a proteção e nada sobe até um reparo manual registrado`)
+  }
+}
+
+/** Tabelas do esquema public (menos a do perfil) sem a guarda de escrita ligada em O ou A. Só lê. */
+async function unguardedTables(q: Db | Tx): Promise<string[]> {
+  return (await q.query(`SELECT c.relname::text AS t FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
+     WHERE ns.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition AND c.relname <> 'instance_profile'
+       AND NOT EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = c.oid AND t.tgname = 'instance_profile_write_guard' AND t.tgenabled IN ('O', 'A'))
+     ORDER BY 1`)).rows.map(r => r.t as string)
 }
 
 function readRow(row: any): InstanceProfile & { claimedAt: string; adopted: boolean } {
@@ -152,8 +202,8 @@ async function assertClaimable(q: Db | Tx): Promise<void> {
 
 /**
  * 1+2. Confere ou prende o banco ao perfil. Tudo que recusa é decidido só lendo (catálogo, linha do perfil, contagens):
- * banco recusado fica exatamente como estava. Escreve só (a) ao prender um banco novo e vazio, numa transação com as
- * tabelas travadas contra escritores, ou (b) ao atualizar a identidade de um banco preso a este mesmo perfil.
+ * banco recusado fica exatamente como estava. Escreve só ao prender um banco novo e vazio, numa transação com as tabelas
+ * travadas contra escritores (v7.5: não existe mais a atualização de identidade de banco preso).
  */
 export async function bindDatabaseProfile(db: Db, profile: InstanceProfile): Promise<BoundProfile> {
   const want = norm(profile)
@@ -164,7 +214,7 @@ export async function bindDatabaseProfile(db: Db, profile: InstanceProfile): Pro
     if (row) {
       const have = readRow(row)
       assertSameProfile(have, want)
-      if (state.kind === 'upgrade') await withTx(db, async tx => { await tx.query(IDENTITY_SQL) }) // mesmo perfil: só a identidade nova
+      await assertBoundIntact(db, state, have) // v7.5 (X-1277 B1, B3, H2): só lendo; nada é atualizado nem consertado
       return { ...have, claimedNow: false }
     }
   }
@@ -180,7 +230,13 @@ export async function bindDatabaseProfile(db: Db, profile: InstanceProfile): Pro
     await assertClaimable(tx)
     const ins = (await tx.query('INSERT INTO instance_profile (id, mode, chain_id, token, treasury, quote_source) VALUES (1, $1, $2, $3, $4, $5) RETURNING claimed_at',
       [want.mode, want.chainId, want.token, want.treasury, want.quoteSource])).rows[0]
+    // v7.5 (X-1277 H2): selo da impressão no catálogo ANTES da guarda, na mesma transação da linha
+    const sealed = (await tx.query('SELECT instance_profile_seal() AS fp')).rows[0].fp as string
+    if (sealed !== profileFingerprint(want)) throw new InstanceProfileError('database_profile_seal_mismatch', 'a impressão selada pelo banco não bate com a do perfil da instância')
     await tx.query('SELECT instance_profile_guard_install()')
+    // v7.5: segunda camada, na mesma transação: toda tabela sai daqui com a guarda em O ou A (senão desfaz o vínculo inteiro)
+    const gaps = await unguardedTables(tx)
+    if (gaps.length) throw new InstanceProfileError('database_profile_guard_missing', `ao prender, tabela(s) sem a guarda em O ou A: ${gaps.join(', ')}; nada foi preso`)
     return { ...want, claimedAt: new Date(ins.claimed_at).toISOString(), claimedNow: true, adopted: false }
   })
 }
@@ -202,6 +258,7 @@ export async function assertDatabaseBoundTo(db: Db, profile: InstanceProfile, mi
   if (!row) throw new InstanceProfileError('database_not_ready', 'banco ainda não foi preso a um perfil: suba a produção antes de usar a ferramenta')
   const have = readRow(row)
   assertSameProfile(have, norm(profile))
+  await assertBoundIntact(db, state, have) // v7.5 (X-1277): a ferramenta também não escreve em banco adotado ou desmontado
   const done = new Set((await db.query('SELECT name FROM schema_migrations')).rows.map(r => r.name as string))
   const pending = migrationFiles.filter(f => !done.has(f))
   if (pending.length) throw new InstanceProfileError('database_not_ready', `migração pendente (${pending.join(', ')}): só o boot da produção migra, sob a trava`)

@@ -500,3 +500,47 @@ Relay evidence is a separate package.
   barrier race. The full snapshot covers every table (count and md5 of all rows), every sequence value and the catalog
   rows with their `xmin` (classes, columns, functions with body, triggers with state, constraints, indexes).
 
+
+## 20. Bound databases accepted only intact; sealed fingerprint (2026-10-11, contract v7.5, review X-1277)
+
+Answers the review of v7.4 4b97a33 (three findings and one hypothesis). Principle: a database that already has a profile
+row boots only with the current identity, complete and intact. Anything else is refused by reading only, and the boot never
+upgrades or repairs a bound database (repair is a manual, recorded operation; production starts on a new database anyway).
+
+- V74-B1, adopted profile. A row with `adopted = true` (written by the adoption that b8cc379 offered and v7.4 removed) is
+  refused with `database_profile_adopted`, with the b8cc379 identity and with the current one, and the merchant tool refuses
+  it too: an equal profile does not prove where the data already stored came from. Native rows (`adopted = false`) are the
+  control and boot normally.
+- V74-B3, upgrade window. The v7.4 boot upgraded the identity of a database bound by b8cc379 (same profile) and only later,
+  in the migrations, installed the write guard on the tables that already existed. v7.5 removes that path: a bound database
+  whose identity is from an earlier version or incomplete (state `upgrade`, now including a v7.4 identity without the seal
+  or with a piece removed) is refused with `database_identity_not_current` by the launcher, the core and the merchant tool
+  (`database_not_ready`), and nothing is written, so there is no window. The identity file runs only inside the transaction
+  that binds a new, empty database.
+- Removed protection versus upgrade. On a bound database the boot also requires, by reading: the sealed fingerprint equal to
+  the row's fingerprint, and the write guard present and enabled (O or A) on every table of the public schema except
+  `instance_profile`. A missing seal, a different seal or a table without its guard refuses with
+  `database_profile_guard_missing`; the end-of-boot installer no longer has anything to re-arm on existing tables.
+- V74-K5, ENABLE REPLICA. Triggers count as protection only in states O (origin/local) and A (always). R fires only under
+  `session_replication_role = replica` and D is disabled: both refuse the boot (`database_profile_guard_missing`, with the
+  table and the state in the message) for the profile's immutable and no-truncate triggers and for any write guard, before
+  any key, child or listener (process census in the tests). Nothing is re-enabled by the boot. When an empty database is
+  bound, the installer refuses an existing trigger with the guard's name in R or D instead of skipping it, and the bind
+  transaction checks again that every table leaves with its guard in O or A; otherwise the whole bind rolls back.
+- V74-H2, old snapshot (reproduced, then closed). On v7.4 a REPEATABLE READ session whose snapshot was taken before the bind
+  could INSERT and COMMIT without declaring the profile, both on a database with no tables and on an existing empty schema:
+  the guard read the profile row through the session's old snapshot, saw nothing and let the write through. v7.5 seals the
+  fingerprint in the catalog in the same transaction that inserts the row (`instance_profile_seal()` replaces
+  `instance_profile_sealed_fingerprint()` by a function returning the constant), and the guard compares the declared
+  `pixsettle.profile` with the sealed constant. Catalog lookups see the committed function, not the old snapshot, so the
+  stale session is refused and nothing persists. The guard fails closed when there is no seal, the installer refuses to
+  install a guard before the seal, the seal refuses a database without a row or a different value, and running the identity
+  file again never unseals.
+- Tests: `core/test/affiliates-instance-profile.test.ts`, block "v7.5 (X-1277)": B1 in both identities and through the
+  merchant tool; B3 through the core, the launcher and the tool, with the catalog and the data unchanged and no guard
+  installed; removed protection (no seal, different seal, null seal, table without guard) refused with the database
+  unchanged, and a declared writer refused when the seal is null; K5 with three R fixtures and D on the no-truncate
+  trigger, core and launcher (census: no child, no listener, nothing alive at exit) and A accepted as the control; a
+  trigger planted with the guard's name in R on an unbound v7.2-schema database makes the bind roll back with the database
+  unchanged; H2 in both variants; seal ordering and idempotency. The v7.4 test "K2" now expects the right profile to be refused on a b8cc379
+  identity as well.

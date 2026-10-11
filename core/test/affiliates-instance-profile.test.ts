@@ -1,4 +1,4 @@
-// v7.3 (10/10/2026; revisões X-1211 e X-1212) e v7.4 (11/10/2026; revisão X-1222): o banco da produção dos afiliados fica
+// v7.3 (10/10/2026; revisões X-1211 e X-1212), v7.4 (11/10/2026; revisão X-1222) e v7.5 (11/10/2026; revisão X-1277): o banco da produção dos afiliados fica
 // preso a um perfil (modo, rede, token, tesouraria e política de cotação) ANTES das migrações de negócio, de qualquer escrita
 // e de qualquer processo com chave. Recusa decidida só lendo (banco recusado fica igual, dado e catálogo), banco sem perfil só
 // é preso vazio (legado nunca é adotado), código antigo é recusado pela guarda de escrita, e a ordem do launcher é plano
@@ -229,11 +229,12 @@ const TO_V73B = `DO $$ DECLARE r record; BEGIN
   END LOOP;
 END $$;
 DROP TRIGGER instance_profile_no_truncate ON instance_profile;
-DROP FUNCTION instance_profile_guard_install(); DROP FUNCTION instance_profile_write_guard(); DROP FUNCTION instance_profile_fingerprint();`
+DROP FUNCTION instance_profile_guard_install(); DROP FUNCTION instance_profile_write_guard(); DROP FUNCTION instance_profile_fingerprint();
+DROP FUNCTION instance_profile_seal(); DROP FUNCTION instance_profile_sealed_fingerprint();`
 
 const guardCounts = async (url: string) => (await q(url, `SELECT
   (SELECT count(*)::int FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace WHERE ns.nspname = 'public' AND c.relkind = 'r' AND c.relname <> 'instance_profile') AS tables,
-  (SELECT count(*)::int FROM pg_trigger WHERE tgname = 'instance_profile_write_guard' AND tgenabled <> 'D') AS guards`))[0]!
+  (SELECT count(*)::int FROM pg_trigger WHERE tgname = 'instance_profile_write_guard' AND tgenabled IN ('O', 'A')) AS guards`))[0]!
 const stateOf = async (url: string) => { const db = createPool(url); try { return await identityState(db) } finally { await db.end() } }
 const attempts = async (url: string) => (await q(url, `SELECT last_value::int AS v, is_called AS c FROM schema_migration_attempts`))[0]!
 
@@ -276,7 +277,7 @@ describe('v7.4 BANCO (X-1222): legado nunca é adotado e toda recusa é só leit
     expect(await snapshot(url)).toEqual(before)
   })
 
-  it('K2: recusa por perfil diferente não escreve nada, com a identidade atual e com a da v7.3 (que o perfil certo atualiza)', async () => {
+  it('K2: recusa por perfil diferente não escreve nada, com a identidade atual e com a da v7.3 (que o perfil certo também recusa, v7.5)', async () => {
     const url = await freshUrl()
     await boot(env(url, REHEARSAL))
     expect(await stateOf(url)).toEqual({ kind: 'current' })
@@ -291,10 +292,11 @@ describe('v7.4 BANCO (X-1222): legado nunca é adotado e toda recusa é só leit
     before = await snapshot(url)
     await expect(startAffiliatesProduction(env(url))).rejects.toThrow(/database_profile_mismatch/)
     expect(await snapshot(url)).toEqual(before) // o perfil errado não atualiza a identidade
-    await boot(env(url, REHEARSAL)) // o certo atualiza e liga a guarda nas tabelas que já existiam
-    expect(await stateOf(url)).toEqual({ kind: 'current' })
-    const g = await guardCounts(url)
-    expect(g.guards).toBe(g.tables)
+    // v7.5 (X-1277 B3): o perfil certo também recusa, só lendo; nada é atualizado (nenhuma janela de identidade sem guarda)
+    await expect(startAffiliatesProduction(env(url, REHEARSAL))).rejects.toThrow(/database_identity_not_current/)
+    expect(await snapshot(url)).toEqual(before)
+    expect(await stateOf(url)).toMatchObject({ kind: 'upgrade' })
+    expect((await guardCounts(url)).guards).toBe(0)
   })
 
   it('proteção desligada à mão (gatilho do perfil ou guarda) para o boot com código próprio, sem escrever', async () => {
@@ -560,4 +562,146 @@ describe('v7.4: o cadastro do lojista não migra nem prende', () => {
     expect(m.status).toBe(1); expect(m.stderr).toMatch(/database_bound/)
     expect(await appliedMigrations(url)).not.toContain('017_affiliate_created_amount_lock.sql')
   }, 120_000)
+})
+
+// ---------- v7.5 (X-1277): banco preso só sobe com a identidade atual, completa e intacta ----------
+const SEALED = async (url: string) => (await q(url, `SELECT instance_profile_sealed_fingerprint() AS s, instance_profile_fingerprint() AS f`))[0]!
+/** Linha adotada (o que a adoção da b8cc379 gravava). A linha é imutável: o único caminho é desligar o gatilho à mão. */
+const ADOPT = `ALTER TABLE instance_profile DISABLE TRIGGER instance_profile_immutable; UPDATE instance_profile SET adopted = true; ALTER TABLE instance_profile ENABLE TRIGGER instance_profile_immutable`
+const ALL_MIGRATIONS = () => readdirSync(MIGRATION_DIR).filter(f => f.endsWith('.sql')).sort()
+
+describe('v7.5 (X-1277): banco preso só sobe com a identidade atual, completa e intacta', () => {
+  it('B1: banco ADOTADO é recusado com código próprio, com a identidade da b8cc379 e com a atual, e fica igual; o nativo sobe', async () => {
+    // (a) identidade da b8cc379: migrate solto (016) + comissão sem origem provada + linha adotada com o MESMO perfil
+    const a = await legacyDb(LEGACY['comissão Binance sem liquidação (tesouraria desconhecida)']!)
+    await q(a, `INSERT INTO instance_profile (id, mode, chain_id, token, treasury, quote_source, adopted) VALUES (1, 'rehearsal', 4217, $1, $2, 'simulated', true)`, [TEMPO_MAINNET_USDC, TREASURY.toLowerCase()])
+    expect((await stateOf(a)).kind).toBe('upgrade')
+    let before = await snapshot(a)
+    await expect(startAffiliatesProduction(env(a, REHEARSAL))).rejects.toThrow(/database_profile_adopted/)
+    expect(await snapshot(a)).toEqual(before)
+    // (b) identidade atual: banco nativo com comissão gravada declarando o perfil; controle: o nativo (adopted = false) sobe
+    const b = await freshUrl()
+    await boot(env(b, REHEARSAL))
+    await q(b, MER, [], REH); await q(b, BEN, [], REH); await q(b, COM('simulated'), [], REH)
+    await boot(env(b, REHEARSAL))
+    await q(b, ADOPT)
+    expect(await stateOf(b)).toEqual({ kind: 'current' })
+    before = await snapshot(b)
+    await expect(startAffiliatesProduction(env(b, REHEARSAL))).rejects.toThrow(/database_profile_adopted/)
+    const db = createPool(b, { profileFingerprint: profileFingerprint(REH) })
+    try { await expect(instanceProfile.assertDatabaseBoundTo(db, REH, ALL_MIGRATIONS())).rejects.toThrow(/database_profile_adopted/) } finally { await db.end() }
+    expect(await snapshot(b)).toEqual(before)
+  }, 120_000)
+
+  it('B3: banco preso pela b8cc379 (nativo, não adotado) é recusado só lendo pelo core e pelo launcher: sem atualização, sem janela, nenhuma guarda instalada', async () => {
+    const url = await freshUrl()
+    await boot(env(url, REHEARSAL))
+    await q(url, MER, [], REH)
+    await q(url, TO_V73B)
+    expect(await stateOf(url)).toMatchObject({ kind: 'upgrade' })
+    const before = await snapshot(url)
+    await expect(startAffiliatesProduction(env(url, REHEARSAL))).rejects.toThrow(/database_identity_not_current/)
+    const r = spawnSync(process.execPath, ['--import', 'tsx', LAUNCHER], { env: { ...BASE(), ...env(url, REHEARSAL) } as Record<string, string>, encoding: 'utf8', timeout: 60_000 })
+    expect(r.status).toBe(1); expect(r.stderr).toMatch(/database_identity_not_current/)
+    const db = createPool(url, { profileFingerprint: profileFingerprint(REH) })
+    try { await expect(instanceProfile.assertDatabaseBoundTo(db, REH, ALL_MIGRATIONS())).rejects.toThrow(/database_not_ready/) } finally { await db.end() }
+    expect(await snapshot(url)).toEqual(before)
+    expect((await guardCounts(url)).guards).toBe(0)
+    expect(await profileRows(url)).toHaveLength(1)
+  }, 120_000)
+
+  it('proteção removida da identidade atual (sem o selo, selo trocado, selo nulo, tabela sem guarda) é recusada sem conserto e o banco fica igual', async () => {
+    const cases: Array<[string, string, RegExp]> = [
+      ['identidade sem o selo (como a v7.4)', `DROP FUNCTION instance_profile_seal(); DROP FUNCTION instance_profile_sealed_fingerprint()`, /database_identity_not_current.*instance_profile_sealed_fingerprint/],
+      ['selo trocado', `CREATE OR REPLACE FUNCTION instance_profile_sealed_fingerprint() RETURNS text LANGUAGE sql STABLE AS $$ SELECT '${'0'.repeat(64)}'::text $$`, /database_profile_guard_missing: impressão selada diferente/],
+      ['selo nulo', `CREATE OR REPLACE FUNCTION instance_profile_sealed_fingerprint() RETURNS text LANGUAGE sql STABLE AS $$ SELECT NULL::text $$`, /database_profile_guard_missing: impressão selada ausente/],
+      ['tabela sem guarda', `DROP TRIGGER instance_profile_write_guard ON merchants`, /database_profile_guard_missing: tabela\(s\) sem a guarda de escrita: merchants/],
+    ]
+    for (const [name, sql, code] of cases) {
+      const url = await freshUrl()
+      await boot(env(url, REHEARSAL))
+      await q(url, sql)
+      const before = await snapshot(url)
+      await expect(startAffiliatesProduction(env(url, REHEARSAL)), name).rejects.toThrow(code)
+      expect(await snapshot(url), name).toEqual(before)
+      if (name === 'selo nulo') await expect(q(url, MER, [], REH), name).rejects.toThrow(/legacy_writer_refused: INSERT em merchants: guarda sem impressão selada \(falha fechada\)/)
+    }
+  }, 180_000)
+
+  it('K5: gatilho do perfil ou guarda em modo réplica (R) ou desligado: core e launcher recusam antes da chave, sem filho nem servidor, e o banco fica igual; A (sempre) vale', async () => {
+    const addr = privateKeyToAccount(TREASURY_KEY).address
+    const fixtures: Array<[string, string]> = [
+      ['perfil immutable em R', 'ALTER TABLE instance_profile ENABLE REPLICA TRIGGER instance_profile_immutable'],
+      ['perfil no_truncate em R', 'ALTER TABLE instance_profile ENABLE REPLICA TRIGGER instance_profile_no_truncate'],
+      ['guarda pública em R', 'ALTER TABLE merchants ENABLE REPLICA TRIGGER instance_profile_write_guard'],
+      ['perfil no_truncate desligado (D)', 'ALTER TABLE instance_profile DISABLE TRIGGER instance_profile_no_truncate'],
+    ]
+    for (const [name, sql] of fixtures) {
+      const url = await freshUrl()
+      await boot(env(url))
+      await q(url, sql)
+      const before = await snapshot(url)
+      await expect(startAffiliatesProduction(env(url)), name).rejects.toThrow(/database_profile_guard_missing/)
+      const file = auditFile()
+      const e = { ...BASE(), ...env(url, { AFFILIATE_SETTLE: '1', TREASURY_KEY, ISSUER_KEY, TREASURY_ADDRESS: addr, TOKEN: TEMPO_MAINNET_USDC, SETTLEMENT_PORT: '7995' }) } as Record<string, string>
+      const r = spawnSync(process.execPath, ['--import', AUDIT, '--import', 'tsx', LAUNCHER], { env: { ...e, PIXSETTLE_PROCESS_AUDIT: file }, encoding: 'utf8', timeout: 60_000 })
+      expect(r.status, name).toBe(1)
+      expect(r.stderr, name).toMatch(/database_profile_guard_missing/)
+      expect(r.stderr + r.stdout, name).not.toMatch(/signer_key_invalid|key_address_mismatch|saiu|ouvindo/)
+      const ev = readAudit(file)
+      expect(ev.map(x => x.ev), name).toEqual(['start', 'exit'])
+      expect((ev.find(x => x.ev === 'exit')!.resources as string[]).filter(x => ALIVE.test(x)), name).toEqual([])
+      expect(await snapshot(url), name).toEqual(before)
+    }
+    // controle: A (dispara sempre) é estado válido
+    const url = await freshUrl()
+    await boot(env(url))
+    await q(url, `ALTER TABLE instance_profile ENABLE ALWAYS TRIGGER instance_profile_immutable; ALTER TABLE instance_profile ENABLE ALWAYS TRIGGER instance_profile_no_truncate; ALTER TABLE merchants ENABLE ALWAYS TRIGGER instance_profile_write_guard`)
+    await boot(env(url))
+    await expect(q(url, MER)).rejects.toThrow(/legacy_writer_refused/)
+  }, 240_000)
+
+  it('K5 ao prender: gatilho plantado com o nome da guarda em R num banco sem perfil (esquema da v7.2) não é pulado: o vínculo inteiro é desfeito e o banco fica igual', async () => {
+    const url = await legacyDb(async () => undefined, { upTo015: true })
+    await q(url, `CREATE FUNCTION plantado() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;
+      CREATE TRIGGER instance_profile_write_guard BEFORE INSERT ON merchants FOR EACH STATEMENT EXECUTE FUNCTION plantado();
+      ALTER TABLE merchants ENABLE REPLICA TRIGGER instance_profile_write_guard`)
+    expect(await stateOf(url)).toEqual({ kind: 'absent' })
+    const before = await snapshot(url)
+    await expect(startAffiliatesProduction(env(url, REHEARSAL))).rejects.toThrow(/instance_profile_guard_install: guarda existente fora de O\/A em merchants \(estado R\)/)
+    expect(await snapshot(url)).toEqual(before)
+    expect((await q(url, `SELECT to_regclass('public.instance_profile') AS t`))[0]!.t).toBeNull()
+  }, 60_000)
+
+  it('H2: sessão REPEATABLE READ com foto tirada antes de prender não escreve sem declarar o perfil, em banco totalmente sem tabelas e em esquema existente vazio', async () => {
+    for (const variant of ['banco totalmente sem tabelas', 'esquema existente vazio'] as const) {
+      const url = await freshUrl()
+      if (variant === 'esquema existente vazio') { const db = createPool(url); await migrate(db); await db.end() }
+      const b = await client(url)
+      try {
+        await b.query('BEGIN ISOLATION LEVEL REPEATABLE READ'); await b.query('SELECT 1') // foto antes de prender
+        await boot(env(url, REHEARSAL)) // prende (linha, selo e guarda) e migra, em outras sessões
+        expect(await SEALED(url), variant).toEqual({ s: profileFingerprint(REH), f: profileFingerprint(REH) })
+        await expect(b.query(MER), variant).rejects.toThrow(/legacy_writer_refused: INSERT em merchants/)
+        await b.query('ROLLBACK')
+      } finally { await b.end() }
+      expect((await q(url, `SELECT count(*)::int AS n FROM merchants`))[0]!.n, variant).toBe(0)
+    }
+  }, 120_000)
+
+  it('selo: nasce com a linha, rodar a identidade de novo não o desfaz e selar de novo não troca o valor', async () => {
+    const url = await freshUrl()
+    await boot(env(url, REHEARSAL))
+    const fp = profileFingerprint(REH)
+    expect(await SEALED(url)).toEqual({ s: fp, f: fp })
+    await q(url, readFileSync(new URL('../migrations/identity/instance_profile.sql', import.meta.url), 'utf8'), [], REH)
+    expect(await SEALED(url)).toEqual({ s: fp, f: fp })
+    expect((await q(url, `SELECT instance_profile_seal() AS fp`, [], REH))[0]!.fp).toBe(fp)
+    await boot(env(url, REHEARSAL))
+    // ordem: sem linha não há selo, e sem selo a guarda não nasce (falha fechada)
+    const bare = await freshUrl()
+    await q(bare, readFileSync(new URL('../migrations/identity/instance_profile.sql', import.meta.url), 'utf8'))
+    await expect(q(bare, `SELECT instance_profile_seal()`)).rejects.toThrow(/banco sem perfil/)
+    await expect(q(bare, `SELECT instance_profile_guard_install()`)).rejects.toThrow(/banco sem impressão selada/)
+  }, 60_000)
 })

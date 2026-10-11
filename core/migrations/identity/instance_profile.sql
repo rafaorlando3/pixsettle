@@ -1,15 +1,21 @@
--- Identidade do banco da produção dos afiliados (contrato v7.4, 11/10/2026; revisões X-1211, X-1212 e X-1222).
--- NÃO é migração: o boot executa este arquivo inteiro (idempotente) dentro da transação que prende um banco NOVO ao perfil
--- da instância, ou quando atualiza a identidade de um banco já preso a ESTE mesmo perfil. Banco preso a outro perfil é
--- recusado antes de qualquer escrita (o boot só lê o catálogo e a linha). A migração 016 continua byte a byte a da v7.3
--- corrigida (b8cc379); este arquivo é o superconjunto que o boot mantém.
+-- Identidade do banco da produção dos afiliados (contrato v7.5, 11/10/2026; revisões X-1211, X-1212, X-1222 e X-1277).
+-- NÃO é migração: o boot executa este arquivo inteiro (idempotente) SÓ dentro da transação que prende um banco NOVO ao
+-- perfil da instância. v7.5 (X-1277 B3): banco já preso nunca recebe este arquivo de novo; identidade de versão anterior ou
+-- incompleta é recusada só lendo (não há atualização nem conserto no boot). A migração 016 continua byte a byte a da v7.3
+-- corrigida (b8cc379); este arquivo é o superconjunto que o boot instala.
 --
 -- O que protege, e o que não protege:
 --   * a linha do perfil (uma só, id = 1) recusa UPDATE, DELETE e TRUNCATE por gatilho;
 --   * a guarda de escrita recusa INSERT, UPDATE, DELETE e TRUNCATE em qualquer tabela do esquema public de um banco preso,
---     a menos que a sessão tenha declarado o perfil (`pixsettle.profile` = impressão digital do perfil gravado). O runtime da
---     v7.4 declara em toda conexão; código antigo (v7.2 e anteriores, um retorno de versão, uma ferramenta solta) não declara
---     e é recusado. Não é controle de acesso: a impressão digital sai de valores públicos;
+--     a menos que a sessão tenha declarado o perfil (`pixsettle.profile` = impressão digital do perfil gravado). O runtime
+--     declara em toda conexão; código antigo (v7.2 e anteriores, um retorno de versão, uma ferramenta solta) não declara e é
+--     recusado. Não é controle de acesso: a impressão digital sai de valores públicos;
+--   * v7.5 (X-1277 H2): a guarda compara com a impressão SELADA no catálogo no momento em que o banco é preso
+--     (`instance_profile_sealed_fingerprint()`), nunca com a linha lida pela foto da transação: uma sessão REPEATABLE READ
+--     aberta antes de prender não enxerga a linha, mas enxerga a função confirmada. Sem impressão selada, a guarda recusa
+--     (falha fechada);
+--   * gatilhos só valem nos estados O (origem/local) e A (sempre); R (só réplica) e D (desligado) não disparam numa sessão
+--     normal e o boot recusa (X-1277 K5), sem consertar;
 --   * quem tem privilégio de dono ou superusuário continua podendo apagar a tabela, desligar gatilho ou declarar o perfil à
 --     mão. Isso é operação manual, fora do runtime, e tem de ser registrada; o runtime não faz nenhuma dessas operações.
 CREATE TABLE IF NOT EXISTS instance_profile (
@@ -39,13 +45,41 @@ CREATE OR REPLACE FUNCTION instance_profile_fingerprint() RETURNS text LANGUAGE 
     FROM instance_profile WHERE id = 1
 $$;
 
--- Guarda de escrita (por comando): banco sem perfil não é guardado; banco preso só aceita a sessão que declarou o perfil.
+-- v7.5 (X-1277 H2): impressão SELADA. Nasce nula (só se ainda não existir: rodar este arquivo de novo nunca desfaz o selo) e
+-- é trocada pela constante do perfil por `instance_profile_seal()`, na mesma transação que grava a linha.
+DO $$
+BEGIN
+  IF to_regprocedure('public.instance_profile_sealed_fingerprint()') IS NULL THEN
+    EXECUTE 'CREATE FUNCTION instance_profile_sealed_fingerprint() RETURNS text LANGUAGE sql STABLE AS $f$ SELECT NULL::text $f$';
+  END IF;
+END $$;
+CREATE OR REPLACE FUNCTION instance_profile_seal() RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  fp text := instance_profile_fingerprint();
+  have text := instance_profile_sealed_fingerprint();
+BEGIN
+  IF fp IS NULL THEN
+    RAISE EXCEPTION 'instance_profile_seal: banco sem perfil; o selo só existe junto com a linha';
+  END IF;
+  IF have IS NOT NULL THEN
+    IF have = fp THEN RETURN fp; END IF;
+    RAISE EXCEPTION 'instance_profile_seal: impressão selada diferente da linha; trocar o vínculo é gesto manual registrado';
+  END IF;
+  EXECUTE format('CREATE OR REPLACE FUNCTION instance_profile_sealed_fingerprint() RETURNS text LANGUAGE sql STABLE AS %L', 'SELECT ' || quote_literal(fp) || '::text');
+  RETURN fp;
+END;
+$$;
+
+-- Guarda de escrita (por comando). Só existe em banco preso (nasce na transação que prende ou na migração que cria a tabela).
+-- v7.5 (X-1277 H2): compara com a impressão SELADA (catálogo confirmado), não com a linha lida pela foto da transação; sem
+-- selo, recusa (falha fechada).
 CREATE OR REPLACE FUNCTION instance_profile_write_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
-  want text := instance_profile_fingerprint();
+  want text := instance_profile_sealed_fingerprint();
 BEGIN
   IF want IS NULL THEN
-    RETURN NULL;
+    RAISE EXCEPTION 'legacy_writer_refused: % em %: guarda sem impressão selada (falha fechada)', TG_OP, TG_TABLE_NAME
+      USING ERRCODE = '42501';
   END IF;
   IF current_setting('pixsettle.profile', true) IS DISTINCT FROM want THEN
     RAISE EXCEPTION 'legacy_writer_refused: % em %: o banco está preso a um perfil de instância e esta sessão não declarou esse perfil (pixsettle.profile)', TG_OP, TG_TABLE_NAME
@@ -62,6 +96,18 @@ DECLARE
   r record;
   n integer := 0;
 BEGIN
+  -- v7.5: guarda só em banco selado (a guarda sem selo recusaria tudo; instalar sem selo é erro de ordem, falha fechada)
+  IF instance_profile_sealed_fingerprint() IS NULL THEN
+    RAISE EXCEPTION 'instance_profile_guard_install: banco sem impressão selada; a guarda nasce depois do selo';
+  END IF;
+  -- guarda existente que não dispara numa sessão normal (R ou D) não é pulada em silêncio (X-1277 K5): recusa
+  FOR r IN
+    SELECT c.relname, t.tgenabled FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace ns ON ns.oid = c.relnamespace
+     WHERE ns.nspname = 'public' AND t.tgname = 'instance_profile_write_guard' AND t.tgenabled NOT IN ('O', 'A')
+     ORDER BY c.relname
+  LOOP
+    RAISE EXCEPTION 'instance_profile_guard_install: guarda existente fora de O/A em % (estado %); reparo manual registrado', r.relname, r.tgenabled;
+  END LOOP;
   FOR r IN
     SELECT c.relname FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
      WHERE ns.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition AND c.relname <> 'instance_profile'
