@@ -6,9 +6,23 @@ import { createHash } from 'node:crypto'
 export type Db = pg.Pool
 export type Tx = pg.PoolClient
 
-export function createPool(connectionString = process.env.DATABASE_URL): Db {
+export type PoolOptions = {
+  /** v7.4: impressão digital do perfil da instância (`profileFingerprint`); cada conexão declara `pixsettle.profile` no início
+   *  (opção do servidor, `-c`), e a guarda de escrita do banco preso só aceita a sessão que declarou o perfil certo. */
+  profileFingerprint?: string
+  /** nome da aplicação em pg_stat_activity (sem segredo) */
+  applicationName?: string
+  max?: number
+}
+
+export function createPool(connectionString = process.env.DATABASE_URL, opts: PoolOptions = {}): Db {
   if (!connectionString) throw new Error('DATABASE_URL ausente')
-  const pool = new pg.Pool({ connectionString, max: 10 })
+  if (opts.profileFingerprint !== undefined && !/^[0-9a-f]{64}$/.test(opts.profileFingerprint)) throw new Error('profile_fingerprint_invalid: 64 hexadecimais')
+  const pool = new pg.Pool({
+    connectionString, max: opts.max ?? 10,
+    ...(opts.profileFingerprint ? { options: `-c pixsettle.profile=${opts.profileFingerprint}` } : {}),
+    ...(opts.applicationName ? { application_name: opts.applicationName } : {}),
+  })
   // Conexão ociosa derrubada pelo servidor (reinício, failover): registra o motivo e segue; o pool reabre.
   pool.on('error', err => console.error(`pg: conexão ociosa caiu: ${(err as any).code ?? ''} ${err.message}`))
   return pool
@@ -29,10 +43,14 @@ export async function withTx<T>(db: Db, fn: (tx: Tx) => Promise<T>): Promise<T> 
   }
 }
 
+/** Chave numérica (bigint, em texto) da trava consultiva derivada do texto: os 8 primeiros bytes do sha256. */
+export function lockKeyOf(key: string): string {
+  return createHash('sha256').update(key).digest().readBigInt64BE(0).toString()
+}
+
 /** Trava consultiva de transação (liberada no COMMIT/ROLLBACK). Chave derivada do texto. */
 export async function txLock(tx: Tx, key: string): Promise<void> {
-  const h = createHash('sha256').update(key).digest()
-  await tx.query('SELECT pg_advisory_xact_lock($1::bigint)', [h.readBigInt64BE(0).toString()])
+  await tx.query('SELECT pg_advisory_xact_lock($1::bigint)', [lockKeyOf(key)])
 }
 
 export async function recordTransition(

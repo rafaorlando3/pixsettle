@@ -7,7 +7,8 @@ import { buildApp } from '../src/app.js'
 import { registerAffiliates } from '../src/affiliates/routes.js'
 import { configureAffiliateJournal } from '../src/affiliates/journal.js'
 import { SimulatedQuoteSource } from '../src/affiliates/quotes.js'
-import { launchQuoteHash } from '../src/affiliates/service.js'
+import { launchQuoteHash, benKey } from '../src/affiliates/service.js'
+import { lockKeyOf } from '../src/db.js'
 import { rollback } from '../src/rollback.js'
 import { migrate } from '../src/migrate.js'
 
@@ -159,55 +160,71 @@ describe('v7.2 F1: criação idempotente depois do ajuste', () => {
     expect(await footprint(e, c2.id)).toEqual(before2)
   })
 
-  it('concorrência: repetições da criação, ajuste e liberação ao mesmo tempo terminam coerentes, nas duas ordens', async () => {
+  it('concorrência com barreira (X-1222): o teste segura a trava do beneficiário e a linha, enfileira A e depois B, troca a ordem; repetições da criação no meio', async () => {
     const e = await env()
-    const orders = { adjustFirst: 0, releaseFirst: 0 }
-    let rounds = 0
-    // v7.3 (X-1211): roda até ver as DUAS ordens (ajuste antes e depois da liberação), alternando quem sai primeiro
-    while (rounds < 40 && (rounds < 8 || !orders.adjustFirst || !orders.releaseFirst)) {
-      rounds++
+    const counters = { adjust_first: 0, release_first: 0 }
+    const plan = ['adjust_first', 'release_first', 'adjust_first', 'release_first'] as const
+    for (const order of plan) {
       const body = commission({ amount: amt('5000') })
       const c = (await e.post('/api/v1/affiliates/commissions', body)).json()
-      const calls: Array<Promise<any>> = []
-      for (let i = 0; i < 4; i++) calls.push(e.post('/api/v1/affiliates/commissions', body))
-      const adjust = () => e.post(`/api/v1/affiliates/commissions/${c.id}/adjust`, { amount: amt('3000'), reason_code: 'debt_offset' })
-      const release = () => e.post(`/api/v1/affiliates/commissions/${c.id}/release`, {})
-      let adjustAt: number, releaseAt: number
-      if (rounds % 2) { adjustAt = calls.length; calls.push(adjust()); releaseAt = calls.length; calls.push(release()) }
-      else { releaseAt = calls.length; calls.push(release()); adjustAt = calls.length; calls.push(adjust()) }
-      for (let i = 0; i < 4; i++) calls.push(e.post('/api/v1/affiliates/commissions', body))
-      const res = await Promise.all(calls)
-      res.forEach((r, i) => {
-        if (i === adjustAt) { expect([200, 409]).toContain(r.statusCode); if (r.statusCode === 409) expect(r.json().error.code).toBe('commission_not_pending') }
-        else if (i === releaseAt) expect(r.statusCode).toBe(200)
-        else { expect(r.statusCode, `repetição ${i}`).toBe(200); expect(r.json().id).toBe(c.id) }
-      })
-      const adjusted = res[adjustAt].statusCode === 200
-      adjusted ? orders.adjustFirst++ : orders.releaseFirst++
+      const benId = (await e.db.query(`SELECT beneficiary_id FROM affiliate_commissions WHERE id=$1`, [c.id])).rows[0].beneficiary_id
+      const key = lockKeyOf(benKey(benId)) // a mesma trava consultiva que o serviço pega primeiro
+      const u = BigInt.asUintN(64, BigInt(key))
+      const waiting = async (n: number) => {
+        for (let i = 0; i < 400; i++) {
+          const got = (await e.db.query(`SELECT count(*)::int AS n FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND classid = $1 AND objid = $2 AND objsubid = 1`, [Number(u >> 32n), Number(u & 0xffffffffn)])).rows[0].n
+          if (got === n) return
+          await new Promise(r => setTimeout(r, 25))
+        }
+        throw new Error(`barreira: ${n} espera(s) não apareceram`)
+      }
+      // barreira: o teste segura a trava do beneficiário e a linha da comissão numa transação aberta
+      const gate = await e.db.connect()
+      await gate.query('BEGIN')
+      await gate.query('SELECT pg_advisory_xact_lock($1::bigint)', [key])
+      await gate.query('SELECT id FROM affiliate_commissions WHERE id=$1 FOR UPDATE', [c.id])
+      const done: string[] = []
+      const adjust = () => e.post(`/api/v1/affiliates/commissions/${c.id}/adjust`, { amount: amt('3000'), reason_code: 'debt_offset' }).then(r => { done.push('adjust'); return r })
+      const release = () => e.post(`/api/v1/affiliates/commissions/${c.id}/release`, {}).then(r => { done.push('release'); return r })
+      const [first, second] = order === 'adjust_first' ? [adjust, release] : [release, adjust]
+      const pA = first()
+      await waiting(1) // A parado na fila
+      const during = await Promise.all(Array.from({ length: 4 }, () => e.post('/api/v1/affiliates/commissions', body))) // com A parado
+      const pB = second()
+      await waiting(2) // B atrás de A
+      await gate.query('COMMIT'); gate.release()
+      const [rA, rB] = await Promise.all([pA, pB])
+      const [rAdj, rRel] = order === 'adjust_first' ? [rA, rB] : [rB, rA]
+      expect(done, order).toEqual(order === 'adjust_first' ? ['adjust', 'release'] : ['release', 'adjust'])
+      expect(rRel.statusCode).toBe(200)
+      for (const r of during) { expect(r.statusCode).toBe(200); expect(r.json().id).toBe(c.id) }
       const f = await footprint(e, c.id)
-      expect(f.c.status).toBe('released')
-      expect(f.c.o).toBe('5000')
-      expect(f.c.a).toBe(adjusted ? '3000' : '5000')
-      expect(f.led.map((l: any) => l.kind)).toEqual(adjusted ? ['credit_pending', 'adjustment', 'release'] : ['credit_pending', 'release'])
+      const tr = (await e.db.query(`SELECT to_state, reason FROM state_transitions WHERE entity='affiliate_commission' AND entity_id=$1 ORDER BY id`, [c.id])).rows
+        .map((t: any) => (String(t.reason ?? '').startsWith('{"adjust"') ? 'adjust' : t.to_state))
+      if (order === 'adjust_first') {
+        expect(rAdj.statusCode).toBe(200)
+        expect(f.c).toMatchObject({ status: 'released', o: '5000', a: '3000' })
+        expect(f.led.map((l: any) => l.kind)).toEqual(['credit_pending', 'adjustment', 'release'])
+        expect(tr).toEqual(['pending', 'adjust', 'released']) // a ordem gravada é a ordem forçada
+      } else {
+        expect(rAdj.statusCode).toBe(409); expect(rAdj.json().error.code).toBe('commission_not_pending')
+        expect(f.c).toMatchObject({ status: 'released', o: '5000', a: '5000' })
+        expect(f.led.map((l: any) => l.kind)).toEqual(['credit_pending', 'release'])
+        expect(tr).toEqual(['pending', 'released'])
+      }
+      counters[order]++
       const credited = f.led.filter((l: any) => l.kind !== 'release').reduce((s: bigint, l: any) => s + BigInt(l.u), 0n)
       expect(credited.toString()).toBe(f.c.u) // razão = dólar da comissão
       const stl = (await e.db.query(`SELECT amount_units::text AS u FROM settlements s JOIN affiliate_commissions c ON c.settlement_id=s.id WHERE c.id=$1`, [c.id])).rows
       expect(stl).toEqual([{ u: f.c.u }]) // uma intenção, com o dólar final
       expect((await e.db.query(`SELECT count(*)::int AS n FROM affiliate_commissions WHERE source_event_id=$1`, [body.source_event_id])).rows[0].n).toBe(1)
-      // depois da corrida, a criação original continua repetível sem efeito (na corrida as leituras rápidas podem ser anteriores ao ajuste)
-      for (let i = 0; i < 2; i++) {
-        const again = await e.post('/api/v1/affiliates/commissions', body)
-        expect(again.statusCode).toBe(200); expect(again.json().id).toBe(c.id)
-      }
+      for (let i = 0; i < 2; i++) { const again = await e.post('/api/v1/affiliates/commissions', body); expect(again.statusCode).toBe(200); expect(again.json().id).toBe(c.id) }
       expect(await footprint(e, c.id)).toEqual(f)
     }
-    expect(orders.adjustFirst, 'ajuste antes da liberação').toBeGreaterThan(0)
-    expect(orders.releaseFirst, 'liberação antes do ajuste').toBeGreaterThan(0)
-    expect(orders.adjustFirst + orders.releaseFirst).toBe(rounds)
-    // contagem direta de TODAS as intenções de pagamento: uma por comissão liberada, nenhuma a mais
-    expect((await e.db.query(`SELECT count(*)::int AS n FROM settlements WHERE kind='affiliate_payout'`)).rows[0].n).toBe(rounds)
-    expect((await e.db.query(`SELECT count(*)::int AS n FROM affiliate_commissions WHERE settlement_id IS NOT NULL`)).rows[0].n).toBe(rounds)
-    expect((await e.db.query(`SELECT count(DISTINCT settlement_id)::int AS n FROM affiliate_commissions`)).rows[0].n).toBe(rounds)
+    expect(counters).toEqual({ adjust_first: 2, release_first: 2 }) // contadores de ordem: cada ordem forçada duas vezes
+    expect((await e.db.query(`SELECT count(*)::int AS n FROM settlements WHERE kind='affiliate_payout'`)).rows[0].n).toBe(plan.length)
+    expect((await e.db.query(`SELECT count(*)::int AS n FROM affiliate_commissions WHERE settlement_id IS NOT NULL`)).rows[0].n).toBe(plan.length)
+    expect((await e.db.query(`SELECT count(DISTINCT settlement_id)::int AS n FROM affiliate_commissions`)).rows[0].n).toBe(plan.length)
   })
 
   it('a migração preenche o valor original pela transição de criação, e a volta recusa com comissão ajustada', async () => {

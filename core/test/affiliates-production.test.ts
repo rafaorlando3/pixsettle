@@ -170,9 +170,17 @@ describe('produção dos afiliados: launcher', () => {
     expect(() => productionLaunchPlan(base({ PIXSETTLE_SEED: 's'.repeat(40) }))).toThrow(/seed_forbidden/)
   })
   it('com a liquidação ligada exige a chave DA tesouraria publicada; o core recebe só endereço e HMAC', () => {
-    expect(() => productionLaunchPlan(base({ AFFILIATE_SETTLE: '1' }))).toThrow(/signer_keys_missing/)
-    expect(() => productionLaunchPlan(base({ AFFILIATE_SETTLE: '1', TREASURY_KEY, ISSUER_KEY }))).toThrow(/key_address_mismatch/)
+    // v7.4 (X-1222, K1): a fase pública (sem chave) decide primeiro: assinar sem TOKEN explícito é recusado antes de ler a chave
+    expect(() => productionLaunchPlan(base({ AFFILIATE_SETTLE: '1', TREASURY_KEY, ISSUER_KEY }))).toThrow(/signer_chain_missing/)
+    const T = { TOKEN: TEMPO_MAINNET_USDC }
+    expect(() => productionLaunchPlan(base({ AFFILIATE_SETTLE: '1', ...T }))).toThrow(/signer_keys_missing/)
+    expect(() => productionLaunchPlan(base({ AFFILIATE_SETTLE: '1', ...T, TREASURY_KEY, ISSUER_KEY }))).toThrow(/key_address_mismatch/)
     const addr = privateKeyToAccount(TREASURY_KEY).address
+    // chave inválida: recusa sem eco do valor; emissor publicado tem de ser o da chave que assina os recibos
+    let bad: unknown = null
+    try { productionLaunchPlan(base({ AFFILIATE_SETTLE: '1', ...T, TREASURY_KEY: '0x' + 'z'.repeat(64), ISSUER_KEY, TREASURY_ADDRESS: addr })) } catch (e) { bad = e }
+    expect(String(bad)).toMatch(/signer_key_invalid/); expect(String(bad)).not.toContain('z'.repeat(64))
+    expect(() => productionLaunchPlan(base({ AFFILIATE_SETTLE: '1', ...T, TREASURY_KEY, ISSUER_KEY, TREASURY_ADDRESS: addr, ISSUER_ADDRESS: TREASURY }))).toThrow(/issuer_key_mismatch/)
     const p = productionLaunchPlan(base({ AFFILIATE_SETTLE: '1', TREASURY_KEY, ISSUER_KEY, TREASURY_ADDRESS: addr, TOKEN: TEMPO_MAINNET_USDC }), 'h'.repeat(64))
     expect(p.signer).toMatchObject({ TREASURY_KEY, ISSUER_KEY, CHAIN_ID: '4217', TOKEN: TEMPO_MAINNET_USDC, FAUCET_TOPUP: '0', SETTLEMENT_HMAC_SECRET: 'h'.repeat(64) })
     expect(p.core).toMatchObject({ SETTLEMENT_URL: 'http://127.0.0.1:7401', SETTLEMENT_HMAC_SECRET: 'h'.repeat(64), TREASURY_ADDRESS: addr, ISSUER_ADDRESS: privateKeyToAccount(ISSUER_KEY).address })

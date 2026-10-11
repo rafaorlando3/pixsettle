@@ -15,7 +15,7 @@ import { registerAffiliates } from './routes.js'
 import { configureAffiliateJournal } from './journal.js'
 import { resumeAffiliateSettlements, settleOn, affiliateCapabilities } from './service.js'
 import { startWorker } from '../worker.js'
-import { bindDatabaseProfile, withBootLock, type BoundProfile, type InstanceProfile } from './instance-profile.js'
+import { bindDatabaseProfile, installWriteGuard, profileFingerprint, withBootLock, type BoundProfile, type InstanceProfile } from './instance-profile.js'
 
 export const PRODUCTION_PROFILE = 'affiliates_production'
 export const TEMPO_MAINNET_CHAIN_ID = 4217
@@ -135,13 +135,16 @@ const NO_PIX: PixProvider = new Proxy({ name: 'simulated', env: 'simulated' } as
 
 export async function startAffiliatesProduction(env: Record<string, string | undefined> = process.env) {
   const cfg = productionConfigFromEnv(env)
-  const db = createPool(cfg.databaseUrl)
+  // v7.4 (X-1222): toda conexão declara o perfil (pixsettle.profile); a guarda do banco preso recusa quem não declara
+  const db = createPool(cfg.databaseUrl, { profileFingerprint: profileFingerprint(profileOf(cfg)), applicationName: 'pixsettle-affiliates-production' })
   let dbProfile: BoundProfile
   try {
-    // v7.3 (X-1212): identidade e perfil ANTES das migrações de negócio, de qualquer escrita e do worker; tudo sob a trava do boot
+    // v7.3 (X-1212) e v7.4 (X-1222): perfil conferido só lendo, ANTES de qualquer escrita, das migrações de negócio e do
+    // worker; banco recusado fica como estava. Tudo sob a trava do boot.
     dbProfile = await withBootLock(db, async () => {
       const bound = await bindDatabaseProfile(db, profileOf(cfg))
       await migrate(db)
+      await installWriteGuard(db)
       return bound
     })
   } catch (e) { await db.end(); throw e }

@@ -88,7 +88,8 @@ function fixUsdUnits(amountMinor: bigint, feeBps: number, rate: BuyRate) {
 
 const memoOf = (id: string, attempt = 1) => '0x' + Buffer.concat([Buffer.from(id, 'ascii'), attempt === 1 ? Buffer.alloc(32 - id.length) : Buffer.from(`-${attempt}`.slice(-(32 - id.length)), 'ascii')]).toString('hex')
 const memoPrefix = (id: string) => '0x' + Buffer.from(id, 'ascii').toString('hex')
-const benKey = (beneficiaryId: string) => `affiliate:${beneficiaryId}`
+/** Nome da trava consultiva do beneficiário (exportado para os testes de corrida com barreira). */
+export const benKey = (beneficiaryId: string) => `affiliate:${beneficiaryId}`
 const idemKey = (merchantId: string, sourceEventId: string) => `affiliate:idem:${merchantId}:${sourceEventId}`
 
 function affiliatesOn(ctx: Ctx) {

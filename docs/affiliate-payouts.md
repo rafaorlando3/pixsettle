@@ -317,7 +317,8 @@ before the switch become dollars at the rate of a REAL conversion made by the me
   Moderato by `CHAIN_ID`, mainnet requires an explicit `TOKEN`, faucet only on Moderato) and gives the core only the
   address and the HMAC.
 - Merchant provisioning without the key: `core/scripts/affiliates-merchant.ts --name --key-sha256 --pool` stores the
-  sha256 of the merchant key (never the key) and the pool (the treasury address), idempotent by id.
+  sha256 of the merchant key (never the key) and the pool (the treasury address), idempotent by id. Since v7.4 (§19) it
+  runs only after the first production boot, with the production environment: it never migrates or binds a database.
 - Tests: `core/test/affiliates-launch-quote.test.ts` (7) and `core/test/affiliates-production.test.ts` (7, including an
   HTTP end-to-end boot on a fresh database); the merchant client (Odin) runs its own live contract test against this
   profile.
@@ -407,12 +408,11 @@ production instance must never serve from a rehearsal database, another chain's,
   is bound; (3) only then the business migrations, the server, the worker. On any refusal the pool is closed and nothing
   is served or migrated.
 - Launcher: before spawning ANY child (the signer with the key, or the core), it binds or checks the database with the
-  same function under the same lock (`preflightDatabase`); the core checks again at its own boot. The row is immutable,
-  so there is no window to change the binding between the two checks.
-- Legacy adoption is explicit only: `core/scripts/affiliates-adopt-profile.ts --mode --chain --token --treasury --quote
-  --operator --note --confirm-legacy` validates the legacy data against the requested profile (production never adopts a
-  simulated-quote commission, and no profile adopts settlements of another chain or token), stores `adopted = true` and
-  writes an audit transition (`instance_profile`, `adopted`, with profile, row counts, operator and note).
+  same function under the same lock (`preflightDatabase`); the core checks again at its own boot. The row refuses UPDATE
+  and DELETE (v7.4 adds TRUNCATE), so the official flow cannot change the binding between the two checks; what a database
+  owner or superuser can still do is listed in §19.
+- Legacy adoption (`core/scripts/affiliates-adopt-profile.ts`) existed in v7.3 and was REMOVED in v7.4 (§19): legacy data
+  does not record what would prove its origin, so it is never adopted.
 - F1 limits closed (X-1211): migration 017 recovers an original amount that 015 could not find (first recorded adjust's
   `from_minor`, the value before any reduction; an audit row counts the recoveries) and adds a trigger that refuses any
   UPDATE of `created_amount_minor` (only the creating INSERT writes it; no code path updates it). The race test now runs
@@ -424,3 +424,79 @@ production instance must never serve from a rehearsal database, another chain's,
   migration refused before migrating, demo data, immutable row and refusing down, the real launcher refused with zero
   children with and without the signer and no effect on the database, and the adoption command arguments), plus 2 F1 tests
   in `core/test/affiliates-adjust.test.ts` (database lock on the original, 017 recovery with audit).
+
+## 19. No legacy adoption, read-only refusals, write guard and key after the database (2026-10-11, contract v7.4, review X-1222)
+
+Answers the four static reviews of v7.3 b8cc379 (database, boot, F1, Relay). Database, boot and F1 items are below; the
+Relay evidence is a separate package.
+
+- Legacy is never adopted (BANCO P1/P2). A pre-v7.3 row does not record the instance mode (production or rehearsal), the
+  chain and token of a pending obligation, or the treasury; a ledger, withdrawal or receipt row has even less. There is
+  no data from which to prove that legacy obligations belong to a profile, so v7.4 removes the adoption command and
+  function. A database without a profile is bound only when EMPTY: any row in any table of the public schema (except
+  the migration register and the audit rows written by migrations) refuses the boot with
+  `database_profile_missing_with_data` (or `database_has_demo_data` for tables outside the affiliate rail; v7.3 only
+  counted five financial tables, so merchants, beneficiaries, policies, quote locks, transitions and producer batches now
+  count too). Production and rehearsal start on a new database; the Hub re-sends commissions through the API (idempotent
+  by `source_event_id`), so every obligation is quoted and recorded under the bound profile.
+- Every refusal is decided by reading only (BOOT K2). `identityState` reads the catalog: no identity, current identity,
+  the v7.3 b8cc379 identity (to upgrade), the first v7.3 table from 8ec4b9d without `quote_source`/`adopted`
+  (`database_profile_schema_outdated`; that version was never applied to a database in use and there is no automatic
+  upgrade: use a new database), or a protection removed or disabled (`database_profile_guard_missing`). Then the profile
+  row and the row counts are read. A refused boot writes nothing: no identity SQL, no `CREATE OR REPLACE`, no trigger, no
+  migration. Writes happen only (a) when an empty database is bound, in one transaction that creates the identity, locks
+  every table against writers (`SHARE ROW EXCLUSIVE`), counts again, inserts the profile and installs the write guard,
+  or (b) when a database already bound to THIS profile gets the v7.4 identity. A same-profile reboot writes nothing either.
+- Identity file: `core/migrations/identity/instance_profile.sql` (not a migration; migration 016 stays byte-identical to
+  b8cc379). It adds a statement trigger refusing TRUNCATE of `instance_profile` (BOOT K5), the profile fingerprint
+  (sha256 of `mode|chain|token|treasury|quote`), the write guard and its installer.
+- Write guard (BANCO P2, legacy writers). On a bound database, every table of the public schema except `instance_profile`
+  refuses INSERT, UPDATE, DELETE and TRUNCATE (statement trigger, `legacy_writer_refused`, SQLSTATE 42501) unless the
+  session declared the profile: `pixsettle.profile` must equal the stored fingerprint. The v7.4 runtime, launcher and
+  merchant tool open every connection with `-c pixsettle.profile=<fingerprint>`; v7.2 or older code, a version rollback
+  or a loose tool does not, and is refused. Each migration installs the guard on the tables it creates in the same
+  transaction, and the boot installs it on any table still without it. An old writer that already has a transaction
+  open when an empty database is being bound makes the bind wait and then refuse (it sees the row); one that arrives
+  after the count waits on the table locks and is refused by the guard once the profile commits. Reads are never blocked.
+  This is not access control: the fingerprint comes from public values.
+- Limits stated without absolute claims (BOOT K5): the profile row refuses UPDATE, DELETE and TRUNCATE and the guard
+  refuses undeclared sessions, but the database owner or a superuser can still drop the table, disable a trigger or
+  declare the fingerprint by hand. Those are manual operations outside the runtime and must be recorded; the runtime
+  never performs any of them, and a boot that finds a disabled profile trigger or guard refuses to start. The boot lock is
+  cooperative (it serializes the launcher, the core and the tools, not foreign clients; the guard covers those). On a
+  brand-new database the profile is stored before any business table exists, and every table (the migration register
+  included) is created in the same transaction that installs its guard, so no table is ever visible unguarded on a bound
+  database.
+- Key only after the database (BOOT K1). The launcher has three steps: `publicLaunchPlan` (forbidden flags on the
+  original environment, the public core variables, the configuration validated with placeholders for what only the
+  credential step knows, and the profile) never reads `TREASURY_KEY` or `ISSUER_KEY`, not even their presence;
+  `preflightDatabase` checks or binds the database; only then `credentialLaunchPlan` reads and derives the keys (key
+  without settlement, missing keys, invalid key without echoing it `signer_key_invalid`, treasury key not matching the
+  bound treasury, and new: `issuer_key_mismatch` when `ISSUER_ADDRESS` is given and is not the issuer key's address).
+  A database of another profile refuses with `database_profile_mismatch` even with an invalid key in the environment.
+- Migrations: each attempt adds one to the sequence `schema_migration_attempts` before running (sequences are not
+  transactional, so a failed or rolled-back attempt still counts); attempts equal to the number of migrations proves no
+  boot repeated one (BOOT K4). `src/migrate.ts` run directly refuses a bound database (`database_bound`).
+- Merchant tool: never migrates and never binds; requires the database bound to the profile of its environment (public
+  variables only), with the current identity and no pending migration (`database_not_ready`), and writes declaring the
+  profile.
+- F1: no adoption path remains, so no legacy commission with an unprovable original can enter a bound database; a
+  commission in a bound database is always created with its creation transition in the same transaction. The race test
+  is deterministic: the test holds the beneficiary advisory lock and the commission row, queues A then B (checked in
+  `pg_locks`), releases, and runs adjust-then-release and release-then-adjust twice each, with create replays while both
+  wait; the completion order, the stored transition order and the order counters are asserted.
+- Tests: `core/test/affiliates-instance-profile.test.ts` (19): same reboot, rehearsal and production never cross, other
+  treasury/chain/token, mismatch with a pending migration refused with the full snapshot unchanged, demo data, eleven
+  legacy scenarios (Binance commission without settlement, simulated commission, ledger only, withdrawal only, receipt
+  only, settlement of another chain, token or treasury, merchant only, beneficiary wallet only, transitions only) refused
+  by production and rehearsal with the full snapshot unchanged, a v7.2-schema database (up to 015, no profile table)
+  refused without creating anything, no adoption export or script, the 8ec4b9d table refused with and without a row,
+  mismatch on the current and on the b8cc379 identity writing nothing (and the right profile upgrading it), disabled
+  protection refusing, the row refusing UPDATE/DELETE/TRUNCATE, the write guard on every table, both old-writer races
+  with `pg_locks` barriers, two conflicting full boots in BOTH orders forced through the lock queue (attempts equal to
+  migrations, loser leaves the snapshot identical), the key read only after the database (watched environment), the
+  real launcher and core refused with a process census (`core/test/fixtures/process-audit.mjs`: no child, no listener,
+  nothing alive at exit) plus positive controls, and the merchant tool order. `core/test/affiliates-adjust.test.ts`: the
+  barrier race. The full snapshot covers every table (count and md5 of all rows), every sequence value and the catalog
+  rows with their `xmin` (classes, columns, functions with body, triggers with state, constraints, indexes).
+
