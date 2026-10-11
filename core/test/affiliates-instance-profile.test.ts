@@ -780,28 +780,47 @@ describe('v7.5.1 (X-1282): gatilho com o nome da guarda só vale se for a guarda
 
 // ---------- v7.5.2 (X-1282, condições do BANCO): releitura sob a trava, isolamento do vínculo e mais controles da H2 ----------
 describe('v7.5.2 (X-1282 BANCO): o vínculo confere a linha que aparece sob a trava e é sempre READ COMMITTED', () => {
-  it('linha gravada por fora entre a leitura inicial e a trava (adotada, ou nativa sem selo) passa pelas conferências do banco preso: recusa e desfaz tudo', async () => {
-    for (const adopted of [true, false]) {
-      const name = adopted ? 'linha adotada' : 'linha nativa sem selo'
-      const url = await legacyDb(async () => undefined) // migrate solto: tabelas vazias e a tabela do perfil da 016, sem linha
-      const e = await client(url)
-      try {
-        await e.query('BEGIN')
-        await e.query(`INSERT INTO instance_profile (id, mode, chain_id, token, treasury, quote_source, adopted) VALUES (1, 'rehearsal', 4217, $1, $2, 'simulated', $3)`, [TEMPO_MAINNET_USDC, TREASURY.toLowerCase(), adopted])
-        const p = startAffiliatesProduction(env(url, REHEARSAL))
-        p.catch(() => undefined)
-        await waitWaiting(url, `l.locktype = 'relation' AND l.relation = 'instance_profile'::regclass`, 1) // o vínculo parou na tabela do perfil
-        await e.query('COMMIT')
-        await expect(p, name).rejects.toThrow(adopted ? /database_profile_adopted/ : /database_profile_guard_missing: impressão selada ausente/)
-      } finally { await e.end() }
-      expect((await stateOf(url)).kind, name).toBe('upgrade') // a identidade instalada na transação foi desfeita junto
-      expect((await guardCounts(url)).guards, name).toBe(0)
-      expect(await profileRows(url), name).toEqual([{ mode: 'rehearsal', chain_id: 4217, token: TEMPO_MAINNET_USDC, treasury: TREASURY.toLowerCase(), quote_source: 'simulated', adopted }])
-      const before = await snapshot(url)
-      await expect(startAffiliatesProduction(env(url, REHEARSAL)), name).rejects.toThrow(adopted ? /database_profile_adopted/ : /database_identity_not_current/)
-      expect(await snapshot(url), name).toEqual(before)
-    }
-  }, 120_000)
+  /** Linha do perfil gravada por OUTRA sessão enquanto o vínculo espera a trava da tabela do perfil (barreira pg_locks). */
+  async function outsideRowDuringBind(adopted: boolean) {
+    const url = await legacyDb(async () => undefined) // migrate solto: tabelas vazias e a tabela do perfil da 016, sem linha
+    const e = await client(url)
+    let err: unknown = null
+    try {
+      await e.query('BEGIN')
+      await e.query(`INSERT INTO instance_profile (id, mode, chain_id, token, treasury, quote_source, adopted) VALUES (1, 'rehearsal', 4217, $1, $2, 'simulated', $3)`, [TEMPO_MAINNET_USDC, TREASURY.toLowerCase(), adopted])
+      const p = startAffiliatesProduction(env(url, REHEARSAL))
+      p.catch(() => undefined)
+      await waitWaiting(url, `l.locktype = 'relation' AND l.relation = 'instance_profile'::regclass`, 1) // o vínculo parou na tabela do perfil
+      await e.query('COMMIT')
+      try { const s = await p; await s.stop() } catch (x) { err = x }
+    } finally { await e.end() }
+    return { url, err }
+  }
+  /** O que ficou gravado depois da recusa: a identidade instalada na transação do vínculo tem de ter sido desfeita. */
+  async function persisted(url: string) {
+    return { state: (await stateOf(url)).kind, guards: (await guardCounts(url)).guards, rows: await profileRows(url),
+      sealedFn: (await q(url, `SELECT to_regprocedure('public.instance_profile_sealed_fingerprint()') IS NOT NULL AS f`))[0]!.f }
+  }
+
+  it('linha ADOTADA gravada por fora entre a leitura inicial e a trava: recusa dentro do vínculo e desfaz tudo (identidade não fica instalada)', async () => {
+    const { url, err } = await outsideRowDuringBind(true)
+    expect(String(err)).toMatch(/database_profile_adopted/)
+    expect(await persisted(url)).toEqual({ state: 'upgrade', guards: 0, sealedFn: false,
+      rows: [{ mode: 'rehearsal', chain_id: 4217, token: TEMPO_MAINNET_USDC, treasury: TREASURY.toLowerCase(), quote_source: 'simulated', adopted: true }] })
+    const before = await snapshot(url)
+    await expect(startAffiliatesProduction(env(url, REHEARSAL))).rejects.toThrow(/database_profile_adopted/)
+    expect(await snapshot(url)).toEqual(before)
+  }, 60_000)
+
+  it('linha NATIVA sem selo gravada por fora entre a leitura inicial e a trava: recusa dentro do vínculo e desfaz tudo (identidade não fica instalada)', async () => {
+    const { url, err } = await outsideRowDuringBind(false)
+    expect(String(err)).toMatch(/database_profile_guard_missing: impressão selada ausente/)
+    expect(await persisted(url)).toEqual({ state: 'upgrade', guards: 0, sealedFn: false,
+      rows: [{ mode: 'rehearsal', chain_id: 4217, token: TEMPO_MAINNET_USDC, treasury: TREASURY.toLowerCase(), quote_source: 'simulated', adopted: false }] })
+    const before = await snapshot(url)
+    await expect(startAffiliatesProduction(env(url, REHEARSAL))).rejects.toThrow(/database_identity_not_current/)
+    expect(await snapshot(url)).toEqual(before)
+  }, 60_000)
 
   it('banco com REPEATABLE READ como padrão: o vínculo declara READ COMMITTED e o escritor antigo que confirma enquanto esperamos é visto (recusa, nada preso)', async () => {
     const url = await freshUrl()

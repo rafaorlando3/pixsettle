@@ -180,20 +180,29 @@ describe('v7.2 F1: criação idempotente depois do ajuste', () => {
       }
       // barreira: o teste segura a trava do beneficiário e a linha da comissão numa transação aberta
       const gate = await e.db.connect()
-      await gate.query('BEGIN')
-      await gate.query('SELECT pg_advisory_xact_lock($1::bigint)', [key])
-      await gate.query('SELECT id FROM affiliate_commissions WHERE id=$1 FOR UPDATE', [c.id])
       const done: string[] = []
       const adjust = () => e.post(`/api/v1/affiliates/commissions/${c.id}/adjust`, { amount: amt('3000'), reason_code: 'debt_offset' }).then(r => { done.push('adjust'); return r })
       const release = () => e.post(`/api/v1/affiliates/commissions/${c.id}/release`, {}).then(r => { done.push('release'); return r })
       const [first, second] = order === 'adjust_first' ? [adjust, release] : [release, adjust]
-      const pA = first()
-      await waiting(1) // A parado na fila
-      const during = await Promise.all(Array.from({ length: 4 }, () => e.post('/api/v1/affiliates/commissions', body))) // com A parado
-      const pB = second()
-      await waiting(2) // B atrás de A
-      await gate.query('COMMIT'); gate.release()
-      const [rA, rB] = await Promise.all([pA, pB])
+      let pA: Promise<any> | undefined, pB: Promise<any> | undefined, during: any[] = []
+      try {
+        await gate.query('BEGIN')
+        await gate.query('SELECT pg_advisory_xact_lock($1::bigint)', [key])
+        await gate.query('SELECT id FROM affiliate_commissions WHERE id=$1 FOR UPDATE', [c.id])
+        pA = first()
+        await waiting(1) // A parado na fila
+        during = await Promise.all(Array.from({ length: 4 }, () => e.post('/api/v1/affiliates/commissions', body))) // com A parado
+        pB = second()
+        await waiting(2) // B atrás de A
+        await gate.query('COMMIT')
+      } catch (err) {
+        // a barreira falhou (ex.: controle negativo sem a trava do serviço): solta a transação do teste e espera as
+        // requisições terminarem, para a falha ser a da barreira e não um gancho preso no fim
+        await gate.query('ROLLBACK').catch(() => undefined)
+        await Promise.allSettled([pA, pB].filter(Boolean) as Promise<any>[])
+        throw err
+      } finally { gate.release() }
+      const [rA, rB] = await Promise.all([pA!, pB!])
       const [rAdj, rRel] = order === 'adjust_first' ? [rA, rB] : [rB, rA]
       expect(done, order).toEqual(order === 'adjust_first' ? ['adjust', 'release'] : ['release', 'adjust'])
       expect(rRel.statusCode).toBe(200)
