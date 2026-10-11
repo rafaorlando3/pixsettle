@@ -372,8 +372,8 @@ each with a test that fails on v7.1 (negative control) and passes now.
   receive with `productionConfigFromEnv` before returning the plan, so nothing is spawned (neither the signer with the key
   nor the core) on a refused configuration. Refusals carry the same codes as the core.
 - F4 (P2), invalid dates are 422. `adjust`, `release` and `void` validate `occurred_at` before any transaction, including
-  their no-op paths (same amount, already released, already voided): `422 invalid_occurred_at`, nothing changes. Absent or
-  empty keeps the server time; a non-string value (number, object, boolean) is invalid.
+  their no-op paths (same amount, already released, already voided): `422 invalid_occurred_at`, nothing changes. Absent,
+  `null` or empty keeps the server time; any other non-string value (number, object, boolean) is invalid.
 - Rounding limit: a conversion that would round to zero token units (only reachable with an extreme rate) is
   `422 usd_below_one_unit` in create and adjust, never a generic 500 and never a zero-dollar commission.
 - Tests: `core/test/affiliates-adjust.test.ts` (9: original replay after adjust, launch replay, fixed orders, an 8-round
@@ -388,21 +388,39 @@ each with a test that fails on v7.1 (negative control) and passes now.
   database to one profile (mode, chain, treasury) at boot is proposed as a release gate, not implemented in v7.2 (done in
   v7.3, §18).
 
-## 18. Database bound to the instance profile (2026-10-10, contract v7.3)
+## 18. Database bound to the instance profile (2026-10-10, contract v7.3, after reviews X-1211 and X-1212)
 
 Closes the open limit of §17: a rehearsal (simulated quote) must never write into the production database, and the
-production instance must never serve from a rehearsal database, another chain's or another treasury's.
+production instance must never serve from a rehearsal database, another chain's, token's or treasury's.
 
-- Migration 016 adds `instance_profile` (one row, `id = 1`): `mode` (`production` or `rehearsal`), `chain_id`, `token`,
-  `treasury` (lowercase hex) and `claimed_at`. The down migration refuses while the row exists.
-- `startAffiliatesProduction` migrates and then calls `claimDatabaseProfile` before serving: the first boot writes the
-  profile; later boots compare and refuse any change with `database_profile_mismatch` (mode, chain, token or treasury;
-  the address case does not matter). A database that has `orders` rows (demo data; the production instance never writes
-  orders) is never claimed (`database_has_demo_data`). The claim runs under a table lock, so two concurrent boots with
-  different profiles end with one claim and one refusal. On any refusal the pool is closed and nothing is served.
-- `/healthz` shows `database_profile` (`mode`, `claimed_at`).
-- Changing the binding (for example a new treasury address) is a manual, recorded step on the database, never automatic.
-- Tests: `core/test/affiliates-instance-profile.test.ts` (5: rehearsal then production and the reverse, other treasury or
-  chain, demo data, concurrent claims, down migration). Negative controls: without the boot claim the 3 boot tests fail;
-  comparing without the mode, the reverse-boot and the concurrent-claim tests fail.
-
+- Profile: migration 016 adds `instance_profile`, one row (`id = 1`): `mode` (`production` or `rehearsal`), `chain_id`,
+  `token`, `treasury` (lowercase hex), `quote_source` (`binance_usdtbrl` or `simulated`; production only with
+  `binance_usdtbrl`, also as a table check), `adopted` and `claimed_at`. A trigger makes the row immutable (no UPDATE, no
+  DELETE): changing the binding is a manual, recorded database operation, never automatic. The down migration refuses
+  while the row exists.
+- Boot order (`startAffiliatesProduction`), all under one session advisory lock so two boots never interleave: (1) only
+  the identity (the 016 SQL, idempotent) on a new database, no business migration yet; (2) bind under a table lock: a
+  stored profile is compared field by field and any difference is `database_profile_mismatch`; without a profile, a
+  database with demo rows (`orders`, `pix_charges`, `pilot_charges`, `attested_events`) is `database_has_demo_data` and a
+  database with financial rows (`affiliate_commissions`, `affiliate_ledger`, `affiliate_withdrawals`,
+  `affiliate_receipts`, `settlements`) is `database_profile_missing_with_data` (never adopted silently); a clean database
+  is bound; (3) only then the business migrations, the server, the worker. On any refusal the pool is closed and nothing
+  is served or migrated.
+- Launcher: before spawning ANY child (the signer with the key, or the core), it binds or checks the database with the
+  same function under the same lock (`preflightDatabase`); the core checks again at its own boot. The row is immutable,
+  so there is no window to change the binding between the two checks.
+- Legacy adoption is explicit only: `core/scripts/affiliates-adopt-profile.ts --mode --chain --token --treasury --quote
+  --operator --note --confirm-legacy` validates the legacy data against the requested profile (production never adopts a
+  simulated-quote commission, and no profile adopts settlements of another chain or token), stores `adopted = true` and
+  writes an audit transition (`instance_profile`, `adopted`, with profile, row counts, operator and note).
+- F1 limits closed (X-1211): migration 017 recovers an original amount that 015 could not find (first recorded adjust's
+  `from_minor`, the value before any reduction; an audit row counts the recoveries) and adds a trigger that refuses any
+  UPDATE of `created_amount_minor` (only the creating INSERT writes it; no code path updates it). The race test now runs
+  until both orders were observed (adjust before and after release) and counts every payout intent directly.
+- `/healthz` shows `database_profile` (`mode`, `quote_source`, `adopted`, `claimed_at`).
+- Tests: `core/test/affiliates-instance-profile.test.ts` (9: same reboot, rehearsal and production never cross, quote policy
+  in the profile, other treasury/chain/token, conflicting full boots at the same time with each migration applied once,
+  legacy data without orders refused and the explicit adoption validated and audited, mismatch with a pending business
+  migration refused before migrating, demo data, immutable row and refusing down, the real launcher refused with zero
+  children with and without the signer and no effect on the database, and the adoption command arguments), plus 2 F1 tests
+  in `core/test/affiliates-adjust.test.ts` (database lock on the original, 017 recovery with audit).

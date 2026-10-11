@@ -8,3 +8,4 @@ BEGIN
 END;
 $$;
 DROP TABLE IF EXISTS instance_profile;
+DROP FUNCTION IF EXISTS instance_profile_immutable();

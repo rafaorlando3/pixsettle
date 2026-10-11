@@ -7,7 +7,9 @@ import { randomBytes } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { privateKeyToAccount } from 'viem/accounts'
 import type { Hex } from 'viem'
-import { assertNoForbiddenProductionFlags, productionConfigFromEnv } from '../src/affiliates/production.js'
+import { assertNoForbiddenProductionFlags, productionConfigFromEnv, profileOf } from '../src/affiliates/production.js'
+import { bindDatabaseProfile, withBootLock, type BoundProfile } from '../src/affiliates/instance-profile.js'
+import { createPool } from '../src/db.js'
 
 const root = fileURLToPath(new URL('../../', import.meta.url))
 const NET = ['HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'https_proxy', 'http_proxy', 'no_proxy', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'TZ']
@@ -45,9 +47,23 @@ export function productionLaunchPlan(env: Record<string, string | undefined>, hm
   return { signer, core: coreEnv }
 }
 
+/**
+ * v7.3 (X-1212): antes de subir QUALQUER filho (assinante com a chave ou core), confere e prende o banco ao perfil, sob a
+ * trava do boot. O core confere de novo no próprio boot; a linha do perfil é imutável no banco, então não há janela para
+ * trocar o vínculo entre as duas conferências.
+ */
+export async function preflightDatabase(core: Record<string, string>): Promise<BoundProfile> {
+  const cfg = productionConfigFromEnv(core)
+  const db = createPool(cfg.databaseUrl)
+  try {
+    return await withBootLock(db, () => bindDatabaseProfile(db, profileOf(cfg)))
+  } finally { await db.end() }
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
   let plan: LaunchPlan
   try { plan = productionLaunchPlan(process.env) } catch (e) { console.error((e as Error).message); process.exit(1) }
+  try { await preflightDatabase(plan.core) } catch (e) { console.error((e as Error).message); process.exit(1) }
   const children: ChildProcess[] = []
   const base = { PATH: process.env.PATH ?? '', NODE_ENV: 'production', HOME: process.env.HOME ?? '', ...Object.fromEntries(NET.map(k => [k, process.env[k]]).filter(([, v]) => v)) }
   const run = (name: string, cwd: string, file: string, env: Record<string, string>) => {

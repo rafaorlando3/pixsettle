@@ -15,7 +15,7 @@ import { registerAffiliates } from './routes.js'
 import { configureAffiliateJournal } from './journal.js'
 import { resumeAffiliateSettlements, settleOn, affiliateCapabilities } from './service.js'
 import { startWorker } from '../worker.js'
-import { claimDatabaseProfile, type ClaimedProfile } from './instance-profile.js'
+import { bindDatabaseProfile, withBootLock, type BoundProfile, type InstanceProfile } from './instance-profile.js'
 
 export const PRODUCTION_PROFILE = 'affiliates_production'
 export const TEMPO_MAINNET_CHAIN_ID = 4217
@@ -36,6 +36,8 @@ export type ProductionConfig = {
   settle: boolean
   /** v7.3: ensaio (PRODUCTION_REHEARSAL=1); o banco fica preso a este modo no primeiro boot */
   rehearsal: boolean
+  /** v7.3: política de cotação, parte do perfil do banco (produção só binance_usdtbrl) */
+  quoteSource: 'binance_usdtbrl' | 'simulated'
   launchQuote: boolean
   lockTtlMs: number
   issuer: { id: string; address: string }
@@ -99,11 +101,17 @@ export function productionConfigFromEnv(env: Record<string, string | undefined>)
   }
   return {
     chainId, token, treasury, databaseUrl, settle, settlement, rehearsal: env.PRODUCTION_REHEARSAL === '1',
+    quoteSource: quoteSource === 'simulated' ? 'simulated' : 'binance_usdtbrl',
     launchQuote: env.AFFILIATE_LAUNCH_QUOTE === '1',
     lockTtlMs: Number(env.AFFILIATE_LOCK_TTL_MS ?? 120_000),
     issuer: { id: env.ISSUER_ID ?? 'pixsettle-production', address: String(env.ISSUER_ADDRESS ?? ZERO) },
     port: Number(env.PORT ?? 8080), host: env.HOST ?? '0.0.0.0', trustProxy: env.TRUST_PROXY === '1',
   }
+}
+
+/** v7.3: o perfil que prende o banco (modo, rede, token, tesouraria, política de cotação). */
+export function profileOf(cfg: ProductionConfig): InstanceProfile {
+  return { mode: cfg.rehearsal ? 'rehearsal' : 'production', chainId: cfg.chainId, token: cfg.token, treasury: cfg.treasury, quoteSource: cfg.quoteSource }
 }
 
 /** Tesouraria só com endereço: lê nada, assina nada. Qualquer chamada de assinatura é erro explícito (não deve acontecer com AFFILIATE_SETTLE=0). */
@@ -128,11 +136,14 @@ const NO_PIX: PixProvider = new Proxy({ name: 'simulated', env: 'simulated' } as
 export async function startAffiliatesProduction(env: Record<string, string | undefined> = process.env) {
   const cfg = productionConfigFromEnv(env)
   const db = createPool(cfg.databaseUrl)
-  let dbProfile: ClaimedProfile
+  let dbProfile: BoundProfile
   try {
-    await migrate(db)
-    // v7.3: o banco fica preso a (modo, rede, token, tesouraria) no primeiro boot; qualquer mudança é recusada aqui, antes de servir
-    dbProfile = await claimDatabaseProfile(db, { mode: cfg.rehearsal ? 'rehearsal' : 'production', chainId: cfg.chainId, token: cfg.token, treasury: cfg.treasury })
+    // v7.3 (X-1212): identidade e perfil ANTES das migrações de negócio, de qualquer escrita e do worker; tudo sob a trava do boot
+    dbProfile = await withBootLock(db, async () => {
+      const bound = await bindDatabaseProfile(db, profileOf(cfg))
+      await migrate(db)
+      return bound
+    })
   } catch (e) { await db.end(); throw e }
   const chain: ChainGateway = cfg.settlement
     ? new HttpChainGateway(cfg.settlement.url, cfg.settlement.hmacSecret, cfg.chainId, cfg.token, cfg.treasury)
@@ -159,7 +170,7 @@ export async function startAffiliatesProduction(env: Record<string, string | und
     ok: true, profile: PRODUCTION_PROFILE, chain_id: cfg.chainId, token: cfg.token, treasury: cfg.treasury,
     settle: settleOn(ctx.affiliates), launch_quote: cfg.launchQuote, capabilities: affiliateCapabilities(ctx), quote_source: ctx.affiliates!.quotes.name,
     commit: env.RENDER_GIT_COMMIT ?? env.GIT_COMMIT ?? null,
-    database_profile: { mode: dbProfile.mode, claimed_at: dbProfile.claimedAt },
+    database_profile: { mode: dbProfile.mode, quote_source: dbProfile.quoteSource, adopted: dbProfile.adopted, claimed_at: dbProfile.claimedAt },
   }))
   registerAffiliates(app, ctx, { publicMerchantId: null })
   const worker = cfg.settle ? startWorker(ctx, { sweepEveryMs: 3_600_000, maxIdleMs: null }) : null

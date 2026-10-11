@@ -408,6 +408,7 @@ describe('revisão 347 (Codex, 09/10): custódia, anulação segura, chaves, pro
     await e.post('/api/v1/affiliates/commissions', commission())
     // v7.2: a 015 (valor original) é a última; sem comissão ajustada ela volta; a 014 (cotação do lançamento) volta sem
     // comissão do lançamento, e aí a 013 recusa
+    await rollback(e.db, '017_affiliate_created_amount_lock.sql') // v7.3: só a trava do valor original
     await rollback(e.db, '016_instance_profile.sql') // v7.3: banco de teste nunca foi preso a um perfil
     await rollback(e.db, '015_affiliate_created_amount.sql')
     await rollback(e.db, '014_affiliate_launch_quote.sql')

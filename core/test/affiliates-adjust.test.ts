@@ -8,6 +8,8 @@ import { registerAffiliates } from '../src/affiliates/routes.js'
 import { configureAffiliateJournal } from '../src/affiliates/journal.js'
 import { SimulatedQuoteSource } from '../src/affiliates/quotes.js'
 import { launchQuoteHash } from '../src/affiliates/service.js'
+import { rollback } from '../src/rollback.js'
+import { migrate } from '../src/migrate.js'
 
 const drops: Array<() => Promise<void>> = []
 afterEach(async () => { for (const d of drops.splice(0)) await d() })
@@ -157,16 +159,22 @@ describe('v7.2 F1: criação idempotente depois do ajuste', () => {
     expect(await footprint(e, c2.id)).toEqual(before2)
   })
 
-  it('concorrência: repetições da criação, ajuste e liberação ao mesmo tempo terminam coerentes (8 rodadas)', async () => {
+  it('concorrência: repetições da criação, ajuste e liberação ao mesmo tempo terminam coerentes, nas duas ordens', async () => {
     const e = await env()
     const orders = { adjustFirst: 0, releaseFirst: 0 }
-    for (let round = 0; round < 8; round++) {
+    let rounds = 0
+    // v7.3 (X-1211): roda até ver as DUAS ordens (ajuste antes e depois da liberação), alternando quem sai primeiro
+    while (rounds < 40 && (rounds < 8 || !orders.adjustFirst || !orders.releaseFirst)) {
+      rounds++
       const body = commission({ amount: amt('5000') })
       const c = (await e.post('/api/v1/affiliates/commissions', body)).json()
       const calls: Array<Promise<any>> = []
       for (let i = 0; i < 4; i++) calls.push(e.post('/api/v1/affiliates/commissions', body))
-      const adjustAt = calls.length; calls.push(e.post(`/api/v1/affiliates/commissions/${c.id}/adjust`, { amount: amt('3000'), reason_code: 'debt_offset' }))
-      const releaseAt = calls.length; calls.push(e.post(`/api/v1/affiliates/commissions/${c.id}/release`, {}))
+      const adjust = () => e.post(`/api/v1/affiliates/commissions/${c.id}/adjust`, { amount: amt('3000'), reason_code: 'debt_offset' })
+      const release = () => e.post(`/api/v1/affiliates/commissions/${c.id}/release`, {})
+      let adjustAt: number, releaseAt: number
+      if (rounds % 2) { adjustAt = calls.length; calls.push(adjust()); releaseAt = calls.length; calls.push(release()) }
+      else { releaseAt = calls.length; calls.push(release()); adjustAt = calls.length; calls.push(adjust()) }
       for (let i = 0; i < 4; i++) calls.push(e.post('/api/v1/affiliates/commissions', body))
       const res = await Promise.all(calls)
       res.forEach((r, i) => {
@@ -193,7 +201,13 @@ describe('v7.2 F1: criação idempotente depois do ajuste', () => {
       }
       expect(await footprint(e, c.id)).toEqual(f)
     }
-    expect(orders.adjustFirst + orders.releaseFirst).toBe(8)
+    expect(orders.adjustFirst, 'ajuste antes da liberação').toBeGreaterThan(0)
+    expect(orders.releaseFirst, 'liberação antes do ajuste').toBeGreaterThan(0)
+    expect(orders.adjustFirst + orders.releaseFirst).toBe(rounds)
+    // contagem direta de TODAS as intenções de pagamento: uma por comissão liberada, nenhuma a mais
+    expect((await e.db.query(`SELECT count(*)::int AS n FROM settlements WHERE kind='affiliate_payout'`)).rows[0].n).toBe(rounds)
+    expect((await e.db.query(`SELECT count(*)::int AS n FROM affiliate_commissions WHERE settlement_id IS NOT NULL`)).rows[0].n).toBe(rounds)
+    expect((await e.db.query(`SELECT count(DISTINCT settlement_id)::int AS n FROM affiliate_commissions`)).rows[0].n).toBe(rounds)
   })
 
   it('a migração preenche o valor original pela transição de criação, e a volta recusa com comissão ajustada', async () => {
@@ -203,6 +217,7 @@ describe('v7.2 F1: criação idempotente depois do ajuste', () => {
     const plain = (await e.post('/api/v1/affiliates/commissions', commission({ amount: amt('1200') }))).json()
     await e.post(`/api/v1/affiliates/commissions/${c.id}/adjust`, { amount: amt('3000'), reason_code: 'debt_offset' })
     // estado de uma base v7.1: coluna sem valor; a 015 roda de novo e reconstrói o original pela transição de criação
+    await rollback(e.db, '017_affiliate_created_amount_lock.sql') // v7.3: a trava da 017 impede mexer no original
     await e.db.query(`ALTER TABLE affiliate_commissions DROP CONSTRAINT affiliate_commissions_created_amount`)
     await e.db.query(`ALTER TABLE affiliate_commissions ALTER COLUMN created_amount_minor DROP NOT NULL`)
     await e.db.query(`UPDATE affiliate_commissions SET created_amount_minor = NULL`)
@@ -263,3 +278,33 @@ describe('v7.2 limite de arredondamento', () => {
     expect(await footprint(e, c.id)).toEqual(before)
   })
 })
+
+describe('v7.3 F1: valor original travado no banco (X-1211)', () => {
+  it('UPDATE direto do valor original é recusado pelo banco; o ajuste segue funcionando', async () => {
+    const e = await env()
+    const c = (await e.post('/api/v1/affiliates/commissions', commission({ amount: amt('5000') }))).json()
+    await expect(e.db.query(`UPDATE affiliate_commissions SET created_amount_minor = 6000 WHERE id=$1`, [c.id])).rejects.toThrow(/created_amount_minor is immutable/)
+    await expect(e.db.query(`UPDATE affiliate_commissions SET created_amount_minor = 3000, amount_minor = 3000 WHERE id=$1`, [c.id])).rejects.toThrow(/immutable/)
+    expect((await e.post(`/api/v1/affiliates/commissions/${c.id}/adjust`, { amount: amt('3000'), reason_code: 'debt_offset' })).statusCode).toBe(200)
+    expect((await e.db.query(`SELECT created_amount_minor::text AS o, amount_minor::text AS a FROM affiliate_commissions WHERE id=$1`, [c.id])).rows[0]).toEqual({ o: '5000', a: '3000' })
+  })
+
+  it('a 017 recupera pelo primeiro ajuste o original que a 015 não achou, e deixa auditoria', async () => {
+    const e = await env()
+    const body = commission({ amount: amt('5000') })
+    const c = (await e.post('/api/v1/affiliates/commissions', body)).json()
+    await e.post(`/api/v1/affiliates/commissions/${c.id}/adjust`, { amount: amt('3000'), reason_code: 'debt_offset' })
+    await e.post(`/api/v1/affiliates/commissions/${c.id}/adjust`, { amount: amt('2000'), reason_code: 'capped' })
+    // base em que a 015 caiu no valor atual (comissão antiga sem transição de criação em JSON): o original estaria perdido.
+    // state_transitions é só de acréscimo, então a perda é simulada direto na coluna, com a trava da 017 fora.
+    await rollback(e.db, '017_affiliate_created_amount_lock.sql')
+    await e.db.query(`UPDATE affiliate_commissions SET created_amount_minor = amount_minor WHERE id=$1`, [c.id])
+    expect((await e.post('/api/v1/affiliates/commissions', body)).statusCode).toBe(409) // controle: sem o original, a repetição quebra
+    await migrate(e.db)
+    expect((await e.db.query(`SELECT created_amount_minor::text AS o FROM affiliate_commissions WHERE id=$1`, [c.id])).rows[0].o).toBe('5000')
+    const audit = (await e.db.query(`SELECT reason FROM state_transitions WHERE entity='migration' AND entity_id='017_affiliate_created_amount_lock' ORDER BY id DESC LIMIT 1`)).rows[0]
+    expect(JSON.parse(audit.reason)).toEqual({ originals_recovered: 1 })
+    expect((await e.post('/api/v1/affiliates/commissions', body)).statusCode).toBe(200)
+  })
+})
+
