@@ -705,3 +705,75 @@ describe('v7.5 (X-1277): banco preso só sobe com a identidade atual, completa e
     await expect(q(bare, `SELECT instance_profile_guard_install()`)).rejects.toThrow(/banco sem impressão selada/)
   }, 60_000)
 })
+
+// ---------- v7.5.1 (X-1282, V75-K5-O): a guarda e os gatilhos do perfil valem pela definição, não pelo nome ----------
+const PLANTADO = `CREATE OR REPLACE FUNCTION plantado() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$;`
+/** Troca a guarda de merchants por um homônimo em O (sem ENABLE REPLICA), com a definição pedida. */
+const HOMONIMO = (def: string) => `${PLANTADO} DROP TRIGGER IF EXISTS instance_profile_write_guard ON merchants; CREATE TRIGGER instance_profile_write_guard ${def}`
+
+describe('v7.5.1 (X-1282): gatilho com o nome da guarda só vale se for a guarda', () => {
+  it('ao prender: homônimo em O (outra função, só INSERT, por linha, com WHEN) num banco sem perfil não é pulado: o vínculo inteiro desfaz e o banco fica igual', async () => {
+    const variantes: Array<[string, string]> = [
+      ['outra função, BEFORE INSERT por comando (o caso da X-1282)', `${PLANTADO} CREATE TRIGGER instance_profile_write_guard BEFORE INSERT ON merchants FOR EACH STATEMENT EXECUTE FUNCTION plantado()`],
+      ['função com o nome da guarda, só INSERT', `CREATE FUNCTION instance_profile_write_guard() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER instance_profile_write_guard BEFORE INSERT ON merchants FOR EACH STATEMENT EXECUTE FUNCTION instance_profile_write_guard()`],
+      ['função com o nome da guarda, por linha', `CREATE FUNCTION instance_profile_write_guard() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER instance_profile_write_guard BEFORE INSERT OR UPDATE OR DELETE ON merchants FOR EACH ROW EXECUTE FUNCTION instance_profile_write_guard()`],
+      ['função com o nome da guarda, todos os eventos, com WHEN (false)', `CREATE FUNCTION instance_profile_write_guard() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$; CREATE TRIGGER instance_profile_write_guard BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON merchants FOR EACH STATEMENT WHEN (false) EXECUTE FUNCTION instance_profile_write_guard()`],
+    ]
+    for (const [name, sql] of variantes) {
+      const url = await legacyDb(async () => undefined, { upTo015: true })
+      await q(url, sql)
+      expect(await stateOf(url), name).toEqual({ kind: 'absent' })
+      const before = await snapshot(url)
+      await expect(startAffiliatesProduction(env(url, REHEARSAL)), name).rejects.toThrow(/instance_profile_guard_install: gatilho instance_profile_write_guard em merchants não é a guarda/)
+      expect(await snapshot(url), name).toEqual(before)
+      expect((await q(url, `SELECT to_regclass('public.instance_profile') AS t`))[0]!.t, name).toBeNull()
+    }
+  }, 120_000)
+
+  it('banco preso: homônimo em O no lugar da guarda (outra função, só INSERT, por linha) é recusado pelo core e pelo launcher antes da chave, e o banco fica igual', async () => {
+    const addr = privateKeyToAccount(TREASURY_KEY).address
+    const variantes: Array<[string, string]> = [
+      ['outra função', HOMONIMO('BEFORE INSERT ON merchants FOR EACH STATEMENT EXECUTE FUNCTION plantado()')],
+      ['a função da guarda, só INSERT', HOMONIMO('BEFORE INSERT ON merchants FOR EACH STATEMENT EXECUTE FUNCTION instance_profile_write_guard()')],
+      ['a função da guarda, por linha', HOMONIMO('BEFORE INSERT OR UPDATE OR DELETE ON merchants FOR EACH ROW EXECUTE FUNCTION instance_profile_write_guard()')],
+    ]
+    for (const [name, sql] of variantes) {
+      const url = await freshUrl()
+      await boot(env(url))
+      await q(url, sql)
+      const before = await snapshot(url)
+      await expect(startAffiliatesProduction(env(url)), name).rejects.toThrow(/database_profile_guard_missing: gatilho com o nome da guarda que não é a guarda .* em: merchants/)
+      const file = auditFile()
+      const e = { ...BASE(), ...env(url, { AFFILIATE_SETTLE: '1', TREASURY_KEY, ISSUER_KEY, TREASURY_ADDRESS: addr, TOKEN: TEMPO_MAINNET_USDC, SETTLEMENT_PORT: '7994' }) } as Record<string, string>
+      const r = spawnSync(process.execPath, ['--import', AUDIT, '--import', 'tsx', LAUNCHER], { env: { ...e, PIXSETTLE_PROCESS_AUDIT: file }, encoding: 'utf8', timeout: 60_000 })
+      expect(r.status, name).toBe(1)
+      expect(r.stderr, name).toMatch(/database_profile_guard_missing/)
+      expect(r.stderr + r.stdout, name).not.toMatch(/signer_key_invalid|key_address_mismatch|saiu|ouvindo/)
+      expect(readAudit(file).map(x => x.ev), name).toEqual(['start', 'exit'])
+      expect(await snapshot(url), name).toEqual(before)
+    }
+  }, 240_000)
+
+  it('gatilho do perfil com o nome certo e outra definição, ou função da identidade com corpo trocado, recusa sem conserto e o banco fica igual', async () => {
+    const cases: Array<[string, string, RegExp]> = [
+      ['immutable apontando para outra função', `${PLANTADO} DROP TRIGGER instance_profile_immutable ON instance_profile; CREATE TRIGGER instance_profile_immutable BEFORE UPDATE OR DELETE ON instance_profile FOR EACH ROW EXECUTE FUNCTION plantado()`, /database_profile_guard_missing: gatilho instance_profile_immutable com definição diferente/],
+      ['immutable só em UPDATE', `DROP TRIGGER instance_profile_immutable ON instance_profile; CREATE TRIGGER instance_profile_immutable BEFORE UPDATE ON instance_profile FOR EACH ROW EXECUTE FUNCTION instance_profile_immutable()`, /database_profile_guard_missing: gatilho instance_profile_immutable com definição diferente/],
+      ['no_truncate apontando para outra função', `${PLANTADO} DROP TRIGGER instance_profile_no_truncate ON instance_profile; CREATE TRIGGER instance_profile_no_truncate BEFORE TRUNCATE ON instance_profile FOR EACH STATEMENT EXECUTE FUNCTION plantado()`, /database_profile_guard_missing: gatilho instance_profile_no_truncate com definição diferente/],
+      ['guarda que sempre deixa passar (corpo trocado)', `CREATE OR REPLACE FUNCTION instance_profile_write_guard() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NULL; END $$`, /database_identity_not_current.*instance_profile_write_guard\(\) \(corpo diferente do instalado\)/],
+      ['linha do perfil que aceita mudança (corpo trocado)', `CREATE OR REPLACE FUNCTION instance_profile_immutable() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$`, /database_identity_not_current.*instance_profile_immutable\(\) \(corpo diferente do instalado\)/],
+    ]
+    for (const [name, sql, code] of cases) {
+      const url = await freshUrl()
+      await boot(env(url, REHEARSAL))
+      await q(url, sql)
+      const before = await snapshot(url)
+      await expect(startAffiliatesProduction(env(url, REHEARSAL)), name).rejects.toThrow(code)
+      expect(await snapshot(url), name).toEqual(before)
+    }
+    // controle positivo: a guarda e os gatilhos verdadeiros, recriados à mão com a mesma definição, sobem
+    const url = await freshUrl()
+    await boot(env(url, REHEARSAL))
+    await q(url, `DROP TRIGGER instance_profile_write_guard ON merchants; CREATE TRIGGER instance_profile_write_guard BEFORE INSERT OR UPDATE OR DELETE OR TRUNCATE ON merchants FOR EACH STATEMENT EXECUTE FUNCTION instance_profile_write_guard()`)
+    await boot(env(url, REHEARSAL))
+  }, 180_000)
+})

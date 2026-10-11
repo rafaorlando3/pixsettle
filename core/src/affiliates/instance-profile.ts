@@ -28,6 +28,29 @@ export class InstanceProfileError extends Error {
 /** Identidade v7.5 (superconjunto da 016): executada pelo boot SÓ na transação que prende um banco novo. */
 const IDENTITY_SQL = readFileSync(new URL('../../migrations/identity/instance_profile.sql', import.meta.url), 'utf8')
 
+/**
+ * v7.5.1 (X-1282): corpo instalado de cada função da identidade (o texto entre $$ do arquivo de identidade). O boot compara o
+ * md5 do `prosrc` no banco com o deste arquivo: função trocada à mão (ex.: guarda que sempre deixa passar) não sobe.
+ */
+const IDENTITY_BODIES: Record<string, string> = Object.fromEntries(
+  [...IDENTITY_SQL.matchAll(/CREATE OR REPLACE FUNCTION (instance_profile_\w+)\(\)[^$]*?AS \$\$([\s\S]*?)\$\$;/g)]
+    .map(m => [m[1]!, createHash('md5').update(m[2]!, 'utf8').digest('hex')]),
+)
+for (const f of ['instance_profile_immutable', 'instance_profile_fingerprint', 'instance_profile_write_guard', 'instance_profile_guard_install', 'instance_profile_seal']) {
+  if (!IDENTITY_BODIES[f]) throw new Error(`identity_file_invalid: corpo de ${f}() não encontrado no arquivo de identidade`)
+}
+
+/**
+ * v7.5.1 (X-1282, V75-K5-O): a guarda de verdade, não só o nome: função instance_profile_write_guard(), BEFORE INSERT OR
+ * UPDATE OR DELETE OR TRUNCATE FOR EACH STATEMENT (tgtype 62), sem WHEN, sem argumentos, sem UPDATE OF, não é de
+ * restrição, ligada em O ou A. Usado no censo da cobertura (`t` = pg_trigger).
+ */
+const GENUINE_GUARD = `t.tgname = 'instance_profile_write_guard' AND t.tgenabled IN ('O', 'A')
+  AND t.tgfoid = to_regprocedure('public.instance_profile_write_guard()') AND t.tgtype = 62 AND t.tgqual IS NULL
+  AND t.tgnargs = 0 AND t.tgconstraint = 0 AND coalesce(array_length(t.tgattr::int2[], 1), 0) = 0`
+/** Gatilhos da linha do perfil: função instance_profile_immutable(); BEFORE UPDATE OR DELETE FOR EACH ROW (27) e BEFORE TRUNCATE FOR EACH STATEMENT (34). */
+const PROFILE_TRIGGERS: Record<string, number> = { instance_profile_immutable: 27, instance_profile_no_truncate: 34 }
+
 /** Tabelas do trilho dos afiliados (as demais são da demo do concurso). */
 const AFFILIATE_TABLES = new Set(['merchants', 'settlements', 'settlement_attempts', 'state_transitions', 'outbox', 'schema_migrations'])
 const isAffiliateTable = (t: string) => AFFILIATE_TABLES.has(t) || t.startsWith('affiliate_')
@@ -89,7 +112,9 @@ export async function identityState(q: Db | Tx): Promise<IdentityState> {
       to_regprocedure('public.instance_profile_sealed_fingerprint()') IS NOT NULL AS sealed_fn,
       to_regprocedure('public.instance_profile_seal()') IS NOT NULL AS seal_fn,
       (SELECT string_agg(c.relname::text || ':' || t.tgenabled::text, ',' ORDER BY c.relname) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace ns ON ns.oid = c.relnamespace
-        WHERE ns.nspname = 'public' AND t.tgname = 'instance_profile_write_guard' AND t.tgenabled NOT IN ('O', 'A')) AS guards_off`)).rows[0]
+        WHERE ns.nspname = 'public' AND t.tgname = 'instance_profile_write_guard' AND t.tgenabled NOT IN ('O', 'A')) AS guards_off,
+      (SELECT string_agg(c.relname::text, ',' ORDER BY c.relname) FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace ns ON ns.oid = c.relnamespace
+        WHERE ns.nspname = 'public' AND t.tgname = 'instance_profile_write_guard' AND t.tgenabled IN ('O', 'A') AND NOT (${GENUINE_GUARD})) AS guards_fake`)).rows[0]
   if (base.rel === null) return { kind: 'absent' }
   const cols = (await q.query(`SELECT attname::text AS a FROM pg_attribute WHERE attrelid = $1 AND attnum > 0 AND NOT attisdropped`, [base.rel])).rows.map(r => r.a as string)
   const missingCols = PROFILE_COLUMNS.filter(c => !cols.includes(c))
@@ -97,7 +122,16 @@ export async function identityState(q: Db | Tx): Promise<IdentityState> {
     const v73a = missingCols.every(c => c === 'quote_source' || c === 'adopted')
     return v73a ? { kind: 'outdated', missing: missingCols } : { kind: 'tampered', detail: `instance_profile sem as colunas ${missingCols.join(', ')}` }
   }
-  const trg = new Map((await q.query(`SELECT tgname::text AS n, tgenabled::text AS e FROM pg_trigger WHERE tgrelid = $1 AND NOT tgisinternal`, [base.rel])).rows.map(r => [r.n as string, r.e as string]))
+  const trgRows = (await q.query(`SELECT tgname::text AS n, tgenabled::text AS e,
+      (tgfoid = to_regprocedure('public.instance_profile_immutable()') AND tgqual IS NULL AND tgnargs = 0 AND tgconstraint = 0
+        AND coalesce(array_length(tgattr::int2[], 1), 0) = 0) AS fn_ok, tgtype::int AS ty, tgfoid::regprocedure::text AS fn
+      FROM pg_trigger WHERE tgrelid = $1 AND NOT tgisinternal`, [base.rel])).rows
+  const trg = new Map(trgRows.map(r => [r.n as string, r.e as string]))
+  // v7.5.1 (X-1282): gatilho do perfil com o nome certo mas outra definição (função, eventos, momento, nível, condição) é adulteração
+  for (const r of trgRows) {
+    const want = PROFILE_TRIGGERS[r.n as string]
+    if (want !== undefined && (!r.fn_ok || Number(r.ty) !== want)) return { kind: 'tampered', detail: `gatilho ${r.n} com definição diferente da instalada (função ${r.fn}, tipo ${r.ty})` }
+  }
   const immutable = trg.get('instance_profile_immutable')
   if (!immutable) return { kind: 'tampered', detail: 'gatilho instance_profile_immutable ausente' }
   if (!FIRES.has(immutable)) return { kind: 'tampered', detail: `gatilho instance_profile_immutable ${triggerMode(immutable)}` }
@@ -107,6 +141,12 @@ export async function identityState(q: Db | Tx): Promise<IdentityState> {
     const list = String(base.guards_off).split(',').map(x => { const [t, e] = x.split(':'); return `${t} ${triggerMode(e!)}` })
     return { kind: 'tampered', detail: `guarda de escrita fora do ar: ${list.join('; ')}` }
   }
+  if (base.guards_fake) return { kind: 'tampered', detail: `gatilho com o nome da guarda que não é a guarda (função, eventos, momento, nível ou condição diferentes) em: ${String(base.guards_fake).replace(/,/g, ', ')}` }
+  // v7.5.1 (X-1282): função da identidade com corpo diferente do instalado conta como peça desatualizada (banco preso: recusa;
+  // banco sem linha: o boot reinstala tudo na transação que prende)
+  const bodies = new Map((await q.query(`SELECT p.proname::text AS n, md5(p.prosrc) AS h FROM pg_proc p JOIN pg_namespace ns ON ns.oid = p.pronamespace
+      WHERE ns.nspname = 'public' AND p.pronargs = 0 AND p.proname = ANY($1::text[])`, [Object.keys(IDENTITY_BODIES)])).rows.map(r => [r.n as string, r.h as string]))
+  const changed = Object.entries(IDENTITY_BODIES).filter(([n, h]) => bodies.has(n) && bodies.get(n) !== h).map(([n]) => `${n}() (corpo diferente do instalado)`)
   const missing = [
     ...(noTruncate !== undefined ? [] : ['instance_profile_no_truncate']),
     ...(base.fp_fn ? [] : ['instance_profile_fingerprint()']),
@@ -114,6 +154,7 @@ export async function identityState(q: Db | Tx): Promise<IdentityState> {
     ...(base.installer_fn ? [] : ['instance_profile_guard_install()']),
     ...(base.sealed_fn ? [] : ['instance_profile_sealed_fingerprint()']),
     ...(base.seal_fn ? [] : ['instance_profile_seal()']),
+    ...changed,
   ]
   return missing.length ? { kind: 'upgrade', missing } : { kind: 'current' }
 }
@@ -156,7 +197,7 @@ async function assertBoundIntact(q: Db | Tx, state: IdentityState, have: { adopt
 async function unguardedTables(q: Db | Tx): Promise<string[]> {
   return (await q.query(`SELECT c.relname::text AS t FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace
      WHERE ns.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition AND c.relname <> 'instance_profile'
-       AND NOT EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = c.oid AND t.tgname = 'instance_profile_write_guard' AND t.tgenabled IN ('O', 'A'))
+       AND NOT EXISTS (SELECT 1 FROM pg_trigger t WHERE t.tgrelid = c.oid AND ${GENUINE_GUARD})
      ORDER BY 1`)).rows.map(r => r.t as string)
 }
 

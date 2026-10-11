@@ -100,13 +100,20 @@ BEGIN
   IF instance_profile_sealed_fingerprint() IS NULL THEN
     RAISE EXCEPTION 'instance_profile_guard_install: banco sem impressão selada; a guarda nasce depois do selo';
   END IF;
-  -- guarda existente que não dispara numa sessão normal (R ou D) não é pulada em silêncio (X-1277 K5): recusa
+  -- gatilho existente com o nome da guarda que não dispara numa sessão normal (R ou D, X-1277 K5) ou que não é a guarda
+  -- (outra função, outros eventos, outro momento ou nível, condição WHEN, argumentos: X-1282 V75-K5-O) não é pulado em
+  -- silêncio: recusa (reparo manual registrado)
   FOR r IN
-    SELECT c.relname, t.tgenabled FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace ns ON ns.oid = c.relnamespace
-     WHERE ns.nspname = 'public' AND t.tgname = 'instance_profile_write_guard' AND t.tgenabled NOT IN ('O', 'A')
+    SELECT c.relname, t.tgenabled, t.tgtype, t.tgfoid::regprocedure::text AS fn FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace ns ON ns.oid = c.relnamespace
+     WHERE ns.nspname = 'public' AND t.tgname = 'instance_profile_write_guard'
+       AND (t.tgenabled NOT IN ('O', 'A') OR t.tgfoid <> 'public.instance_profile_write_guard()'::regprocedure OR t.tgtype <> 62
+            OR t.tgqual IS NOT NULL OR t.tgnargs <> 0 OR t.tgconstraint <> 0 OR coalesce(array_length(t.tgattr::int2[], 1), 0) <> 0)
      ORDER BY c.relname
   LOOP
-    RAISE EXCEPTION 'instance_profile_guard_install: guarda existente fora de O/A em % (estado %); reparo manual registrado', r.relname, r.tgenabled;
+    IF r.tgenabled NOT IN ('O', 'A') THEN
+      RAISE EXCEPTION 'instance_profile_guard_install: guarda existente fora de O/A em % (estado %); reparo manual registrado', r.relname, r.tgenabled;
+    END IF;
+    RAISE EXCEPTION 'instance_profile_guard_install: gatilho instance_profile_write_guard em % não é a guarda (função %, tipo %); reparo manual registrado', r.relname, r.fn, r.tgtype;
   END LOOP;
   FOR r IN
     SELECT c.relname FROM pg_class c JOIN pg_namespace ns ON ns.oid = c.relnamespace

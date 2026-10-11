@@ -536,6 +536,17 @@ upgrades or repairs a bound database (repair is a manual, recorded operation; pr
   stale session is refused and nothing persists. The guard fails closed when there is no seal, the installer refuses to
   install a guard before the seal, the seal refuses a database without a row or a different value, and running the identity
   file again never unseals.
+- v7.5.1 (review X-1282, V75-K5-O): protections count by their effective definition, not by name. A trigger named
+  `instance_profile_write_guard` is the guard only if it calls `instance_profile_write_guard()`, fires BEFORE INSERT OR
+  UPDATE OR DELETE OR TRUNCATE FOR EACH STATEMENT (`tgtype` 62), has no WHEN, no arguments, no UPDATE OF columns, is not a
+  constraint trigger and is in state O or A. The installer refuses an existing homonym instead of skipping it (the bind
+  rolls back), and the coverage census of a bound database counts only genuine guards, so a homonym refuses the boot
+  (`database_profile_guard_missing`) before any key, child or listener. The profile's triggers are checked the same way
+  (`instance_profile_immutable()`, row-level BEFORE UPDATE OR DELETE, `tgtype` 27; statement-level BEFORE TRUNCATE, 34), and
+  the body of every identity function is compared with the shipped identity file (md5 of `prosrc`): a guard replaced by one
+  that always lets writes through, or an immutability function that returns NEW, refuses a bound database with
+  `database_identity_not_current`. Out of scope, as before: a session that changes its own `search_path` or declares the
+  public fingerprint on purpose; the guard stops old code by accident, it is not access control.
 - Tests: `core/test/affiliates-instance-profile.test.ts`, block "v7.5 (X-1277)": B1 in both identities and through the
   merchant tool; B3 through the core, the launcher and the tool, with the catalog and the data unchanged and no guard
   installed; removed protection (no seal, different seal, null seal, table without guard) refused with the database
