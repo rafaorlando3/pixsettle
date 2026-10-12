@@ -7,3 +7,4 @@ dist/
 .spike-keys.json
 *.local.json
 coverage/
+.tempo-deposits*/

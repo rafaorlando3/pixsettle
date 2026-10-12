@@ -1,0 +1,74 @@
+{
+ "chainId": 42431,
+ "explorer": "https://explore.testnet.tempo.xyz",
+ "master": "0x87ED7b267615F7def7759E1947cDbC26336063AD",
+ "masterId": "0x37762a73",
+ "runId": "517dac",
+ "setup": {
+  "registerMaster": "0x2b4d5afc1aa5fcbf8e7922588c8347ccf3ce27116cea29d5ee583cdd28e57598",
+  "tokenPolicyId": "1253229",
+  "tokenPolicyTx": "0x6214bbebeef1fcb716830653d3aefd11047b17c0d0ef34cfce4adadfe330e4cb",
+  "receivePolicyTx": "0xff264e5e28de1572272b90ca560cf52294ef744b802cda2bf3128bebbaf02be7"
+ },
+ "payments": {
+  "A exact, no memo": "0x518d62e788a53ec70013917385296325385082e74eb051d4ecc7f1d29bb9f430",
+  "B short by 0.50": "0xfbffdec566957b09122225358b26502e11a6005a600773eb36436999e74b1238",
+  "A paid twice": "0xa933c9fd07f27435eb138bda459b7499498db74071e8aa815c14cf4da2ecad43",
+  "address never issued": "0xca8c251de9665ad8b3264fcca760807b0935bd27ef3407013acac3e4832e136a",
+  "C in BetaUSD (not accepted)": "0xc69e31855dc30433872dd916206bfa98b459c1010b9bafdad93f3b3915d95d1e",
+  "straight to the merchant wallet": "0x1a8eae972f79155fc8836da63b62a058f2c132655b92931c893f1fe15754e713",
+  "D in AlphaUSD with memo": "0xf064cc08962a3af6961b2b9fcf13d0f2cf0fefa04d87f2c637cbb4f4892f33bb"
+ },
+ "claim": "0x5c5f1fa21fd137390230aa6e2c312fa53b1d7bd03ad6334a293fb92228061d20",
+ "outcomes": [
+  {
+   "code": "matched",
+   "orderRef": "ord-517dac-A",
+   "tx": "0x518d62e788a53ec70013917385296325385082e74eb051d4ecc7f1d29bb9f430",
+   "explanation": "Order ord-517dac-A paid in full (US$ 25.00), identified by its own deposit address, no memo needed.",
+   "action": "Settle the order."
+  },
+  {
+   "code": "amount_short",
+   "orderRef": "ord-517dac-B",
+   "tx": "0xfbffdec566957b09122225358b26502e11a6005a600773eb36436999e74b1238",
+   "explanation": "Order ord-517dac-B expected US$ 40.00 and has received US$ 39.50: US$ 0.50 short.",
+   "action": "Ask the payer for the difference at the same address, or refund; do not settle yet."
+  },
+  {
+   "code": "second_payment",
+   "orderRef": "ord-517dac-A",
+   "tx": "0xa933c9fd07f27435eb138bda459b7499498db74071e8aa815c14cf4da2ecad43",
+   "explanation": "Order ord-517dac-A was already paid in full; this is another payment of US$ 25.00.",
+   "action": "Refund this payment to the payer."
+  },
+  {
+   "code": "unknown_deposit_address",
+   "orderRef": null,
+   "tx": "0xca8c251de9665ad8b3264fcca760807b0935bd27ef3407013acac3e4832e136a",
+   "explanation": "US$ 5.00 arrived at deposit address 0x37762a73fdFdFdfdFdFDFdFDfdfd161977Ad0CCc, which this merchant never issued for an order.",
+   "action": "Hold for review; return to the payer if no order claims it."
+  },
+  {
+   "code": "matched",
+   "orderRef": "ord-517dac-D",
+   "tx": "0xf064cc08962a3af6961b2b9fcf13d0f2cf0fefa04d87f2c637cbb4f4892f33bb",
+   "explanation": "Order ord-517dac-D paid in full (US$ 18.90), identified by its own deposit address.",
+   "action": "Settle the order."
+  },
+  {
+   "code": "no_reference",
+   "orderRef": null,
+   "tx": "0x1a8eae972f79155fc8836da63b62a058f2c132655b92931c893f1fe15754e713",
+   "explanation": "US$ 7.00 was sent straight to the merchant wallet, not to a deposit address, so no order can be inferred.",
+   "action": "Ask the payer which order it pays, or return it."
+  },
+  {
+   "code": "held_by_receive_policy",
+   "orderRef": "ord-517dac-C",
+   "tx": "0xc69e31855dc30433872dd916206bfa98b459c1010b9bafdad93f3b3915d95d1e",
+   "explanation": "US$ 12.00 in a token the merchant does not accept was held on-chain by the receive policy (meant for order ord-517dac-C); it never reached the merchant.",
+   "action": "Reclaimed by the payer; nothing to settle."
+  }
+ ]
+}
