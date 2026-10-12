@@ -136,11 +136,19 @@ digital dollars on the Tempo network.
 - The public receipt carries the commission (`com_`) or withdrawal (`wdr_`) id, custody and quote mode; never the merchant's order reference or event id.
 - Tests (`core/test/affiliates*.test.ts`): conversion and rounding; idempotency (same content 200, different content 409, five concurrent repeats create one); release → settlement → receipt on the fake chain; void pending, released, settling before broadcast (attempt suspended, nothing mined), settling after broadcast (`payout_in_flight`), settled (`already_settled`), with a Pix withdrawal pending (`withdrawal_in_progress`); own-wallet custody out of the available balance; settlement switch off blocks queued jobs and resume on switch on; read-only replica refuses writes; down migration guard; public allow-lists and receipt scope; opaque refs; `at_pix` vs `backfill`; batch application maps refused voids to `skipped_*` with the exception recorded. 272 tests in the core suite.
 
-## 8. Out of scope for this phase
+## 8. Status and what is still out of scope
 
-Real BRL to OUSD purchases (the merchant hub's route desk does that in batches), TIP-1022 virtual addresses
-per beneficiary (pool address with memo until then), regulatory sign-off on USD-denominated balances, and
-real affiliates on mainnet. Customer money is never touched: refunds and cancellations that go back to the
+Since 11 Oct 2026 this engine runs our own store's affiliate program on Tempo mainnet (chain 4217), from the
+release [`affiliates-production-v7.5.2`](https://github.com/rafaorlando3/pixsettle/tree/affiliates-production-v7.5.2)
+(commit `ec318da`, profile `affiliates_production`). The store bought 69.475862 USDC with R$ 361.83 of its own BRL,
+sent in 3 on-chain transfers to its treasury; 6 commissions to 5 real affiliates are fixed at US$ 57.76; withdrawals are paid by Pix in BRL,
+and on-chain payouts stay off (`settle=false`), so the USDC stays in the store treasury. Live numbers and on-chain
+proof: [epluspy.com/transparencia/dolar](https://epluspy.com/transparencia/dolar).
+
+Still out of scope: on-chain payouts to the affiliates' own wallets, TIP-1022 virtual addresses per beneficiary
+(payouts use a pool address with a memo; deposit addresses per order are in
+[`tempo-deposit-addresses.md`](tempo-deposit-addresses.md), on testnet), and regulatory sign-off on USD-denominated
+balances for merchants other than our own. Customer money is never touched: refunds and cancellations that go back to the
 customer's wallet stay in BRL exactly as paid and are withdrawn through the merchant's existing Pix rail; only
 the affiliate or partner commission attached to that order is reversed here.
 
