@@ -1,0 +1,21 @@
+{
+  "name": "@pixsettle/seal",
+  "version": "0.1.0",
+  "description": "Proof Before Pay: sealed decision records (pbp.seal/1), TypeScript twin of the Python reference",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "MIT",
+  "type": "module",
+  "private": "true",
+  "dependencies": {
+    "canonicalize": "^2.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.2"
+  }
+}
