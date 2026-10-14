@@ -1,0 +1,1526 @@
+{
+  "spec": "pbp.seal/1",
+  "commitment": "sha256(b'pbp.seal/1\\n' + salt_hex + b'\\n' + JCS(record))",
+  "memo": "pbp1:<commitment>",
+  "valid": [
+    {
+      "name": "decision_duplicate",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ]
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": true,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "credit_customer"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": null
+      },
+      "salt": "1111111111111111111111111111111111111111111111111111111111111111",
+      "canonical": "{\"at\":\"2026-10-14T03:12:45.120Z\",\"case\":{\"exception\":\"duplicate_payment\",\"id\":\"case:01JA7Q3M2Z0K8V5R\",\"store\":\"store-2\"},\"decision\":{\"action\":\"refund_duplicate\",\"amount_minor\":\"15990\",\"confidence\":0.92,\"evidence_refs\":[\"pix:a1\",\"pix:a2\"],\"moves_money\":true,\"rationale\":\"Two identical Pix for one order from the same payer within 40 s.\",\"requires_human\":true},\"forbidden\":[\"accept_as_paid\",\"credit_customer\"],\"kind\":\"decision\",\"limits\":{\"autonomous_minor\":\"0\",\"currency\":\"BRL\"},\"missing\":{\"delivery_photo\":null,\"payer_message\":null},\"model\":{\"id\":\"recorded-demo\",\"mode\":\"recorded\",\"provider\":\"ai-hub\",\"temperature\":0},\"policy\":{\"id\":\"refunds\",\"sha256\":\"3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8\",\"version\":\"2026-10-01\"},\"prev\":null,\"rules\":{\"engine\":\"iris-business-rules\",\"result\":null,\"version\":\"r12\"},\"saw\":{\"inputs\":{\"order_amount_minor\":\"15990\",\"order_ref\":\"ord:7f3a\",\"payments\":[{\"amount_minor\":\"15990\",\"payer\":\"payer:h9c2\",\"payment_ref\":\"pix:a1\"},{\"amount_minor\":\"15990\",\"payer\":\"payer:h9c2\",\"payment_ref\":\"pix:a2\"}]},\"tools\":[{\"args\":{\"order_ref\":\"ord:7f3a\"},\"name\":\"order.lookup\",\"output\":{\"delivered\":false,\"status\":\"paid\"}},{\"args\":{\"payer\":\"payer:h9c2\"},\"name\":\"payer.history\",\"output\":{\"disputes_90d\":0,\"orders_90d\":4}}]},\"v\":\"pbp.seal/1\"}",
+      "commitment": "c7726428a121c86a4c60e701f159c886fa93c337360743db46e25b57afb008ff"
+    },
+    {
+      "name": "approval",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "approval",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment"
+        },
+        "at": "2026-10-14T03:13:10.004Z",
+        "human": {
+          "operator": "op:7",
+          "outcome": "approved",
+          "approves": "c7726428a121c86a4c60e701f159c886fa93c337360743db46e25b57afb008ff"
+        },
+        "prev": "c7726428a121c86a4c60e701f159c886fa93c337360743db46e25b57afb008ff"
+      },
+      "salt": "2222222222222222222222222222222222222222222222222222222222222222",
+      "canonical": "{\"at\":\"2026-10-14T03:13:10.004Z\",\"case\":{\"exception\":\"duplicate_payment\",\"id\":\"case:01JA7Q3M2Z0K8V5R\"},\"human\":{\"approves\":\"c7726428a121c86a4c60e701f159c886fa93c337360743db46e25b57afb008ff\",\"operator\":\"op:7\",\"outcome\":\"approved\"},\"kind\":\"approval\",\"prev\":\"c7726428a121c86a4c60e701f159c886fa93c337360743db46e25b57afb008ff\",\"v\":\"pbp.seal/1\"}",
+      "commitment": "fd1706d92470921ae5c2cbfd6c6131a98541c4c1f3d33c248f6248641a7cdd3b"
+    },
+    {
+      "name": "rule_change",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "rule_change",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment"
+        },
+        "at": "2026-10-14T03:14:00.000Z",
+        "rule": {
+          "id": "dup-same-payer-60s",
+          "version_from": "r12",
+          "version_to": "r13",
+          "diff_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "author": "op:7",
+        "from_decision": "c7726428a121c86a4c60e701f159c886fa93c337360743db46e25b57afb008ff",
+        "prev": "c7726428a121c86a4c60e701f159c886fa93c337360743db46e25b57afb008ff"
+      },
+      "salt": "abababababababababababababababababababababababababababababababab",
+      "canonical": "{\"at\":\"2026-10-14T03:14:00.000Z\",\"author\":\"op:7\",\"case\":{\"exception\":\"duplicate_payment\",\"id\":\"case:01JA7Q3M2Z0K8V5R\"},\"from_decision\":\"c7726428a121c86a4c60e701f159c886fa93c337360743db46e25b57afb008ff\",\"kind\":\"rule_change\",\"prev\":\"c7726428a121c86a4c60e701f159c886fa93c337360743db46e25b57afb008ff\",\"rule\":{\"diff_sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"id\":\"dup-same-payer-60s\",\"version_from\":\"r12\",\"version_to\":\"r13\"},\"v\":\"pbp.seal/1\"}",
+      "commitment": "dbe0422c86dc9d4b678b1eaf82dd429dbc176376e3262fce18dc6107cf416e5f"
+    },
+    {
+      "name": "bounded_autonomy",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ]
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": false,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "credit_customer"
+        ],
+        "limits": {
+          "autonomous_minor": "20000",
+          "currency": "BRL"
+        },
+        "prev": null
+      },
+      "salt": "1111111111111111111111111111111111111111111111111111111111111111",
+      "canonical": "{\"at\":\"2026-10-14T03:12:45.120Z\",\"case\":{\"exception\":\"duplicate_payment\",\"id\":\"case:01JA7Q3M2Z0K8V5R\",\"store\":\"store-2\"},\"decision\":{\"action\":\"refund_duplicate\",\"amount_minor\":\"15990\",\"confidence\":0.92,\"evidence_refs\":[\"pix:a1\",\"pix:a2\"],\"moves_money\":true,\"rationale\":\"Two identical Pix for one order from the same payer within 40 s.\",\"requires_human\":false},\"forbidden\":[\"accept_as_paid\",\"credit_customer\"],\"kind\":\"decision\",\"limits\":{\"autonomous_minor\":\"20000\",\"currency\":\"BRL\"},\"missing\":{\"delivery_photo\":null,\"payer_message\":null},\"model\":{\"id\":\"recorded-demo\",\"mode\":\"recorded\",\"provider\":\"ai-hub\",\"temperature\":0},\"policy\":{\"id\":\"refunds\",\"sha256\":\"3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8\",\"version\":\"2026-10-01\"},\"prev\":null,\"rules\":{\"engine\":\"iris-business-rules\",\"result\":null,\"version\":\"r12\"},\"saw\":{\"inputs\":{\"order_amount_minor\":\"15990\",\"order_ref\":\"ord:7f3a\",\"payments\":[{\"amount_minor\":\"15990\",\"payer\":\"payer:h9c2\",\"payment_ref\":\"pix:a1\"},{\"amount_minor\":\"15990\",\"payer\":\"payer:h9c2\",\"payment_ref\":\"pix:a2\"}]},\"tools\":[{\"args\":{\"order_ref\":\"ord:7f3a\"},\"name\":\"order.lookup\",\"output\":{\"delivered\":false,\"status\":\"paid\"}},{\"args\":{\"payer\":\"payer:h9c2\"},\"name\":\"payer.history\",\"output\":{\"disputes_90d\":0,\"orders_90d\":4}}]},\"v\":\"pbp.seal/1\"}",
+      "commitment": "041514a4b61fe95e519e8aeb9e8743413cfa76acb3d90b1d9d5416aeac59881d"
+    },
+    {
+      "name": "unicode_and_order",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ],
+            "weird": {
+              "z": [
+                1,
+                -2,
+                0
+              ],
+              "a": "x\u0000y",
+              "é": true
+            }
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": true,
+          "confidence": 0.92,
+          "rationale": "Devolução: dois Pix iguais em 40 s, pagador já tem 4 pedidos. € ✓",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "credit_customer"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": null
+      },
+      "salt": "2222222222222222222222222222222222222222222222222222222222222222",
+      "canonical": "{\"at\":\"2026-10-14T03:12:45.120Z\",\"case\":{\"exception\":\"duplicate_payment\",\"id\":\"case:01JA7Q3M2Z0K8V5R\",\"store\":\"store-2\"},\"decision\":{\"action\":\"refund_duplicate\",\"amount_minor\":\"15990\",\"confidence\":0.92,\"evidence_refs\":[\"pix:a1\",\"pix:a2\"],\"moves_money\":true,\"rationale\":\"Devolução: dois Pix iguais em 40 s, pagador já tem 4 pedidos. € ✓\",\"requires_human\":true},\"forbidden\":[\"accept_as_paid\",\"credit_customer\"],\"kind\":\"decision\",\"limits\":{\"autonomous_minor\":\"0\",\"currency\":\"BRL\"},\"missing\":{\"delivery_photo\":null,\"payer_message\":null},\"model\":{\"id\":\"recorded-demo\",\"mode\":\"recorded\",\"provider\":\"ai-hub\",\"temperature\":0},\"policy\":{\"id\":\"refunds\",\"sha256\":\"3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8\",\"version\":\"2026-10-01\"},\"prev\":null,\"rules\":{\"engine\":\"iris-business-rules\",\"result\":null,\"version\":\"r12\"},\"saw\":{\"inputs\":{\"order_amount_minor\":\"15990\",\"order_ref\":\"ord:7f3a\",\"payments\":[{\"amount_minor\":\"15990\",\"payer\":\"payer:h9c2\",\"payment_ref\":\"pix:a1\"},{\"amount_minor\":\"15990\",\"payer\":\"payer:h9c2\",\"payment_ref\":\"pix:a2\"}],\"weird\":{\"a\":\"x\\u0000y\",\"z\":[1,-2,0],\"é\":true}},\"tools\":[{\"args\":{\"order_ref\":\"ord:7f3a\"},\"name\":\"order.lookup\",\"output\":{\"delivered\":false,\"status\":\"paid\"}},{\"args\":{\"payer\":\"payer:h9c2\"},\"name\":\"payer.history\",\"output\":{\"disputes_90d\":0,\"orders_90d\":4}}]},\"v\":\"pbp.seal/1\"}",
+      "commitment": "83e361e97a62a332eb2e7fd68ee1e99ea5b54107f83d819c755b60dd2b00b836"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "missing_not_null",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ]
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": "photo:1"
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": true,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "credit_customer"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": null
+      },
+      "reason": "missing_value_must_be_null",
+      "path": "$.missing.delivery_photo"
+    },
+    {
+      "name": "tool_without_output",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ]
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": true,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "credit_customer"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": null
+      },
+      "reason": "missing_field",
+      "path": "$.saw.tools[0].output"
+    },
+    {
+      "name": "float_in_amount",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ],
+            "amount": 159.9
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": true,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "credit_customer"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": null
+      },
+      "reason": "float_not_allowed",
+      "path": "$.saw.inputs.amount"
+    },
+    {
+      "name": "money_without_human_limit_zero",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ]
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": false,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "credit_customer"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": null
+      },
+      "reason": "money_above_limit_without_human",
+      "path": "$.decision.requires_human"
+    },
+    {
+      "name": "forbidden_unsorted",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ]
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": true,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "credit_customer",
+          "accept_as_paid"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": null
+      },
+      "reason": "not_sorted_unique",
+      "path": "$.forbidden"
+    },
+    {
+      "name": "action_forbidden",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ]
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": true,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "refund_duplicate"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": null
+      },
+      "reason": "action_is_forbidden",
+      "path": "$.decision.action"
+    },
+    {
+      "name": "unknown_field",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ]
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": true,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "credit_customer"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": null,
+        "extra": 1
+      },
+      "reason": "unknown_field",
+      "path": "$.extra"
+    },
+    {
+      "name": "pii_cpf",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ]
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0,
+                "note": "cpf 529.982.247-25"
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": true,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "credit_customer"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": null
+      },
+      "reason": "personal_data_found",
+      "path": "$.saw.tools[1].output.note"
+    },
+    {
+      "name": "pii_pix_key",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ],
+            "pix_key": "123e4567-e89b-42d3-a456-426614174000"
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": true,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "credit_customer"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": null
+      },
+      "reason": "personal_data_found",
+      "path": "$.saw.inputs.pix_key"
+    },
+    {
+      "name": "bad_timestamp",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14 03:12:45",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ]
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": true,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "credit_customer"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": null
+      },
+      "reason": "bad_timestamp",
+      "path": "$.at"
+    },
+    {
+      "name": "bad_prev",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ]
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": true,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "credit_customer"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": "XYZ"
+      },
+      "reason": "bad_prev",
+      "path": "$.prev"
+    },
+    {
+      "name": "int_out_of_range",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "decision",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment",
+          "store": "store-2"
+        },
+        "at": "2026-10-14T03:12:45.120Z",
+        "saw": {
+          "inputs": {
+            "order_ref": "ord:7f3a",
+            "order_amount_minor": "15990",
+            "payments": [
+              {
+                "payment_ref": "pix:a1",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              },
+              {
+                "payment_ref": "pix:a2",
+                "amount_minor": "15990",
+                "payer": "payer:h9c2"
+              }
+            ],
+            "big": 1152921504606846976
+          },
+          "tools": [
+            {
+              "name": "order.lookup",
+              "args": {
+                "order_ref": "ord:7f3a"
+              },
+              "output": {
+                "status": "paid",
+                "delivered": false
+              }
+            },
+            {
+              "name": "payer.history",
+              "args": {
+                "payer": "payer:h9c2"
+              },
+              "output": {
+                "orders_90d": 4,
+                "disputes_90d": 0
+              }
+            }
+          ]
+        },
+        "missing": {
+          "delivery_photo": null,
+          "payer_message": null
+        },
+        "policy": {
+          "id": "refunds",
+          "version": "2026-10-01",
+          "sha256": "3f1c2a9b0d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8"
+        },
+        "rules": {
+          "engine": "iris-business-rules",
+          "version": "r12",
+          "result": null
+        },
+        "model": {
+          "provider": "ai-hub",
+          "id": "recorded-demo",
+          "temperature": 0,
+          "mode": "recorded"
+        },
+        "decision": {
+          "action": "refund_duplicate",
+          "moves_money": true,
+          "amount_minor": "15990",
+          "requires_human": true,
+          "confidence": 0.92,
+          "rationale": "Two identical Pix for one order from the same payer within 40 s.",
+          "evidence_refs": [
+            "pix:a1",
+            "pix:a2"
+          ]
+        },
+        "forbidden": [
+          "accept_as_paid",
+          "credit_customer"
+        ],
+        "limits": {
+          "autonomous_minor": "0",
+          "currency": "BRL"
+        },
+        "prev": null
+      },
+      "reason": "int_out_of_safe_range",
+      "path": "$.saw.inputs.big"
+    },
+    {
+      "name": "approval_bad_outcome",
+      "record": {
+        "v": "pbp.seal/1",
+        "kind": "approval",
+        "case": {
+          "id": "case:01JA7Q3M2Z0K8V5R",
+          "exception": "duplicate_payment"
+        },
+        "at": "2026-10-14T03:13:10.004Z",
+        "human": {
+          "operator": "op:7",
+          "outcome": "maybe",
+          "approves": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "prev": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "reason": "bad_outcome",
+      "path": "$.human.outcome"
+    }
+  ]
+}
