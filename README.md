@@ -21,7 +21,7 @@ A successful transaction status alone does not prove the beneficiary received th
 
 The pure deposits module, its 27 tests and the historical fixture are byte-identical copies of feature commit a477e53d7056f11f7c6409184fae9f3e23c8582f from 11 October. [Blob comparisons](evidence/ORIGIN-BLOB-MATCH-20261107.json) establish provenance. That feature is prior capability. This separate lab adds a new runner, read-only verifier, 18 evidence/gate tests and fresh transactions on 7 November. It does not modify the judged version, main, demos, GitLab or CI.
 
-The original new run used local SHA e67639a198e38ed9871a8d724a08311420f2f29b. [Its source is preserved](evidence/preliminary-runner-e67639a-20261107.ts) as historical evidence only. Its preliminary output did not compare canonical block hashes. The authoritative evidence was independently re-read on the VPS by scripts/verify-native-lab.ts at local SHA 52484de47d8fcc4cc06ed14f3915e100a4062c20; it compares receipt, block by hash and block by height, reconstructs exact order outcomes from complete logs, and reads full policy and historical balances. The verifier source in this release is byte-identical to that run. The revised sending runner was checked with network disabled for safe exit gates; it was not used to send a second set of transactions.
+The original new run used local SHA e67639a198e38ed9871a8d724a08311420f2f29b. [Its source is preserved](evidence/preliminary-runner-e67639a-20261107.ts) as historical evidence only. Its preliminary output did not compare canonical block hashes. The authoritative evidence was independently re-read on the VPS by core/scripts/verify-native-lab.ts at local SHA 52484de47d8fcc4cc06ed14f3915e100a4062c20; it compares receipt, block by hash and block by height, reconstructs exact order outcomes from complete logs, and reads full policy and historical balances. The verifier source in this release is byte-identical to that run. The revised sending runner was checked with network disabled for safe exit gates; it was not used to send a second set of transactions.
 
 ## Running and reviewing
 
@@ -34,3 +34,5 @@ A durable operation journal records intent before a testnet effect, disables HTT
 Independent reviews by Codex, actual Claude Code CLI and actual Argon accompany the shared task report. No Colosseum update was posted by this lab task.
 
 Primary protocol references: https://github.com/tempoxyz/tempo/blob/main/tips/tip-1022.md and https://github.com/tempoxyz/tempo/blob/main/tips/tip-1028.md .
+
+[Final provenance checks](evidence/FINAL-PROVENANCE-20261107.json) compare the verifier and preliminary source blobs and bind the 45-test log to the unchanged core tree. Only documentation and evidence changed after the test run.

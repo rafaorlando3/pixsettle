@@ -1,0 +1,46 @@
+{
+  "at": "2026-11-07T07:09:15.489290+00:00",
+  "execution_host": "authorized VPS .244",
+  "verification_commit": "52484de47d8fcc4cc06ed14f3915e100a4062c20",
+  "reviewed_candidate": "d18c7c93c75f1269ebe1ebd38fdbd6661ccecf0e",
+  "files": [
+    {
+      "source_commit": "52484de47d8fcc4cc06ed14f3915e100a4062c20",
+      "source_path": "core/scripts/verify-native-lab.ts",
+      "source_blob": "7ea7a4da815a28b16b5aa039b95d8f0559af453a",
+      "candidate_path": "core/scripts/verify-native-lab.ts",
+      "sha256": "9d2c430a09d282026b6410699ad369ad44bc7871c8fc947722d8ba8c89d78668",
+      "byte_exact_to_current": true,
+      "byte_exact_to_candidate": true
+    },
+    {
+      "source_commit": "52484de47d8fcc4cc06ed14f3915e100a4062c20",
+      "source_path": "core/src/chain/lab-proof.ts",
+      "source_blob": "75b2b221dff8168c8886da8541684be3ad4c9dd3",
+      "candidate_path": "core/src/chain/lab-proof.ts",
+      "sha256": "8e4ef8afef9efa9db15aaeb071da7df3f8366f0f9ea375ce6df6f29c120af190",
+      "byte_exact_to_current": true,
+      "byte_exact_to_candidate": true
+    },
+    {
+      "source_commit": "e67639a198e38ed9871a8d724a08311420f2f29b",
+      "source_path": "core/scripts/native-lab.ts",
+      "source_blob": "2dcaa6e5ef00e2f1955df323b61786e396cd8023",
+      "candidate_path": "evidence/preliminary-runner-e67639a-20261107.ts",
+      "sha256": "7799b50fde4c61934ec8b2a0455557e011e9e63590e924dc06c1398006564c35",
+      "byte_exact_to_current": true,
+      "byte_exact_to_candidate": true
+    }
+  ],
+  "diff_verification_to_candidate": [
+    "README.md",
+    "evidence/ORIGIN-BLOB-MATCH-20261107.json",
+    "evidence/native-testnet-readonly-20261107.json",
+    "evidence/preliminary-runner-e67639a-20261107.ts"
+  ],
+  "core_changes": [],
+  "core_source_unchanged": true,
+  "test_log_sha256": "337e84d45962d7b66de6f23cf625a1229889601192f2bf6e5eab8c05a19ed612",
+  "tests_recorded": 45,
+  "reason_no_retest": "Only README and evidence changed from the tested and verified code snapshot; all core blobs are identical."
+}
