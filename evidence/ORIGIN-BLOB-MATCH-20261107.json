@@ -1,0 +1,28 @@
+{
+  "at": "2026-11-07T07:00:03.322827+00:00",
+  "execution_host": "authorized VPS .244",
+  "files": [
+    {
+      "path": "core/src/chain/deposits.ts",
+      "origin_commit": "a477e53d7056f11f7c6409184fae9f3e23c8582f",
+      "origin_blob": "0d8ad4851d239a5f3c44dfefba745fc3c0c21ea3",
+      "sha256": "4f6ec403807baba2314962191ce68236e4c83631bdb97ce9f22ba15fa07c42af",
+      "byte_exact": true
+    },
+    {
+      "path": "core/test/tempo-deposits.test.ts",
+      "origin_commit": "a477e53d7056f11f7c6409184fae9f3e23c8582f",
+      "origin_blob": "ea352e1bcb9988bcf3fd4317d3ca3ec31c71ddc8",
+      "sha256": "53b0a0c8c23aeaf3a9e1ed728ccc45aba52a3e240a1aaafdb7a53a88fd65980f",
+      "byte_exact": true
+    },
+    {
+      "path": "core/test/fixtures/tempo-deposits-moderato.json",
+      "origin_commit": "a477e53d7056f11f7c6409184fae9f3e23c8582f",
+      "origin_blob": "bccffbd6823bfb79ba908f2aeb10e60f66f7e956",
+      "sha256": "9a375878f7a0d22e23c40bdc2ea9c4bed5c26e27689f6f76aa1f2935b418ee33",
+      "byte_exact": true
+    }
+  ],
+  "no_origin_mutation": true
+}

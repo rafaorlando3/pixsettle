@@ -1,0 +1,422 @@
+{
+  "schema": "pixsettle-tempo-native-readonly-proof/v1",
+  "checkedAt": "2026-11-07T07:03:25.190Z",
+  "chainId": 42431,
+  "rpc": "https://rpc.moderato.tempo.xyz",
+  "synthetic": true,
+  "realMoney": false,
+  "runId": "u10-097d13e0",
+  "verificationSource": "52484de47d8fcc4cc06ed14f3915e100a4062c20",
+  "preliminarySource": "e67639a198e38ed9871a8d724a08311420f2f29b",
+  "preliminarySha256": "968610399a1ed8001132af0d005d5e4c0934244a443e195c84932eb8a31d4e8b",
+  "preliminaryLimitation": "Initial runner did not compare canonical block hashes. This separate read-only verifier does.",
+  "master": "0x40EC57356461582ac22eda7E229E3D638faa6935",
+  "payer": "0xb325AF1819C2f78c12d7EB5Bb3957790e74498bC",
+  "masterId": "0x798f7346",
+  "policy": {
+    "hasReceivePolicy": true,
+    "senderPolicyId": "allow-all",
+    "tokenPolicyId": "1254346",
+    "tokenPolicyType": "whitelist",
+    "claimer": "sender",
+    "recoveryAuthority": "0x0000000000000000000000000000000000000000"
+  },
+  "orders": [
+    {
+      "orderRef": "u10-097d13e0-accepted",
+      "virtualAddress": "0x798F7346FdfDfdfDFdfDFDFdFDfdbd22c0822965",
+      "expectedAmountMinor": "10000",
+      "acceptedTokens": [
+        "0x20c0000000000000000000000000000000000000"
+      ],
+      "scale": 6
+    },
+    {
+      "orderRef": "u10-097d13e0-blocked",
+      "virtualAddress": "0x798F7346fdFDFdFDFdFdFdFdFdfD99Ff2dE72F11",
+      "expectedAmountMinor": "10000",
+      "acceptedTokens": [
+        "0x20c0000000000000000000000000000000000000"
+      ],
+      "scale": 6
+    }
+  ],
+  "receipts": [
+    {
+      "name": "register-master",
+      "transactionHash": "0xe1b5039d395079537bc3c9ad6e2b0d2adab5ab66b43af706d639bb0b6f149b53",
+      "status": "success",
+      "blockNumber": "42976005",
+      "blockHash": "0x9d6afd3ff3fe81b3e480a025a20872f773578357de22e3b87b0bf3cb22d07746",
+      "byHashEqualsReceipt": true,
+      "byNumberEqualsReceipt": true,
+      "observedHead": "42976334",
+      "blockTimestamp": "1794034826",
+      "explorer": "https://explore.testnet.tempo.xyz/tx/0xe1b5039d395079537bc3c9ad6e2b0d2adab5ab66b43af706d639bb0b6f149b53",
+      "logs": [
+        {
+          "address": "0xfdc0000000000000000000000000000000000000",
+          "topics": [
+            "0xb5c59136d5edcbb78af73e696fa65a73a2856c847f832a8d7be05cff85629015",
+            "0x798f734600000000000000000000000000000000000000000000000000000000",
+            "0x00000000000000000000000040ec57356461582ac22eda7e229e3d638faa6935"
+          ],
+          "data": "0x",
+          "transactionHash": "0xe1b5039d395079537bc3c9ad6e2b0d2adab5ab66b43af706d639bb0b6f149b53",
+          "logIndex": 1,
+          "blockNumber": "42976005",
+          "blockHash": "0x9d6afd3ff3fe81b3e480a025a20872f773578357de22e3b87b0bf3cb22d07746",
+          "removed": false
+        },
+        {
+          "address": "0x20c0000000000000000000000000000000000000",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x00000000000000000000000040ec57356461582ac22eda7e229e3d638faa6935",
+            "0x000000000000000000000000feec000000000000000000000000000000000000"
+          ],
+          "data": "0x000000000000000000000000000000000000000000000000000000000000013d",
+          "transactionHash": "0xe1b5039d395079537bc3c9ad6e2b0d2adab5ab66b43af706d639bb0b6f149b53",
+          "logIndex": 2,
+          "blockNumber": "42976005",
+          "blockHash": "0x9d6afd3ff3fe81b3e480a025a20872f773578357de22e3b87b0bf3cb22d07746",
+          "removed": false
+        }
+      ]
+    },
+    {
+      "name": "token-policy",
+      "transactionHash": "0xf57874583f3736ebbf517a716a6d52a935891c655806954a7d179b18709901fb",
+      "status": "success",
+      "blockNumber": "42976006",
+      "blockHash": "0x92943e928ceb88474112291c881179b37dafb4c669d838ba18cf2acf0a106fb2",
+      "byHashEqualsReceipt": true,
+      "byNumberEqualsReceipt": true,
+      "observedHead": "42976334",
+      "blockTimestamp": "1794034827",
+      "explorer": "https://explore.testnet.tempo.xyz/tx/0xf57874583f3736ebbf517a716a6d52a935891c655806954a7d179b18709901fb",
+      "logs": [
+        {
+          "address": "0x403c000000000000000000000000000000000000",
+          "topics": [
+            "0xb15f514df899cf1b4ef0dc78f930c10d98883756fa3a1a8853a98132e7f4c5a6",
+            "0x00000000000000000000000000000000000000000000000000000000001323ca",
+            "0x00000000000000000000000040ec57356461582ac22eda7e229e3d638faa6935",
+            "0x00000000000000000000000020c0000000000000000000000000000000000000"
+          ],
+          "data": "0x0000000000000000000000000000000000000000000000000000000000000001",
+          "transactionHash": "0xf57874583f3736ebbf517a716a6d52a935891c655806954a7d179b18709901fb",
+          "logIndex": 17,
+          "blockNumber": "42976006",
+          "blockHash": "0x92943e928ceb88474112291c881179b37dafb4c669d838ba18cf2acf0a106fb2",
+          "removed": false
+        },
+        {
+          "address": "0x403c000000000000000000000000000000000000",
+          "topics": [
+            "0x718d87917f0c4cfd1263707ef0e77c656ed8d8bfaca06152bdb0b8094142ec27",
+            "0x00000000000000000000000000000000000000000000000000000000001323ca",
+            "0x00000000000000000000000040ec57356461582ac22eda7e229e3d638faa6935"
+          ],
+          "data": "0x0000000000000000000000000000000000000000000000000000000000000000",
+          "transactionHash": "0xf57874583f3736ebbf517a716a6d52a935891c655806954a7d179b18709901fb",
+          "logIndex": 18,
+          "blockNumber": "42976006",
+          "blockHash": "0x92943e928ceb88474112291c881179b37dafb4c669d838ba18cf2acf0a106fb2",
+          "removed": false
+        },
+        {
+          "address": "0x403c000000000000000000000000000000000000",
+          "topics": [
+            "0x98925cfb1bc09c5b43dd0dd56d3d95aa04fb3300927580cc588c3f5dd58c15e1",
+            "0x00000000000000000000000000000000000000000000000000000000001323ca",
+            "0x00000000000000000000000040ec57356461582ac22eda7e229e3d638faa6935",
+            "0x00000000000000000000000040ec57356461582ac22eda7e229e3d638faa6935"
+          ],
+          "data": "0x",
+          "transactionHash": "0xf57874583f3736ebbf517a716a6d52a935891c655806954a7d179b18709901fb",
+          "logIndex": 19,
+          "blockNumber": "42976006",
+          "blockHash": "0x92943e928ceb88474112291c881179b37dafb4c669d838ba18cf2acf0a106fb2",
+          "removed": false
+        },
+        {
+          "address": "0x20c0000000000000000000000000000000000000",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x00000000000000000000000040ec57356461582ac22eda7e229e3d638faa6935",
+            "0x000000000000000000000000feec000000000000000000000000000000000000"
+          ],
+          "data": "0x0000000000000000000000000000000000000000000000000000000000000144",
+          "transactionHash": "0xf57874583f3736ebbf517a716a6d52a935891c655806954a7d179b18709901fb",
+          "logIndex": 20,
+          "blockNumber": "42976006",
+          "blockHash": "0x92943e928ceb88474112291c881179b37dafb4c669d838ba18cf2acf0a106fb2",
+          "removed": false
+        }
+      ]
+    },
+    {
+      "name": "receive-policy",
+      "transactionHash": "0x1b8ef362caa8e627dff457d6746eb038f4d61916cae3fee392c076ab4eda276d",
+      "status": "success",
+      "blockNumber": "42976007",
+      "blockHash": "0x28f8bc38ed07bbea1c83e1e7ff836c4b90af7fa0f22b40c772d0d153ff6782d0",
+      "byHashEqualsReceipt": true,
+      "byNumberEqualsReceipt": true,
+      "observedHead": "42976334",
+      "blockTimestamp": "1794034827",
+      "explorer": "https://explore.testnet.tempo.xyz/tx/0x1b8ef362caa8e627dff457d6746eb038f4d61916cae3fee392c076ab4eda276d",
+      "logs": [
+        {
+          "address": "0x403c000000000000000000000000000000000000",
+          "topics": [
+            "0xf0d46e7e04f2bf4cc56ea683299f4145c2650ef690e276e069bc2b806d68b2ea",
+            "0x00000000000000000000000040ec57356461582ac22eda7e229e3d638faa6935"
+          ],
+          "data": "0x000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000001323ca0000000000000000000000000000000000000000000000000000000000000000",
+          "transactionHash": "0x1b8ef362caa8e627dff457d6746eb038f4d61916cae3fee392c076ab4eda276d",
+          "logIndex": 23,
+          "blockNumber": "42976007",
+          "blockHash": "0x28f8bc38ed07bbea1c83e1e7ff836c4b90af7fa0f22b40c772d0d153ff6782d0",
+          "removed": false
+        },
+        {
+          "address": "0x20c0000000000000000000000000000000000000",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x00000000000000000000000040ec57356461582ac22eda7e229e3d638faa6935",
+            "0x000000000000000000000000feec000000000000000000000000000000000000"
+          ],
+          "data": "0x00000000000000000000000000000000000000000000000000000000000000ab",
+          "transactionHash": "0x1b8ef362caa8e627dff457d6746eb038f4d61916cae3fee392c076ab4eda276d",
+          "logIndex": 24,
+          "blockNumber": "42976007",
+          "blockHash": "0x28f8bc38ed07bbea1c83e1e7ff836c4b90af7fa0f22b40c772d0d153ff6782d0",
+          "removed": false
+        }
+      ]
+    },
+    {
+      "name": "payment-accepted",
+      "transactionHash": "0x1d222c2458f338ebdfc81f5e65766876658496ce851166fe7c83a76cc1937589",
+      "status": "success",
+      "blockNumber": "42976008",
+      "blockHash": "0x138aa18aff82e8b72e6039da3f9c593528937df7810a4ecc5f1ff4ee9a924628",
+      "byHashEqualsReceipt": true,
+      "byNumberEqualsReceipt": true,
+      "observedHead": "42976335",
+      "blockTimestamp": "1794034828",
+      "explorer": "https://explore.testnet.tempo.xyz/tx/0x1d222c2458f338ebdfc81f5e65766876658496ce851166fe7c83a76cc1937589",
+      "logs": [
+        {
+          "address": "0x20c0000000000000000000000000000000000000",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x000000000000000000000000b325af1819c2f78c12d7eb5bb3957790e74498bc",
+            "0x000000000000000000000000798f7346fdfdfdfdfdfdfdfdfdfdbd22c0822965"
+          ],
+          "data": "0x0000000000000000000000000000000000000000000000000000000000002710",
+          "transactionHash": "0x1d222c2458f338ebdfc81f5e65766876658496ce851166fe7c83a76cc1937589",
+          "logIndex": 17,
+          "blockNumber": "42976008",
+          "blockHash": "0x138aa18aff82e8b72e6039da3f9c593528937df7810a4ecc5f1ff4ee9a924628",
+          "removed": false
+        },
+        {
+          "address": "0x20c0000000000000000000000000000000000000",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x000000000000000000000000798f7346fdfdfdfdfdfdfdfdfdfdbd22c0822965",
+            "0x00000000000000000000000040ec57356461582ac22eda7e229e3d638faa6935"
+          ],
+          "data": "0x0000000000000000000000000000000000000000000000000000000000002710",
+          "transactionHash": "0x1d222c2458f338ebdfc81f5e65766876658496ce851166fe7c83a76cc1937589",
+          "logIndex": 18,
+          "blockNumber": "42976008",
+          "blockHash": "0x138aa18aff82e8b72e6039da3f9c593528937df7810a4ecc5f1ff4ee9a924628",
+          "removed": false
+        },
+        {
+          "address": "0x20c0000000000000000000000000000000000000",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x000000000000000000000000b325af1819c2f78c12d7eb5bb3957790e74498bc",
+            "0x000000000000000000000000feec000000000000000000000000000000000000"
+          ],
+          "data": "0x00000000000000000000000000000000000000000000000000000000000000ad",
+          "transactionHash": "0x1d222c2458f338ebdfc81f5e65766876658496ce851166fe7c83a76cc1937589",
+          "logIndex": 19,
+          "blockNumber": "42976008",
+          "blockHash": "0x138aa18aff82e8b72e6039da3f9c593528937df7810a4ecc5f1ff4ee9a924628",
+          "removed": false
+        }
+      ]
+    },
+    {
+      "name": "payment-blocked",
+      "transactionHash": "0x7e9722db5c7a7193be928b28a055e6a0d8291f9c725473625dc33ea82f7fdc21",
+      "status": "success",
+      "blockNumber": "42976009",
+      "blockHash": "0x6df78510ccab50033f31fd14b92706d433566f598df446f5a071d1c107d617bd",
+      "byHashEqualsReceipt": true,
+      "byNumberEqualsReceipt": true,
+      "observedHead": "42976335",
+      "blockTimestamp": "1794034828",
+      "explorer": "https://explore.testnet.tempo.xyz/tx/0x7e9722db5c7a7193be928b28a055e6a0d8291f9c725473625dc33ea82f7fdc21",
+      "logs": [
+        {
+          "address": "0x20c0000000000000000000000000000000000002",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x000000000000000000000000b325af1819c2f78c12d7eb5bb3957790e74498bc",
+            "0x000000000000000000000000b10c000000000000000000000000000000000000"
+          ],
+          "data": "0x0000000000000000000000000000000000000000000000000000000000002710",
+          "transactionHash": "0x7e9722db5c7a7193be928b28a055e6a0d8291f9c725473625dc33ea82f7fdc21",
+          "logIndex": 34,
+          "blockNumber": "42976009",
+          "blockHash": "0x6df78510ccab50033f31fd14b92706d433566f598df446f5a071d1c107d617bd",
+          "removed": false
+        },
+        {
+          "address": "0xb10c000000000000000000000000000000000000",
+          "topics": [
+            "0x361d86e46fd139dc3eac4148f16b53597f0f8ddd9aba772aae0034bda5531b1c",
+            "0x00000000000000000000000020c0000000000000000000000000000000000002",
+            "0x00000000000000000000000040ec57356461582ac22eda7e229e3d638faa6935",
+            "0x0000000000000000000000000000000000000000000000000000000000000db2"
+          ],
+          "data": "0x0000000000000000000000000000000000000000000000000000000000002710000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000600000000000000000000000000000000000000000000000000000000000000140000000000000000000000000000000000000000000000000000000000000000100000000000000000000000020c00000000000000000000000000000000000020000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b325af1819c2f78c12d7eb5bb3957790e74498bc000000000000000000000000798f7346fdfdfdfdfdfdfdfdfdfd99ff2de72f11000000000000000000000000000000000000000000000000000000006aeecc8c0000000000000000000000000000000000000000000000000000000000000db2000000000000000000000000000000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+          "transactionHash": "0x7e9722db5c7a7193be928b28a055e6a0d8291f9c725473625dc33ea82f7fdc21",
+          "logIndex": 35,
+          "blockNumber": "42976009",
+          "blockHash": "0x6df78510ccab50033f31fd14b92706d433566f598df446f5a071d1c107d617bd",
+          "removed": false
+        },
+        {
+          "address": "0x20c0000000000000000000000000000000000000",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x000000000000000000000000b325af1819c2f78c12d7eb5bb3957790e74498bc",
+            "0x000000000000000000000000feec000000000000000000000000000000000000"
+          ],
+          "data": "0x0000000000000000000000000000000000000000000000000000000000000027",
+          "transactionHash": "0x7e9722db5c7a7193be928b28a055e6a0d8291f9c725473625dc33ea82f7fdc21",
+          "logIndex": 36,
+          "blockNumber": "42976009",
+          "blockHash": "0x6df78510ccab50033f31fd14b92706d433566f598df446f5a071d1c107d617bd",
+          "removed": false
+        }
+      ]
+    },
+    {
+      "name": "payer-reclaims-test-token",
+      "transactionHash": "0x74f14deac571dcb9ed20645337945c40524ccd23144148939699fcb5b0f2d819",
+      "status": "success",
+      "blockNumber": "42976010",
+      "blockHash": "0xc230cb03cef5bf22cce58c5371fdf1b23d70bdf6e4e69d920647729fec3528f3",
+      "byHashEqualsReceipt": true,
+      "byNumberEqualsReceipt": true,
+      "observedHead": "42976335",
+      "blockTimestamp": "1794034829",
+      "explorer": "https://explore.testnet.tempo.xyz/tx/0x74f14deac571dcb9ed20645337945c40524ccd23144148939699fcb5b0f2d819",
+      "logs": [
+        {
+          "address": "0x20c0000000000000000000000000000000000002",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x000000000000000000000000b10c000000000000000000000000000000000000",
+            "0x000000000000000000000000b325af1819c2f78c12d7eb5bb3957790e74498bc"
+          ],
+          "data": "0x0000000000000000000000000000000000000000000000000000000000002710",
+          "transactionHash": "0x74f14deac571dcb9ed20645337945c40524ccd23144148939699fcb5b0f2d819",
+          "logIndex": 21,
+          "blockNumber": "42976010",
+          "blockHash": "0xc230cb03cef5bf22cce58c5371fdf1b23d70bdf6e4e69d920647729fec3528f3",
+          "removed": false
+        },
+        {
+          "address": "0xb10c000000000000000000000000000000000000",
+          "topics": [
+            "0xdfa88f3774430fdb1d282219332a663236ccc8035ba8b9e0df856b374a5db085",
+            "0x00000000000000000000000020c0000000000000000000000000000000000002",
+            "0x00000000000000000000000040ec57356461582ac22eda7e229e3d638faa6935",
+            "0x0000000000000000000000000000000000000000000000000000000000000db2"
+          ],
+          "data": "0x000000000000000000000000000000000000000000000000000000006aeecc8c0000000000000000000000000000000000000000000000000000000000000001000000000000000000000000b325af1819c2f78c12d7eb5bb3957790e74498bc000000000000000000000000798f7346fdfdfdfdfdfdfdfdfdfd99ff2de72f110000000000000000000000000000000000000000000000000000000000000000000000000000000000000000b325af1819c2f78c12d7eb5bb3957790e74498bc000000000000000000000000b325af1819c2f78c12d7eb5bb3957790e74498bc0000000000000000000000000000000000000000000000000000000000002710",
+          "transactionHash": "0x74f14deac571dcb9ed20645337945c40524ccd23144148939699fcb5b0f2d819",
+          "logIndex": 22,
+          "blockNumber": "42976010",
+          "blockHash": "0xc230cb03cef5bf22cce58c5371fdf1b23d70bdf6e4e69d920647729fec3528f3",
+          "removed": false
+        },
+        {
+          "address": "0x20c0000000000000000000000000000000000000",
+          "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "0x000000000000000000000000b325af1819c2f78c12d7eb5bb3957790e74498bc",
+            "0x000000000000000000000000feec000000000000000000000000000000000000"
+          ],
+          "data": "0x0000000000000000000000000000000000000000000000000000000000000023",
+          "transactionHash": "0x74f14deac571dcb9ed20645337945c40524ccd23144148939699fcb5b0f2d819",
+          "logIndex": 23,
+          "blockNumber": "42976010",
+          "blockHash": "0xc230cb03cef5bf22cce58c5371fdf1b23d70bdf6e4e69d920647729fec3528f3",
+          "removed": false
+        }
+      ]
+    }
+  ],
+  "outcomes": [
+    {
+      "code": "matched",
+      "orderRef": "u10-097d13e0-accepted",
+      "tx": "0x1d222c2458f338ebdfc81f5e65766876658496ce851166fe7c83a76cc1937589",
+      "token": "0x20C0000000000000000000000000000000000000",
+      "amountMinor": "10000",
+      "payer": "0xb325AF1819C2f78c12d7EB5Bb3957790e74498bC",
+      "explanation": "Order u10-097d13e0-accepted paid in full (US$ 0.01), identified by its own deposit address, no memo needed."
+    },
+    {
+      "code": "held_by_receive_policy",
+      "orderRef": "u10-097d13e0-blocked",
+      "tx": "0x7e9722db5c7a7193be928b28a055e6a0d8291f9c725473625dc33ea82f7fdc21",
+      "token": "0x20C0000000000000000000000000000000000002",
+      "amountMinor": "10000",
+      "payer": "0xb325AF1819C2f78c12d7EB5Bb3957790e74498bC",
+      "explanation": "US$ 0.01 in a token the merchant does not accept was held on-chain by the receive policy (meant for order u10-097d13e0-blocked); it never reached the merchant.",
+      "status": "returned_to_payer"
+    }
+  ],
+  "claim": {
+    "transactionHash": "0x74f14deac571dcb9ed20645337945c40524ccd23144148939699fcb5b0f2d819",
+    "to": "0xb325AF1819C2f78c12d7EB5Bb3957790e74498bC",
+    "caller": "0xb325AF1819C2f78c12d7EB5Bb3957790e74498bC",
+    "amountMinor": "10000",
+    "token": "0x20C0000000000000000000000000000000000002"
+  },
+  "checks": {
+    "twoHopForwarding": true,
+    "acceptedOrderMatched": true,
+    "blockedOrderRetained": true,
+    "originatorClaimed": true
+  },
+  "measurements": {
+    "BETA": {
+      "token": "0x20c0000000000000000000000000000000000002",
+      "beforeBlock": "42976008",
+      "afterBlock": "42976010",
+      "payerBefore": "1000000000000",
+      "payerAfter": "1000000000000",
+      "payerNetChange": "0",
+      "beneficiaryBefore": "1000000000000",
+      "beneficiaryAfter": "1000000000000",
+      "beneficiaryNetChange": "0"
+    },
+    "virtualAcceptedBalance": "0",
+    "virtualBlockedBalance": "0",
+    "guardReceiptRemaining": "0"
+  },
+  "finality": "Successful receipts with block hashes checked both by height and hash at the recorded observed heads. This is a point-in-time testnet observation, not a stronger finality guarantee."
+}
